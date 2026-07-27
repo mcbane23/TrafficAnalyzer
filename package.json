@@ -1,0 +1,47 @@
+{
+  "name": "trafficanalyzer",
+  "version": "1.0.0",
+  "description": "TrafficAnalyzer detects traffic congestion, incidents, and vehicle counts from live Belgrade camera feeds. This package currently provides the Belgrade camera registry and its validation tooling.",
+  "main": "dist/index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run build:web",
+    "build:web": "vite build --config src/web/vite.config.ts",
+    "dev": "concurrently -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:web": "vite --config src/web/vite.config.ts",
+    "start": "node dist/server/index.js",
+    "test": "jest",
+    "cameras:revalidate": "tsx src/cli/revalidate.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/express": "^5.0.6",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.1.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "concurrently": "^10.0.3",
+    "jest": "^30.4.2",
+    "tailwindcss": "^4.3.3",
+    "ts-jest": "^29.4.12",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.5"
+  },
+  "dependencies": {
+    "@ffprobe-installer/ffprobe": "^2.1.2",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "commander": "^15.0.0",
+    "express": "^5.2.1",
+    "hls.js": "^1.6.16",
+    "vue": "^3.5.40",
+    "vue-router": "^5.2.0"
+  }
+}

@@ -1,0 +1,324 @@
+[
+  {
+    "id": "brankov-most",
+    "name": "Brankov Most (Branko's Bridge)",
+    "location": {
+      "address": "Brankov most, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/brankov.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:54:44.458Z",
+    "lastError": null
+  },
+  {
+    "id": "most-na-adi",
+    "name": "Most na Adi (Ada Bridge)",
+    "location": {
+      "address": "Most na Adi, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/ada.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:54:47.791Z",
+    "lastError": null
+  },
+  {
+    "id": "gazela-mostarska-petlja",
+    "name": "Gazela Most – Mostarska Petlja",
+    "location": {
+      "address": "Gazela most / Mostarska petlja, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/gazela.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:54:49.543Z",
+    "lastError": null
+  },
+  {
+    "id": "pancevacki-most",
+    "name": "Pančevački Most",
+    "location": {
+      "address": "Pančevački most, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/pancevac.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:54:51.742Z",
+    "lastError": null
+  },
+  {
+    "id": "trg-nikole-pasica",
+    "name": "Trg Nikole Pašića – Skupština",
+    "location": {
+      "address": "Trg Nikole Pašića, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/trgnikole.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:54:53.646Z",
+    "lastError": null
+  },
+  {
+    "id": "vukov-spomenik",
+    "name": "Vukov Spomenik",
+    "location": {
+      "address": "Vukov spomenik, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/vuk.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:54:55.494Z",
+    "lastError": null
+  },
+  {
+    "id": "autokomanda",
+    "name": "Autokomanda",
+    "location": {
+      "address": "Autokomanda, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/autokomanda.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:54:57.263Z",
+    "lastError": null
+  },
+  {
+    "id": "usce-mihajla-pupina",
+    "name": "Ušće – Bulevar Mihajla Pupina",
+    "location": {
+      "address": "Bulevar Mihajla Pupina / Ušće, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/pupina.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:54:59.003Z",
+    "lastError": null
+  },
+  {
+    "id": "nemanjina",
+    "name": "Nemanjina",
+    "location": {
+      "address": "Nemanjina ulica, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/nemanjina.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:00.969Z",
+    "lastError": null
+  },
+  {
+    "id": "takovska",
+    "name": "Takovska",
+    "location": {
+      "address": "Takovska ulica, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/takovska.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:02.876Z",
+    "lastError": null
+  },
+  {
+    "id": "zeleznicka-stanica-savski-trg",
+    "name": "Železnička Stanica – Savski Trg",
+    "location": {
+      "address": "Savski trg, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/zeleznicka.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:04.832Z",
+    "lastError": null
+  },
+  {
+    "id": "slavija",
+    "name": "Slavija",
+    "location": {
+      "address": "Trg Slavija, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/slavija.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:06.618Z",
+    "lastError": null
+  },
+  {
+    "id": "plavi-most",
+    "name": "Plavi Most (Blue Bridge)",
+    "location": {
+      "address": "Plavi most, Voždovac, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/plavimost.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:08.317Z",
+    "lastError": null
+  },
+  {
+    "id": "trg-republike",
+    "name": "Trg Republike",
+    "location": {
+      "address": "Trg Republike, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/trgrepublike.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:10.102Z",
+    "lastError": null
+  },
+  {
+    "id": "bogoslovija",
+    "name": "Bogoslovija",
+    "location": {
+      "address": "Bogoslovija kružni tok, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/bogoslovija.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:12.088Z",
+    "lastError": null
+  },
+  {
+    "id": "kruzni-tok-novi-beograd",
+    "name": "Kružni Tok Novi Beograd",
+    "location": {
+      "address": "Novi Beograd, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/opstinanbg.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:14.262Z",
+    "lastError": null
+  },
+  {
+    "id": "autoput-novi-beograd-genex",
+    "name": "Autoput Novi Beograd (Genex)",
+    "location": {
+      "address": "Autoput near Genex Tower, Novi Beograd, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/genex.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:16.437Z",
+    "lastError": null
+  },
+  {
+    "id": "jurija-gagarina",
+    "name": "Jurija Gagarina",
+    "location": {
+      "address": "Ulica Jurija Gagarina, Novi Beograd, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/gagarina.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:19.092Z",
+    "lastError": null
+  },
+  {
+    "id": "bulevar-despota-stefana",
+    "name": "Bulevar Despota Stefana – 29. Novembar",
+    "location": {
+      "address": "Bulevar despota Stefana, Belgrade"
+    },
+    "resolution": "704x576",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
+    "url": "https://streamer.devnet.rs/hls/despotastefana.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:21.252Z",
+    "lastError": null
+  },
+  {
+    "id": "pijaca-cveca",
+    "name": "Pijaca Cveća (Flower Market)",
+    "location": {
+      "address": "Pijaca cveća, Belgrade"
+    },
+    "resolution": "1920x1080",
+    "source": "OK Radio",
+    "url": "https://cam.okradio.net/streams/kamera1/stream.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:22.975Z",
+    "lastError": null
+  },
+  {
+    "id": "omv-krnjaca",
+    "name": "OMV Krnjača",
+    "location": {
+      "address": "OMV benzinska stanica, Krnjača, Belgrade"
+    },
+    "resolution": "1920x1080",
+    "source": "OK Radio",
+    "url": "https://cam.okradio.net/streams/kamera2/stream.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:24.495Z",
+    "lastError": null
+  },
+  {
+    "id": "krnjaca",
+    "name": "Krnjača",
+    "location": {
+      "address": "Krnjača, Belgrade"
+    },
+    "resolution": "2688x1520",
+    "source": "OK Radio",
+    "url": "https://cam.okradio.net/streams/kamera3/stream.m3u8",
+    "protocol": "HLS",
+    "status": "active",
+    "lastVerifiedAt": "2026-07-24T10:55:25.961Z",
+    "lastError": null
+  },
+  {
+    "id": "zrenjaninski-put-borca",
+    "name": "Zrenjaninski Put – Borča",
+    "location": {
+      "address": "Zrenjaninski put, Borča, Belgrade"
+    },
+    "resolution": null,
+    "source": "UživoKamere.com",
+    "url": "https://rtsp.uzivokamere.com/borca/index.m3u8",
+    "protocol": "HLS",
+    "status": "inactive",
+    "lastVerifiedAt": "2026-07-24T10:55:27.410Z",
+    "lastError": "https://rtsp.uzivokamere.com/borca/index.m3u8: Server returned 404 Not Found"
+  }
+]
