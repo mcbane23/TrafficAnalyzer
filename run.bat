@@ -1,5 +1,8 @@
 @echo off
-REM Builds TrafficAnalyzer, starts the server, and opens it in a browser.
+REM Builds TrafficAnalyzer and starts the server in THIS window (single
+REM process, foreground) so it's easy to stop: press Ctrl+C here, or close
+REM the window. If it ever gets left running detached (e.g. window closed
+REM without Ctrl+C), run stop.bat to force-kill it.
 REM
 REM Usage:
 REM   run.bat                 -> build, start server, open in default browser
@@ -29,41 +32,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Wait for the server to come up and open the browser, in a detached
+REM background helper (no window of its own) so it doesn't block this
+REM window from running the server itself in the foreground below.
+REM NOTE: open-browser.bat is a script, not a native exe, so it must be run
+REM via an explicit "cmd /c" - handing a bare .bat path to "start /b" relies
+REM on file-association ShellExecute, which can mis-parse the quoted path
+REM and throw "The filename, directory name, or volume label syntax is
+REM incorrect." (harmless, but noisy).
+start "" /b cmd /c call "%ROOT%open-browser.bat" "%URL%" "%BROWSER%"
+
 echo.
 echo === Starting server on %URL% ===
-start "TrafficAnalyzer Server" cmd /k "npm start"
-
+echo Press Ctrl+C to stop the server (or run stop.bat from another window).
 echo.
-echo Waiting for the server to become ready...
-set "READY=0"
-set "STATUS_FILE=%TEMP%\trafficanalyzer_status.txt"
-
-for /l %%i in (1,1,30) do (
-    curl -s -o NUL -w "%%{http_code}" "%URL%/api/cameras" > "!STATUS_FILE!" 2>nul
-    set /p STATUS=<"!STATUS_FILE!"
-    if "!STATUS!"=="200" (
-        set "READY=1"
-        goto :server_ready
-    )
-    timeout /t 1 /nobreak >nul
-)
-
-:server_ready
-if exist "!STATUS_FILE!" del "!STATUS_FILE!" >nul 2>nul
-
-if "!READY!"=="0" (
-    echo Server did not respond within 30 seconds - opening the browser anyway.
-) else (
-    echo Server is ready.
-)
-
-echo.
-if "%BROWSER%"=="" (
-    echo Opening default browser at %URL% ...
-    start "" "%URL%"
-) else (
-    echo Opening "%BROWSER%" at %URL% ...
-    start "" "%BROWSER%" "%URL%"
-)
+call npm start
 
 endlocal

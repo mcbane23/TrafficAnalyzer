@@ -49,4 +49,58 @@ describe('CameraService', () => {
 
     expect(result).toBeUndefined();
   });
+
+  it('rewrites the url to a same-origin proxy path and drops headers for cameras that need special request headers', async () => {
+    const entries = [
+      makeCamera({ id: 'vukov-spomenik', url: 'https://naxi.uzivokamere.com/vuk/index.m3u8', headers: { Referer: 'https://uzivokamere.com/' } }),
+    ];
+    const service = new CameraService(makeFakeSource(entries));
+
+    const [result] = await service.listCameras();
+
+    expect(result.url).toBe('/api/cameras/vukov-spomenik/stream/index.m3u8');
+    expect(result.headers).toBeUndefined();
+  });
+
+  it('leaves the url untouched for cameras with no configured headers', async () => {
+    const entries = [makeCamera({ id: 'brankov-most', url: 'https://streamer.devnet.rs/hls/brankov.m3u8' })];
+    const service = new CameraService(makeFakeSource(entries));
+
+    const result = await service.getCameraById('brankov-most');
+
+    expect(result?.url).toBe('https://streamer.devnet.rs/hls/brankov.m3u8');
+  });
+
+  it('leaves a plain alternateUrl untouched when it needs no special headers', async () => {
+    const entries = [
+      makeCamera({
+        id: 'autokomanda',
+        alternateUrl: 'https://srbija-nadlanu.ott.solutions/srbija-nadlanu/autokomanda/playlist.m3u8',
+        alternateSource: 'Informer.rs',
+      }),
+    ];
+    const service = new CameraService(makeFakeSource(entries));
+
+    const result = await service.getCameraById('autokomanda');
+
+    expect(result?.alternateUrl).toBe('https://srbija-nadlanu.ott.solutions/srbija-nadlanu/autokomanda/playlist.m3u8');
+  });
+
+  it('rewrites alternateUrl to a same-origin proxy path and drops alternateHeaders when the alternate needs special headers', async () => {
+    const entries = [
+      makeCamera({
+        id: 'vukov-spomenik',
+        alternateUrl: 'https://example.com/alt/index.m3u8',
+        alternateHeaders: { Referer: 'https://example.com/' },
+      }),
+    ];
+    const service = new CameraService(makeFakeSource(entries));
+
+    const [result] = await service.listCameras();
+
+    expect(result.alternateUrl).toBe('/api/cameras/vukov-spomenik/stream-alt/index.m3u8');
+    expect(result.alternateHeaders).toBeUndefined();
+    // The primary url has no headers of its own, so it's left untouched.
+    expect(result.url).toBe('https://example.com/stream.m3u8');
+  });
 });

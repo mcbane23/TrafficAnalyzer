@@ -1,0 +1,12 @@
+services:
+  trafficanalyzer:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+    volumes:
+      # Persist registry edits made by `docker compose run --rm trafficanalyzer npm run cameras:revalidate`,
+      # and TrafficHistoryStore's traffic-history.db (created on first run) across container recreation.
+      - ./data:/app/data
+    restart: unless-stopped

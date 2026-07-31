@@ -44,7 +44,7 @@ watch(
         <div class="lg:col-span-2">
           <StreamPlayer :camera="camera" />
         </div>
-        <AnalysisPanel />
+        <AnalysisPanel :camera="camera" />
       </div>
     </template>
   </main>

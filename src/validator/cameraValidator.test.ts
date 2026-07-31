@@ -131,4 +131,35 @@ describe('CameraValidator', () => {
 
     expect(runner).toHaveBeenCalledWith(expect.not.arrayContaining(['-rtsp_transport']), expect.any(Number));
   });
+
+  it('passes configured headers to ffprobe via -headers when set', async () => {
+    const runner = makeFakeRunner({
+      exitCode: 0,
+      stdout: JSON.stringify({ streams: [{ width: 640, height: 480 }] }),
+      stderr: '',
+      timedOut: false,
+    });
+    const validator = new CameraValidator({ probeRunner: runner, now: () => FIXED_NOW });
+
+    await validator.validate(makeCamera({ headers: { Referer: 'https://uzivokamere.com/' } }));
+
+    expect(runner).toHaveBeenCalledWith(
+      expect.arrayContaining(['-headers', 'Referer: https://uzivokamere.com/\r\n']),
+      expect.any(Number),
+    );
+  });
+
+  it('does not add the -headers flag when no headers are configured', async () => {
+    const runner = makeFakeRunner({
+      exitCode: 0,
+      stdout: JSON.stringify({ streams: [{ width: 640, height: 480 }] }),
+      stderr: '',
+      timedOut: false,
+    });
+    const validator = new CameraValidator({ probeRunner: runner, now: () => FIXED_NOW });
+
+    await validator.validate(makeCamera());
+
+    expect(runner).toHaveBeenCalledWith(expect.not.arrayContaining(['-headers']), expect.any(Number));
+  });
 });

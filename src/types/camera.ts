@@ -27,6 +27,30 @@ export interface CameraEntry {
   status: CameraStatus;
   lastVerifiedAt: string | null;
   lastError?: string | null;
+  /**
+   * Extra HTTP request headers required to fetch `url` (e.g. a `Referer`
+   * some providers require to defeat hotlink protection). When present,
+   * the validator sends these headers when probing the stream, and the
+   * web API exposes a same-origin proxy URL to the frontend instead of
+   * `url` directly, since browsers won't let a page forge a third-party
+   * Referer for its own requests.
+   */
+  headers?: Record<string, string>;
+  /**
+   * Optional backup stream URL covering the same location, used by the
+   * frontend player as a fallback if `url` fails to load.
+   */
+  alternateUrl?: string;
+  /**
+   * Provider/publisher of `alternateUrl`, e.g. 'Informer.rs (Srbija na
+   * dlanu network)'.
+   */
+  alternateSource?: string;
+  /**
+   * Extra HTTP request headers required to fetch `alternateUrl`,
+   * mirroring `headers` for the primary url.
+   */
+  alternateHeaders?: Record<string, string>;
 }
 
 /**
@@ -39,4 +63,23 @@ export interface ValidationResult {
   resolution?: string;
   latencyMs?: number;
   error?: string;
+}
+
+export type RevalidationState = 'idle' | 'running';
+
+/**
+ * Progress/outcome of a background "check all cameras" run, as reported by
+ * the server's revalidation endpoint and polled by the dashboard.
+ */
+export interface RevalidationStatus {
+  state: RevalidationState;
+  /** Total cameras in the current (or most recent) run. */
+  total: number;
+  /** Cameras checked so far in the current (or most recent) run. */
+  checked: number;
+  /** Cameras found active so far in the current (or most recent) run. */
+  active: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error?: string | null;
 }

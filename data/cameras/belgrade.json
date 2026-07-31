@@ -10,7 +10,7 @@
     "url": "https://streamer.devnet.rs/hls/brankov.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:54:44.458Z",
+    "lastVerifiedAt": "2026-07-31T07:58:03.338Z",
     "lastError": null
   },
   {
@@ -24,7 +24,7 @@
     "url": "https://streamer.devnet.rs/hls/ada.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:54:47.791Z",
+    "lastVerifiedAt": "2026-07-31T07:58:04.887Z",
     "lastError": null
   },
   {
@@ -38,8 +38,10 @@
     "url": "https://streamer.devnet.rs/hls/gazela.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:54:49.543Z",
-    "lastError": null
+    "lastVerifiedAt": "2026-07-31T07:58:05.995Z",
+    "lastError": null,
+    "alternateUrl": "https://srbija-nadlanu.ott.solutions/srbija-nadlanu/bip-pivara/playlist.m3u8",
+    "alternateSource": "Informer.rs (Srbija na dlanu / ott.solutions network)"
   },
   {
     "id": "pancevacki-most",
@@ -48,12 +50,15 @@
       "address": "Pančevački most, Belgrade"
     },
     "resolution": "704x576",
-    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
-    "url": "https://streamer.devnet.rs/hls/pancevac.m3u8",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
+    "url": "https://naxi.uzivokamere.com/pancevac/index.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:54:51.742Z",
-    "lastError": null
+    "lastVerifiedAt": "2026-07-31T07:58:07.113Z",
+    "lastError": null,
+    "headers": {
+      "Referer": "https://uzivokamere.com/"
+    }
   },
   {
     "id": "trg-nikole-pasica",
@@ -66,7 +71,7 @@
     "url": "https://streamer.devnet.rs/hls/trgnikole.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:54:53.646Z",
+    "lastVerifiedAt": "2026-07-31T07:58:09.556Z",
     "lastError": null
   },
   {
@@ -76,12 +81,15 @@
       "address": "Vukov spomenik, Belgrade"
     },
     "resolution": "704x576",
-    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
-    "url": "https://streamer.devnet.rs/hls/vuk.m3u8",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
+    "url": "https://naxi.uzivokamere.com/vuk/index.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:54:55.494Z",
-    "lastError": null
+    "lastVerifiedAt": "2026-07-31T07:58:10.661Z",
+    "lastError": null,
+    "headers": {
+      "Referer": "https://uzivokamere.com/"
+    }
   },
   {
     "id": "autokomanda",
@@ -94,8 +102,10 @@
     "url": "https://streamer.devnet.rs/hls/autokomanda.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:54:57.263Z",
-    "lastError": null
+    "lastVerifiedAt": "2026-07-31T07:58:12.995Z",
+    "lastError": null,
+    "alternateUrl": "https://srbija-nadlanu.ott.solutions/srbija-nadlanu/autokomanda/playlist.m3u8",
+    "alternateSource": "Informer.rs (Srbija na dlanu / ott.solutions network)"
   },
   {
     "id": "usce-mihajla-pupina",
@@ -108,7 +118,7 @@
     "url": "https://streamer.devnet.rs/hls/pupina.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:54:59.003Z",
+    "lastVerifiedAt": "2026-07-31T07:58:14.085Z",
     "lastError": null
   },
   {
@@ -122,7 +132,7 @@
     "url": "https://streamer.devnet.rs/hls/nemanjina.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:00.969Z",
+    "lastVerifiedAt": "2026-07-31T07:58:15.216Z",
     "lastError": null
   },
   {
@@ -132,12 +142,15 @@
       "address": "Takovska ulica, Belgrade"
     },
     "resolution": "704x576",
-    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
-    "url": "https://streamer.devnet.rs/hls/takovska.m3u8",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
+    "url": "https://naxi.uzivokamere.com/takovska/index.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:02.876Z",
-    "lastError": null
+    "lastVerifiedAt": "2026-07-31T07:58:16.456Z",
+    "lastError": null,
+    "headers": {
+      "Referer": "https://uzivokamere.com/"
+    }
   },
   {
     "id": "zeleznicka-stanica-savski-trg",
@@ -150,7 +163,7 @@
     "url": "https://streamer.devnet.rs/hls/zeleznicka.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:04.832Z",
+    "lastVerifiedAt": "2026-07-31T07:58:18.716Z",
     "lastError": null
   },
   {
@@ -164,7 +177,7 @@
     "url": "https://streamer.devnet.rs/hls/slavija.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:06.618Z",
+    "lastVerifiedAt": "2026-07-31T07:58:20.076Z",
     "lastError": null
   },
   {
@@ -178,7 +191,7 @@
     "url": "https://streamer.devnet.rs/hls/plavimost.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:08.317Z",
+    "lastVerifiedAt": "2026-07-31T07:58:21.556Z",
     "lastError": null
   },
   {
@@ -192,7 +205,7 @@
     "url": "https://streamer.devnet.rs/hls/trgrepublike.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:10.102Z",
+    "lastVerifiedAt": "2026-07-31T07:58:22.776Z",
     "lastError": null
   },
   {
@@ -202,12 +215,15 @@
       "address": "Bogoslovija kružni tok, Belgrade"
     },
     "resolution": "704x576",
-    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
-    "url": "https://streamer.devnet.rs/hls/bogoslovija.m3u8",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
+    "url": "https://naxi.uzivokamere.com/bogoslovija/index.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:12.088Z",
-    "lastError": null
+    "lastVerifiedAt": "2026-07-31T07:58:24.114Z",
+    "lastError": null,
+    "headers": {
+      "Referer": "https://uzivokamere.com/"
+    }
   },
   {
     "id": "kruzni-tok-novi-beograd",
@@ -220,7 +236,7 @@
     "url": "https://streamer.devnet.rs/hls/opstinanbg.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:14.262Z",
+    "lastVerifiedAt": "2026-07-31T07:58:26.723Z",
     "lastError": null
   },
   {
@@ -234,7 +250,7 @@
     "url": "https://streamer.devnet.rs/hls/genex.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:16.437Z",
+    "lastVerifiedAt": "2026-07-31T07:58:27.835Z",
     "lastError": null
   },
   {
@@ -248,8 +264,10 @@
     "url": "https://streamer.devnet.rs/hls/gagarina.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:19.092Z",
-    "lastError": null
+    "lastVerifiedAt": "2026-07-31T07:58:29.020Z",
+    "lastError": null,
+    "alternateUrl": "https://srbija-nadlanu.ott.solutions/srbija-nadlanu/jur1-gargarina/playlist.m3u8",
+    "alternateSource": "Informer.rs (Srbija na dlanu / ott.solutions network)"
   },
   {
     "id": "bulevar-despota-stefana",
@@ -258,12 +276,15 @@
       "address": "Bulevar despota Stefana, Belgrade"
     },
     "resolution": "704x576",
-    "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
-    "url": "https://streamer.devnet.rs/hls/despotastefana.m3u8",
+    "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
+    "url": "https://naxi.uzivokamere.com/despotastefana/index.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:21.252Z",
-    "lastError": null
+    "lastVerifiedAt": "2026-07-31T07:58:30.207Z",
+    "lastError": null,
+    "headers": {
+      "Referer": "https://uzivokamere.com/"
+    }
   },
   {
     "id": "pijaca-cveca",
@@ -276,7 +297,7 @@
     "url": "https://cam.okradio.net/streams/kamera1/stream.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:22.975Z",
+    "lastVerifiedAt": "2026-07-31T07:58:32.671Z",
     "lastError": null
   },
   {
@@ -290,7 +311,7 @@
     "url": "https://cam.okradio.net/streams/kamera2/stream.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:24.495Z",
+    "lastVerifiedAt": "2026-07-31T07:58:33.687Z",
     "lastError": null
   },
   {
@@ -304,7 +325,7 @@
     "url": "https://cam.okradio.net/streams/kamera3/stream.m3u8",
     "protocol": "HLS",
     "status": "active",
-    "lastVerifiedAt": "2026-07-24T10:55:25.961Z",
+    "lastVerifiedAt": "2026-07-31T07:58:34.930Z",
     "lastError": null
   },
   {
@@ -318,7 +339,7 @@
     "url": "https://rtsp.uzivokamere.com/borca/index.m3u8",
     "protocol": "HLS",
     "status": "inactive",
-    "lastVerifiedAt": "2026-07-24T10:55:27.410Z",
+    "lastVerifiedAt": "2026-07-31T07:58:35.860Z",
     "lastError": "https://rtsp.uzivokamere.com/borca/index.m3u8: Server returned 404 Not Found"
   }
 ]

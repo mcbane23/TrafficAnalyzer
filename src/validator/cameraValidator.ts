@@ -102,6 +102,12 @@ export class CameraValidator {
       // Prefer TCP for RTSP: more likely to traverse firewalls/NATs than the UDP default.
       args.push('-rtsp_transport', 'tcp');
     }
+    if (camera.headers && Object.keys(camera.headers).length > 0) {
+      const headerLines = Object.entries(camera.headers)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join('\r\n');
+      args.push('-headers', `${headerLines}\r\n`);
+    }
     args.push(camera.url);
     return args;
   }

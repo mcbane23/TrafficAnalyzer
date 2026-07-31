@@ -68,6 +68,27 @@
         "lastError": {
           "type": ["string", "null"],
           "description": "Reason the last validation attempt failed, if status is 'inactive'."
+        },
+        "headers": {
+          "type": "object",
+          "description": "Extra HTTP request headers required to fetch 'url' (e.g. a Referer some providers require to defeat hotlink protection).",
+          "additionalProperties": { "type": "string" }
+        },
+        "alternateUrl": {
+          "type": "string",
+          "description": "Optional backup stream URL covering the same location, used as a fallback if 'url' fails to load.",
+          "format": "uri",
+          "minLength": 1
+        },
+        "alternateSource": {
+          "type": "string",
+          "description": "Provider/publisher of 'alternateUrl', e.g. 'Informer.rs (Srbija na dlanu network)'.",
+          "minLength": 1
+        },
+        "alternateHeaders": {
+          "type": "object",
+          "description": "Extra HTTP request headers required to fetch 'alternateUrl', mirroring 'headers' for the primary url.",
+          "additionalProperties": { "type": "string" }
         }
       }
     }

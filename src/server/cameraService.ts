@@ -22,11 +22,43 @@ export class CameraService {
   constructor(private readonly source: CameraSource) {}
 
   async listCameras(): Promise<CameraEntry[]> {
-    return this.source.load();
+    const entries = await this.source.load();
+    return entries.map((entry) => this.toPublicCamera(entry));
   }
 
   async getCameraById(id: string): Promise<CameraEntry | undefined> {
     const entries = await this.source.load();
-    return entries.find((entry) => entry.id === id);
+    const entry = entries.find((e) => e.id === id);
+    return entry ? this.toPublicCamera(entry) : undefined;
+  }
+
+  /**
+   * Cameras that require special request headers (e.g. a `Referer` some
+   * providers enforce to defeat hotlink protection) can't be played
+   * directly by the frontend - browsers won't let a page forge a
+   * third-party Referer for its own requests. For those (and equally for
+   * an `alternateUrl` that needs its own headers), expose a same-origin
+   * proxy URL (served by `HlsProxyService`) instead of the raw upstream
+   * url, and drop `headers`/`alternateHeaders` from the public response
+   * since they're internal fetch details the client has no use for.
+   */
+  private toPublicCamera(entry: CameraEntry): CameraEntry {
+    const needsProxy = (headers?: Record<string, string>) => !!headers && Object.keys(headers).length > 0;
+    const primaryNeedsProxy = needsProxy(entry.headers);
+    const alternateNeedsProxy = needsProxy(entry.alternateHeaders);
+
+    if (!primaryNeedsProxy && !alternateNeedsProxy) {
+      return entry;
+    }
+
+    const { headers: _headers, alternateHeaders: _alternateHeaders, ...rest } = entry;
+    return {
+      ...rest,
+      url: primaryNeedsProxy ? `/api/cameras/${entry.id}/stream/index.m3u8` : entry.url,
+      alternateUrl:
+        entry.alternateUrl && alternateNeedsProxy
+          ? `/api/cameras/${entry.id}/stream-alt/index.m3u8`
+          : entry.alternateUrl,
+    };
   }
 }

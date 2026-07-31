@@ -23,9 +23,20 @@ camera feeds for congestion/incident detection and vehicle counting.
   "protocol": "HLS",                 // one of RTSP | HTTP | MJPEG | HLS
   "status": "active",                // "active" | "inactive"
   "lastVerifiedAt": "2026-07-24T10:27:14.375Z", // ISO-8601, or null if never validated
-  "lastError": null                  // reason the last validation failed, if inactive
+  "lastError": null,                 // reason the last validation failed, if inactive
+  "alternateUrl": null,              // optional backup stream covering the same location
+  "alternateSource": null,           // provider of alternateUrl, e.g. "Informer.rs (Srbija na dlanu network)"
+  "alternateHeaders": null           // extra headers alternateUrl needs, if any (mirrors "headers" for url)
 }
 ```
+
+Both `url` and `alternateUrl` can optionally have a matching `headers`/`alternateHeaders` object listing extra
+HTTP request headers a provider requires to serve the stream (e.g. a `Referer` some hotlink-protected relays
+enforce) - see `naxi.uzivokamere.com` entries in `belgrade.json` for an example. The frontend `StreamPlayer` and
+`CameraCard` preview automatically retry with `alternateUrl` once if `url` fails to load, and the web API
+transparently proxies through `/api/cameras/:id/stream(-alt)/:file` for whichever of the two needs special
+headers.
+
 
 ## Where the seed data comes from
 
