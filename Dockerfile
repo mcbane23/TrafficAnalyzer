@@ -26,9 +26,6 @@ RUN npm ci --omit=dev
 
 # Compiled server + frontend bundle.
 COPY --from=build /app/dist ./dist
-# Bundled ONNX vehicle-detection model (see src/analysis/onnxRunner.ts) -
-# shipped in the image so there's no runtime/first-boot download.
-COPY models ./models
 # Camera registry data, read/written by CameraRegistryStore at runtime -
 # mount this as a volume (see docker-compose.yml) to persist edits made by
 # `npm run cameras:revalidate`. Also holds traffic-history.db, the SQLite

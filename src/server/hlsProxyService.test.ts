@@ -88,6 +88,37 @@ describe('HlsProxyService', () => {
     expect(result).toBeNull();
   });
 
+  // The `file` value reaches this service from a URL path parameter that
+  // Express percent-decodes, so a caller can present it already containing
+  // slashes or a scheme. Resolving those would send the camera's configured
+  // headers (a provider Referer/token) to a host of the caller's choosing.
+  it.each([
+    ['an absolute http url', 'http://attacker.example/steal'],
+    ['an absolute https url', 'https://attacker.example/steal'],
+    ['a protocol-relative url', '//attacker.example/steal'],
+    ['a non-http scheme', 'file:///etc/passwd'],
+    ['an absolute path', '/other-camera/index.m3u8'],
+    ['a parent-directory traversal', '../private/index.m3u8'],
+    ['a nested traversal', 'a/../../private/index.m3u8'],
+    ['a backslash path', '..\\private\\index.m3u8'],
+    ['an empty file name', ''],
+  ])('returns null without fetching for %s', async (_label, file) => {
+    const fetcher = makeFakeFetcher({ status: 200, contentType: null, body: Buffer.from('') });
+    const service = new HlsProxyService(makeFakeSource([makeCamera()]), fetcher);
+
+    expect(await service.fetchResource('vukov-spomenik', file)).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('allows a segment in a subdirectory of the playlist', async () => {
+    const fetcher = makeFakeFetcher({ status: 200, contentType: 'video/mp2t', body: Buffer.from('segment') });
+    const service = new HlsProxyService(makeFakeSource([makeCamera()]), fetcher);
+
+    await service.fetchResource('vukov-spomenik', 'chunks/vuk-0.ts');
+
+    expect(fetcher).toHaveBeenCalledWith('https://naxi.uzivokamere.com/vuk/chunks/vuk-0.ts', expect.any(Object));
+  });
+
   it('returns null for the alternate variant when alternateUrl has no configured alternateHeaders', async () => {
     const camera = makeCamera({ alternateUrl: 'https://example.com/alt/index.m3u8', alternateHeaders: undefined });
     const service = new HlsProxyService(makeFakeSource([camera]), makeFakeFetcher({ status: 200, contentType: null, body: Buffer.from('') }));

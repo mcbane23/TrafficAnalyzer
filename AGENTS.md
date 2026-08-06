@@ -2,8 +2,8 @@
 
 TrafficAnalyzer detects traffic congestion and vehicle counts from live Belgrade camera feeds.
 Currently implemented: a validated camera registry, CLI revalidation tooling, a web dashboard for
-browsing/watching cameras, and a real-time vehicle-detection/traffic-analysis pipeline (local ONNX
-model, SQLite history, SSE push to the frontend).
+browsing/watching cameras, and a real-time traffic-analysis pipeline (background-subtraction motion
+detection, SQLite history, SSE push to the frontend).
 
 Background/requirements: [docs/prd/belgrade-camera-registry.md](docs/prd/belgrade-camera-registry.md)
 (registry + validator), [docs/prd/camera-dashboard-web-app.md](docs/prd/camera-dashboard-web-app.md)
@@ -31,22 +31,35 @@ colocated `*.test.ts`:
 | `CameraService` | [src/server/cameraService.ts](src/server/cameraService.ts) | Yes — mocks the `CameraSource` seam (`CameraRegistryStore`) |
 | `RevalidationService` | [src/server/revalidationService.ts](src/server/revalidationService.ts) | Yes — mocks the `CameraRegistryWriter`/`CameraValidatorLike` seams |
 | `HlsProxyService` | [src/server/hlsProxyService.ts](src/server/hlsProxyService.ts) | Yes — mocks the `CameraSource`/fetcher (`ResourceFetcher`) seams |
+| `SseChannel` | [src/server/sseChannel.ts](src/server/sseChannel.ts) | Yes — against a fake request/response plus an injectable `SseTimer` |
 | `FrameGrabber` | [src/analysis/frameGrabber.ts](src/analysis/frameGrabber.ts) | Yes — mocks the `FfmpegRunner`/`FfmpegStreamRunner` seams (see [ffmpegRunner.ts](src/analysis/ffmpegRunner.ts)) |
-| `VehicleDetector` | [src/analysis/vehicleDetector.ts](src/analysis/vehicleDetector.ts) | Yes — mocks the `InferenceRunner` seam (see [onnxRunner.ts](src/analysis/onnxRunner.ts)) |
-| `VehicleColorEstimator` | [src/analysis/vehicleColorEstimator.ts](src/analysis/vehicleColorEstimator.ts) | No — best-effort/cosmetic, low-risk (explicit PRD call-out) |
+| `BackgroundModel` | [src/analysis/backgroundModel.ts](src/analysis/backgroundModel.ts) | Yes — injects a fake `LumaExtractor` over synthetic pixel data, no real image decoding |
+| `MotionDetector` | [src/analysis/motionDetector.ts](src/analysis/motionDetector.ts) | Yes — same, through the `BackgroundModel` it wraps |
+| `VehicleTracker` | [src/analysis/vehicleTracker.ts](src/analysis/vehicleTracker.ts) | Yes — pure IoU-matching logic, no injectable seam needed |
+| `OccupancyEstimator` | [src/analysis/occupancyEstimator.ts](src/analysis/occupancyEstimator.ts) | Yes — same, through the `BackgroundModel` it wraps |
+| `CameraAnalyzer` | [src/analysis/cameraAnalyzer.ts](src/analysis/cameraAnalyzer.ts) | Yes — injects a fake detector/tracker/occupancy estimator; canned detections in, a result out |
+| `VehicleColorEstimator` | [src/analysis/vehicleColorEstimator.ts](src/analysis/vehicleColorEstimator.ts) | No — best-effort/cosmetic, low-risk (explicit PRD call-out). Currently unwired, see below |
 | `TrafficHistoryStore` | [src/analysis/trafficHistoryStore.ts](src/analysis/trafficHistoryStore.ts) | Yes — against a real in-memory (`:memory:`) SQLite DB, not mocked |
-| `TrafficAnalysisService` | [src/analysis/trafficAnalysisService.ts](src/analysis/trafficAnalysisService.ts) | Yes — mocks `FrameGrabberLike`/`VehicleDetectorLike`/`VehicleColorEstimatorLike`/`TrafficHistoryStoreLike`/`AnalysisScheduler` |
-| Express app / routes | [src/server/app.ts](src/server/app.ts) | No — thin wiring around `CameraService`/`RevalidationService`/`HlsProxyService`/`TrafficAnalysisService` |
+| `TrafficAnalysisService` | [src/analysis/trafficAnalysisService.ts](src/analysis/trafficAnalysisService.ts) | Yes — mocks `FrameGrabberLike`/`CameraAnalyzerLike`/`TrafficHistoryStoreLike`/`AnalysisScheduler` |
+| Express app / routes | [src/server/app.ts](src/server/app.ts) | No — thin wiring around `CameraService`/`RevalidationService`/`HlsProxyService`/`SseChannel`/`TrafficAnalysisService` |
 | Revalidate CLI | [src/cli/revalidate.ts](src/cli/revalidate.ts) | No — thin orchestrator |
 
 Rule of thumb: new logic worth testing goes in a deep module with an injectable seam (constructor
 option, e.g. `probeRunner`/`now`/`source`); route handlers and CLI entrypoints stay thin wiring and
 don't get tests. Follow [src/validator/cameraValidator.test.ts](src/validator/cameraValidator.test.ts)
 as the reference pattern for new tests (inject a fake for the single external dependency, assert on
-the returned result shape). `TrafficAnalysisService` is the largest example of this: it takes five
-injectable seams (frame grab, detect, color-estimate, history store, and a `setTimeout`/`clearTimeout`
-`AnalysisScheduler`) so scheduling/boosting/concurrency-capping/traffic-level logic can be asserted
-deterministically without spawning ffmpeg, loading the ONNX model, or waiting on real timers — see
+the returned result shape).
+
+A corollary that has bitten this codebase: **if a file exempted from tests as "thin wiring" starts
+accumulating real logic, extract that logic into a module rather than leaving it untested by
+default.** `SseChannel` exists for exactly this reason — heartbeat lifecycle, socket-timeout
+disabling and write-after-close guarding all lived in `app.ts` under that exemption.
+
+`TrafficAnalysisService` is the largest example of the injectable-seam pattern: it takes three
+seams (frame grab, a per-camera `createAnalyzer` factory, history store) plus a
+`setTimeout`/`clearTimeout` `AnalysisScheduler`, so scheduling/boosting/concurrency-capping/fan-out
+logic can be asserted deterministically without spawning ffmpeg, running real background
+subtraction, or waiting on real timers — see
 [src/analysis/trafficAnalysisService.test.ts](src/analysis/trafficAnalysisService.test.ts)'s
 `makeFakeScheduler()` (records `{fn, ms}` per `setTimeout` call, exposes `fire(index)` to await one
 tick to completion).
@@ -102,38 +115,73 @@ precedent for Vue components.
 
 ## Vehicle traffic analysis feature
 
-- Detection is local-only: `VehicleDetector` wraps a bundled YOLOv8n ONNX model
-  (`models/yolov8n.onnx`, ~12MB, committed to git — see `onnxRunner.ts`'s `BUNDLED_MODEL_PATH`) run
-  in-process via `onnxruntime-node`. No cloud API, no runtime download, no separate process.
-  `FrameGrabber` supports two capture modes against ffmpeg (`@ffmpeg-installer/ffmpeg`, the same
-  bundled-binary pattern as `@ffprobe-installer/ffprobe`): a one-off mode (spawn, wait for exit,
-  return one frame — used for the ~10s background tick) and a streaming mode (`{ streaming: true }`
-  — used for boosted ticks), which keeps a single long-running ffmpeg process per camera decoding at
-  a fixed low fps (`streamFps`, default 3) and hands back whatever frame it most recently finished
-  decoding. Re-spawning ffmpeg per tick (full HLS reconnect: playlist + segment fetch) was too slow
-  to hit the boosted ~2fps target in practice — streaming mode is what actually makes multiple
-  bounding-box updates per second achievable. `TrafficAnalysisService` starts the persistent stream
-  implicitly on the first boosted `grabFrame(camera, { streaming: true })` call and tears it down via
-  `frameGrabber.stopStreaming(cameraId)` when the last `subscribeCameraDetail` subscriber for that
-  camera disconnects (and on `stop()`), so idle cameras don't keep an ffmpeg process running forever.
-  Both modes reuse the same header-forwarding logic `CameraValidator`/`HlsProxyService` already use
-  for cameras needing a special `Referer`.
-- The pretrained COCO model has no dedicated "tram" class — `VehicleDetector`'s
-  `COCO_TO_VEHICLE_CLASS` maps COCO's `train` class to `'tram'` as an accepted approximation for
-  Belgrade's tram network (not a bug; revisit if a fine-tuned model ever becomes available). COCO's
-  `bicycle` also maps to `'motorcycle'` (displayed as "Motorcycle/Bicycle" in the UI).
-- `TrafficAnalysisService` is the orchestrator: one background tick per `active` camera (~10s
-  interval, inactive cameras are skipped entirely), boosted to ~500ms while a camera has at least
-  one `subscribeCameraDetail` subscriber (i.e. its detail page is open), all inference work capped
-  by a small concurrency pool (`maxConcurrency`, default 3) with the rest queued. Traffic-level
-  (`light`/`moderate`/`heavy`) is derived from a tunable total-count threshold — exact numbers are
-  an internal implementation detail, not a fixed spec.
+- **Per-camera state lives in one `CameraAnalyzer` instance, not in parallel maps.** An analyzer
+  owns one camera's detector, tracker, occupancy estimator and traffic-level derivation, behind
+  `analyze(frame, timestamp) -> CameraAnalysisResult`. All of those describe a single fixed
+  viewpoint, are meaningless shared across cameras, and must be discarded together — so they have
+  one lifetime: built per active camera in `TrafficAnalysisService.start()`, released in `stop()`.
+  Add a new per-camera signal here, not as another `Map<cameraId, …>` on the service.
+- `MotionDetector` and `OccupancyEstimator` are both built on `BackgroundModel`, which owns the
+  per-pixel adaptive background, the seed-from-first-frame warmup, selective (slow) adaptation
+  where something is present, and the long-run activity band that identifies roadway. They still
+  hold **separate instances** per camera — their tuning genuinely differs (working resolution, and
+  how long a stopped vehicle keeps being reported via `foregroundLearningRate`) — but there is only
+  one implementation of the model itself. `BackgroundModel.observe(frame)` returns a foreground
+  mask plus a roadway mask; reducing that to a ratio is `OccupancyEstimator`'s job, grouping it into
+  blobs is `MotionDetector`'s.
+- Detection is local-only and no longer classifies vehicle type: `MotionDetector` groups the
+  foreground pixels `BackgroundModel` reports into connected-component blobs, and surfaces every
+  blob as a single generic `'vehicle'` class (see `VehicleClass` in `types/analysis.ts`). This
+  replaced an earlier YOLOv8n/ONNX appearance-based classifier: on this camera fleet, vehicles are
+  small, oblique, motion-blurred and heavily compressed, and appearance classification degraded
+  worst on precisely the vehicles that were moving — a difference-from-background signal doesn't
+  care what the object looks like, only that it's there and the background isn't, so it stays
+  reliable where classification didn't. Selective background adaptation (`foregroundLearningRate`,
+  much slower than `learningRate`) means a vehicle stopped at a light or in a jam keeps being
+  reported for a while after it stops moving rather than disappearing the instant it's stationary —
+  a genuinely parked vehicle still eventually fades out of the count, just slower.
+- `FrameGrabber` offers two capture modes against ffmpeg (`@ffmpeg-installer/ffmpeg`, the same
+  bundled-binary pattern as `@ffprobe-installer/ffprobe`), as **two methods, not one method with a
+  mode flag** — they differ in lifetime, not just behaviour. `grabFrame(camera)` spawns a process,
+  waits for exit and returns one frame (used for a camera's single background pass).
+  `openCapture(camera)` returns a `FrameCapture` (`next()` / `close()`) backed by a long-running
+  ffmpeg decoding at a fixed low fps (`streamFps`, default 6), used for boosted ticks — re-spawning
+  per tick (full HLS reconnect: playlist + segment fetch) was far too slow to hit multiple
+  bounding-box updates per second. `TrafficAnalysisService` holds the capture on that camera's tick
+  state and closes it when the last `subscribeCameraDetail` subscriber disconnects (and on
+  `stop()`), so idle cameras don't keep an ffmpeg process running. Holding the object is what makes
+  that impossible to forget: there is no stop-by-id call to remember, and no optional member on the
+  seam a test fake can skip. A capture respawns its process transparently if ffmpeg dies mid-stream,
+  but stays closed once `close()` is called. Both modes reuse the same header-forwarding logic
+  `CameraValidator`/`HlsProxyService` already use for cameras needing a special `Referer`.
+- `TrafficAnalysisService` is the orchestrator, and only that: scheduling, boosting, the concurrency
+  pool, persistence and subscriber fan-out. One background tick per `active` camera (inactive
+  cameras are skipped entirely), boosted while a camera has at least one `subscribeCameraDetail`
+  subscriber (i.e. its detail page is open), all work capped by a small concurrency pool
+  (`maxConcurrency`, default 6) with the rest queued. It does not know how a frame becomes a result
+  — that's `CameraAnalyzer`. Traffic-level (`light`/`moderate`/`heavy`) is derived primarily from
+  roadway occupancy (see `OccupancyEstimator`), falling back to a tunable total-count threshold
+  while occupancy is still warming up — exact numbers are an internal implementation detail, not a
+  fixed spec.
+- `VehicleColorEstimator` is currently **unwired** — nothing constructs or calls it. Per-detection
+  crop+resize cost, compounding with detection count, slowed every tick down for a field nothing
+  needed yet. It's kept on disk because re-enabling it is a one-line change inside
+  `CameraAnalyzer.analyze` (map raw detections through `estimateColor`); it is deliberately not
+  passed around as an injected-but-unused seam.
+- A failed tick (capture or detection) is **published but never persisted**: its zeroed count and
+  `light` badge describe a broken feed, not an empty road, and writing those to history would show
+  up in the trend view as genuine quiet traffic. Live subscribers still get it, because a viewer
+  needs to know the feed is broken.
 - Results are pushed to the browser via Server-Sent Events, not polled: `GET /api/analysis/stream`
   (dashboard-wide overview) and `GET /api/cameras/:id/analysis/stream` (per-camera full detail —
   opening this connection is literally what triggers the sampling-rate boost; closing it reverts).
   `GET /api/analysis/latest` and `GET /api/cameras/:id/analysis/history` back the initial
-  bootstrap/trend-view REST calls. All four routes are thin wiring in `app.ts`'s `startSse`/
-  `writeSseEvent` helpers plus direct calls into `TrafficAnalysisService` — no business logic there.
+  bootstrap/trend-view REST calls. All four routes are thin wiring in `app.ts`: the two SSE routes
+  open an `SseChannel` (which owns the headers, the disabled socket timeout, the keep-alive
+  heartbeat and the write-after-close guards, and unsubscribes + tears itself down when the request
+  closes) and the rest call straight into `TrafficAnalysisService`. The history route passes
+  `?limit=` through uncoerced on purpose — bounding it is `TrafficHistoryStore.normalizeLimit`'s
+  job, and it has to do it for any other caller anyway.
 - Persistence: `TrafficHistoryStore` (better-sqlite3) writes every result to
   `data/traffic-history.db` (gitignored, runtime-generated, retained indefinitely — no pruning in
   this PRD), consistent with the project's "no separate database server" approach already used for

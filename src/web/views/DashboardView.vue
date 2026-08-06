@@ -96,28 +96,28 @@ onBeforeUnmount(() => {
   <main class="mx-auto max-w-6xl px-4 py-8">
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-bold text-slate-900">Belgrade Traffic Cameras</h1>
-        <p class="mt-1 text-sm text-slate-500">{{ cameras.length }} camera(s) in the registry</p>
+        <h1 class="text-2xl font-bold text-slate-100">Belgrade Traffic Cameras</h1>
+        <p class="mt-1 text-sm text-slate-400">{{ cameras.length }} camera(s) in the registry</p>
       </div>
       <div class="flex flex-col items-end gap-1">
         <button
           type="button"
           :disabled="checking"
           @click="runAvailabilityCheck"
-          class="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          class="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
         >
-          <span v-if="checking" class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"></span>
+          <span v-if="checking" class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-900/30 border-t-slate-900"></span>
           {{ checking ? 'Checking availability…' : 'Check availability' }}
         </button>
-        <p v-if="checking && checkProgress" class="text-xs text-slate-500">
+        <p v-if="checking && checkProgress" class="text-xs text-slate-400">
           {{ checkProgress.checked }} / {{ checkProgress.total }} checked ({{ checkProgress.active }} active)
         </p>
-        <p v-if="checkError" class="text-xs text-red-600">{{ checkError }}</p>
+        <p v-if="checkError" class="text-xs text-red-400">{{ checkError }}</p>
       </div>
     </div>
 
-    <p v-if="loading" class="mt-8 text-sm text-slate-500">Loading cameras…</p>
-    <p v-else-if="error" class="mt-8 text-sm text-red-600">{{ error }}</p>
+    <p v-if="loading" class="mt-8 text-sm text-slate-400">Loading cameras…</p>
+    <p v-else-if="error" class="mt-8 text-sm text-red-400">{{ error }}</p>
     <div v-else class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
       <CameraCard v-for="camera in cameras" :key="camera.id" :camera="camera" :overview="overviewByCameraId.get(camera.id)" />
     </div>

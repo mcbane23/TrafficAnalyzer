@@ -1,12 +1,11 @@
 import { TrafficHistoryStore } from './trafficHistoryStore';
-import { StoredAnalysisResult, emptyClassCounts } from '../types/analysis';
+import { StoredAnalysisResult } from '../types/analysis';
 
 function makeResult(overrides: Partial<StoredAnalysisResult> = {}): StoredAnalysisResult {
   return {
     cameraId: 'cam-1',
     timestamp: '2026-01-01T00:00:00.000Z',
     totalCount: 3,
-    countsByClass: { ...emptyClassCounts(), car: 3 },
     trafficLevel: 'light',
     ...overrides,
   };
@@ -85,10 +84,20 @@ describe('TrafficHistoryStore', () => {
     expect(history.map((r) => r.totalCount)).toEqual([3, 4]);
   });
 
-  it('round-trips countsByClass as a full per-class breakdown', () => {
-    const result = makeResult({ countsByClass: { car: 2, bus: 1, truck: 0, tram: 0, motorcycle: 1 } });
-    store.record(result);
+  // A non-numeric limit binds as SQL NULL, which SQLite reads as "no limit",
+  // so an unparseable `?limit=` would otherwise return the entire history.
+  it.each([
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['zero', 0],
+    ['negative', -5],
+    ['above the maximum', 10_000],
+  ])('getHistory clamps a %s limit instead of falling back to an unbounded query', (_label, limit) => {
+    for (let i = 0; i < 5; i++) {
+      store.record(makeResult({ timestamp: `2026-01-01T00:00:0${i}.000Z`, totalCount: i }));
+    }
 
-    expect(store.getHistory('cam-1')[0].countsByClass).toEqual({ car: 2, bus: 1, truck: 0, tram: 0, motorcycle: 1 });
+    expect(store.getHistory('cam-1', { limit }).length).toBeGreaterThan(0);
+    expect(store.getHistory('cam-1', { limit }).length).toBeLessThanOrEqual(5);
   });
 });

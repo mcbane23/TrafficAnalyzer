@@ -19,6 +19,9 @@ export interface CameraValidatorLike {
   validate(camera: CameraEntry): Promise<ValidationResult>;
 }
 
+/** Cameras probed simultaneously during a run. Each probe is mostly network wait, so a few at once is comfortable. */
+const DEFAULT_CONCURRENCY = 5;
+
 const IDLE_STATUS: RevalidationStatus = {
   state: 'idle',
   total: 0,
@@ -42,12 +45,17 @@ const IDLE_STATUS: RevalidationStatus = {
  */
 export class RevalidationService {
   private status: RevalidationStatus = { ...IDLE_STATUS };
+  private readonly concurrency: number;
 
   constructor(
     private readonly store: CameraRegistryWriter,
     private readonly validator: CameraValidatorLike,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+    /** How many cameras are probed at once. Defaults to 5. */
+    concurrency: number = DEFAULT_CONCURRENCY,
+  ) {
+    this.concurrency = Math.max(1, Math.floor(concurrency));
+  }
 
   getStatus(): RevalidationStatus {
     return { ...this.status };
@@ -87,20 +95,47 @@ export class RevalidationService {
     const entries = await this.store.load();
     this.status.total = entries.length;
 
-    for (const entry of entries) {
-      const result = await this.validator.validate(entry);
-      entry.status = result.status;
-      entry.lastVerifiedAt = result.checkedAt;
-      entry.lastError = result.error ?? null;
-      if (result.resolution) {
-        entry.resolution = result.resolution;
-      }
+    // Each check is an ffprobe process waiting on a remote stream, so the run
+    // is almost entirely idle time. Checking one at a time made a full pass
+    // take up to (cameras x timeout) - minutes for the current registry, with
+    // the dashboard's progress bar crawling for all of it. A small pool keeps
+    // that bounded without spawning a process per camera at once.
+    let nextIndex = 0;
+    let failure: unknown = null;
 
-      this.status.checked += 1;
-      if (result.status === 'active') {
-        this.status.active += 1;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        // A failure elsewhere aborts the whole run (nothing is persisted), so
+        // stop claiming work rather than leaving probes running past the end
+        // of a run that has already been reported as finished.
+        if (failure !== null) return;
+        const index = nextIndex++;
+        if (index >= entries.length) return;
+        const entry = entries[index];
+
+        try {
+          const result = await this.validator.validate(entry);
+          entry.status = result.status;
+          entry.lastVerifiedAt = result.checkedAt;
+          entry.lastError = result.error ?? null;
+          if (result.resolution) {
+            entry.resolution = result.resolution;
+          }
+
+          this.status.checked += 1;
+          if (result.status === 'active') {
+            this.status.active += 1;
+          }
+        } catch (err) {
+          failure = err;
+          return;
+        }
       }
-    }
+    };
+
+    const workerCount = Math.min(this.concurrency, Math.max(1, entries.length));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    if (failure !== null) throw failure;
 
     await this.store.save(entries);
     this.status.state = 'idle';

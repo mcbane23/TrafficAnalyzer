@@ -4,16 +4,15 @@
  */
 
 /**
- * Vehicle classes surfaced by this feature. The pretrained COCO detection
- * model has no dedicated "tram" class - its "train" class is used as a
- * stand-in and labeled "tram" here, an accepted approximation for
- * Belgrade's tram network (see VehicleDetector's COCO_TO_VEHICLE_CLASS).
- * "motorcycle" also covers COCO's "bicycle" class (displayed as
- * "Motorcycle/Bicycle" in the UI).
+ * Detection no longer classifies vehicle type (see MotionDetector): low
+ * resolution and motion blur make appearance-based classification
+ * unreliable for moving traffic, so every moving object is surfaced as a
+ * single generic class instead. Kept as a type (rather than dropping the
+ * field outright) so `VehicleDetection`/`VehicleTracker` keep a stable
+ * shape and a real discriminant, in case a distinct class is ever
+ * reintroduced.
  */
-export type VehicleClass = 'car' | 'bus' | 'truck' | 'tram' | 'motorcycle';
-
-export const VEHICLE_CLASSES: readonly VehicleClass[] = ['car', 'bus', 'truck', 'tram', 'motorcycle'];
+export type VehicleClass = 'vehicle';
 
 export type TrafficLevel = 'light' | 'moderate' | 'heavy';
 
@@ -25,9 +24,15 @@ export interface BoundingBox {
   height: number;
 }
 
-/** A single detected vehicle, as surfaced to consumers of VehicleDetector/TrafficAnalysisService. */
+/** A single detected moving object, as surfaced to consumers of MotionDetector/TrafficAnalysisService. */
 export interface VehicleDetection {
   class: VehicleClass;
+  /**
+   * Best-effort confidence (0-1) that this is a genuine moving vehicle
+   * rather than noise, derived from the detected blob's shape (see
+   * MotionDetector) rather than a calibrated model score - there is no
+   * classifier in the loop any more.
+   */
   confidence: number;
   box: BoundingBox;
   /** Best-effort dominant color name for the detected vehicle (e.g. "silver"). Omitted if color estimation failed. */
@@ -38,21 +43,9 @@ export interface VehicleDetection {
    * frontend can render a consistent color per vehicle and follow individual
    * vehicles across frames instead of every tick looking like brand new,
    * unrelated boxes. Omitted only for results produced before tracking is
-   * applied (e.g. raw VehicleDetector output in tests).
+   * applied (e.g. raw MotionDetector output in tests).
    */
   trackId?: number;
-}
-
-/** Raw output of the underlying detection model, before class-mapping/confidence filtering by VehicleDetector. */
-export interface RawModelDetection {
-  /** COCO class id (0-indexed, standard 80-class order). */
-  classId: number;
-  confidence: number;
-  box: BoundingBox;
-}
-
-export function emptyClassCounts(): Record<VehicleClass, number> {
-  return { car: 0, bus: 0, truck: 0, tram: 0, motorcycle: 0 };
 }
 
 /** Full per-tick analysis result for a single camera, delivered over its per-camera SSE stream. */
@@ -60,9 +53,15 @@ export interface CameraAnalysisResult {
   cameraId: string;
   timestamp: string;
   totalCount: number;
-  countsByClass: Record<VehicleClass, number>;
   trafficLevel: TrafficLevel;
   detections: VehicleDetection[];
+  /**
+   * Share (0-1) of the camera's learned roadway currently covered by
+   * vehicles, measured independently of detection - this is what drives
+   * `trafficLevel`. Omitted while the estimator is warming up on a newly
+   * started camera, or when it cannot identify a roadway region.
+   */
+  occupancy?: number;
   /** Present when frame capture or detection failed for this tick; other fields are zeroed/defaulted. */
   error?: string;
 }
@@ -73,6 +72,8 @@ export interface CameraAnalysisOverview {
   timestamp: string;
   totalCount: number;
   trafficLevel: TrafficLevel;
+  /** Roadway occupancy behind `trafficLevel` - see CameraAnalysisResult.occupancy. */
+  occupancy?: number;
   error?: string;
 }
 
@@ -81,6 +82,5 @@ export interface StoredAnalysisResult {
   cameraId: string;
   timestamp: string;
   totalCount: number;
-  countsByClass: Record<VehicleClass, number>;
   trafficLevel: TrafficLevel;
 }

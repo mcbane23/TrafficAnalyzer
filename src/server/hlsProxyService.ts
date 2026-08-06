@@ -69,7 +69,57 @@ export class HlsProxyService {
       return null;
     }
 
-    const upstreamUrl = new URL(file, baseUrl).toString();
+    const upstreamUrl = resolveUpstreamUrl(baseUrl, file);
+    if (!upstreamUrl) {
+      return null;
+    }
+
     return this.fetcher(upstreamUrl, headers);
   }
+}
+
+/**
+ * Resolves a requested file against the camera's upstream playlist URL,
+ * returning null if it doesn't resolve to a sibling of that playlist.
+ *
+ * This check is load-bearing, not defensive tidiness: `file` comes
+ * straight from a URL path parameter that Express percent-decodes, so
+ * without it a request for `http:%2F%2Fattacker.example%2Fx` would decode
+ * to an absolute URL, `new URL(file, baseUrl)` would honour it in place of
+ * the camera's own host, and this service would then send the camera's
+ * configured headers - which exist precisely because they carry a
+ * provider-specific `Referer`/token - to a host of the caller's choosing,
+ * returning the response body to them as well. The same decoding makes
+ * `..%2F..%2F` traversal to unrelated paths on the real upstream host
+ * possible.
+ *
+ * Only plain relative names are accepted, and the resolved URL must still
+ * sit on the playlist's own origin and within its directory. That matches
+ * what a real HLS client asks for anyway: hls.js resolves segment names
+ * from the proxied playlist against our proxy route, whose `:file`
+ * parameter is a single path segment.
+ */
+function resolveUpstreamUrl(baseUrl: string, file: string): string | null {
+  if (file.length === 0 || file.length > 512) return null;
+  // Backslashes and NULs are normalized inconsistently across URL parsers; reject rather than reason about them.
+  if (file.includes('\\') || file.includes('\0')) return null;
+  // Absolute paths, protocol-relative URLs ("//host/x") and absolute URLs ("https://host/x") all escape the base.
+  if (file.startsWith('/') || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(file)) return null;
+  if (file.split('/').includes('..')) return null;
+
+  let base: URL;
+  let resolved: URL;
+  try {
+    base = new URL(baseUrl);
+    resolved = new URL(file, base);
+  } catch {
+    return null;
+  }
+
+  const baseDir = base.pathname.slice(0, base.pathname.lastIndexOf('/') + 1);
+  if (resolved.origin !== base.origin || !resolved.pathname.startsWith(baseDir)) {
+    return null;
+  }
+
+  return resolved.toString();
 }

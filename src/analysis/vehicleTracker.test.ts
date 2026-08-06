@@ -2,7 +2,7 @@ import { VehicleTracker } from './vehicleTracker';
 import { VehicleDetection } from '../types/analysis';
 
 function makeDetection(overrides: Partial<VehicleDetection> = {}): VehicleDetection {
-  return { class: 'car', confidence: 0.9, box: { x: 0.1, y: 0.1, width: 0.1, height: 0.1 }, ...overrides };
+  return { class: 'vehicle', confidence: 0.9, box: { x: 0.1, y: 0.1, width: 0.1, height: 0.1 }, ...overrides };
 }
 
 describe('VehicleTracker', () => {
@@ -23,21 +23,43 @@ describe('VehicleTracker', () => {
     expect(second.trackId).toBe(first.trackId);
   });
 
+  it('smooths a matched track toward the new detection instead of snapping straight to it', () => {
+    const tracker = new VehicleTracker();
+    const [first] = tracker.update([makeDetection({ box: { x: 0.1, y: 0.1, width: 0.1, height: 0.1 } })]);
+
+    const [second] = tracker.update([makeDetection({ box: { x: 0.13, y: 0.1, width: 0.1, height: 0.1 } })]);
+
+    expect(second.trackId).toBe(first.trackId);
+    // Default positionSmoothing (0.6) blends 60% of the way from the
+    // (stationary, since velocity starts at 0) predicted position toward
+    // the raw detection - the reported box lands between the two rather
+    // than snapping straight to the noisy per-frame blob.
+    expect(second.box.x).toBeCloseTo(0.118, 5);
+    expect(second.box.x).not.toBeCloseTo(0.13, 5);
+  });
+
+  it('predicts a steadily moving track forward so it keeps its id even after a missed detection', () => {
+    const tracker = new VehicleTracker({ maxMissedTicks: 2 });
+    // Establish a steady rightward velocity over a few consecutive matches.
+    tracker.update([makeDetection({ box: { x: 0, y: 0.1, width: 0.2, height: 0.2 } })]);
+    tracker.update([makeDetection({ box: { x: 0.06, y: 0.1, width: 0.2, height: 0.2 } })]);
+    const [third] = tracker.update([makeDetection({ box: { x: 0.12, y: 0.1, width: 0.2, height: 0.2 } })]);
+
+    tracker.update([]); // missed tick - the vehicle keeps moving off-camera-detector, box extrapolates forward instead of freezing.
+
+    // Reappears further along the same trajectory than its last confirmed
+    // box - matching still succeeds because the track's predicted position
+    // advanced during the miss instead of staying put.
+    const [reappeared] = tracker.update([makeDetection({ box: { x: 0.24, y: 0.1, width: 0.2, height: 0.2 } })]);
+
+    expect(reappeared.trackId).toBe(third.trackId);
+  });
+
   it('assigns a different id to a detection that does not sufficiently overlap the previous tick', () => {
     const tracker = new VehicleTracker();
     const [first] = tracker.update([makeDetection({ box: { x: 0.1, y: 0.1, width: 0.1, height: 0.1 } })]);
 
     const [second] = tracker.update([makeDetection({ box: { x: 0.8, y: 0.8, width: 0.1, height: 0.1 } })]);
-
-    expect(second.trackId).not.toBe(first.trackId);
-  });
-
-  it('does not match tracks of a different vehicle class even with full overlap', () => {
-    const tracker = new VehicleTracker();
-    const box = { x: 0.1, y: 0.1, width: 0.1, height: 0.1 };
-    const [first] = tracker.update([makeDetection({ class: 'car', box })]);
-
-    const [second] = tracker.update([makeDetection({ class: 'truck', box })]);
 
     expect(second.trackId).not.toBe(first.trackId);
   });

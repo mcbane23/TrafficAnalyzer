@@ -20,6 +20,13 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@types/better-sqlite3": "^7.6.13",
@@ -45,7 +52,6 @@
     "commander": "^15.0.0",
     "express": "^5.2.1",
     "hls.js": "^1.6.16",
-    "onnxruntime-node": "^1.27.0",
     "sharp": "^0.35.3",
     "vue": "^3.5.40",
     "vue-router": "^5.2.0"

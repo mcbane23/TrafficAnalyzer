@@ -21,7 +21,14 @@ for /l %%i in (1,1,30) do (
         set "READY=1"
         goto :ready
     )
-    timeout /t 1 /nobreak >nul
+    REM One-second pause between polls. `ping` rather than `timeout`, because
+    REM `timeout` aborts with "Input redirection is not supported" whenever
+    REM stdin isn't a real console - which is exactly the case when run.bat is
+    REM launched from a script, a CI job, or an editor's task runner. That
+    REM failure is silent here (output is discarded) and would turn this into a
+    REM busy loop, burning all 30 attempts in a moment and opening the browser
+    REM long before the server is up.
+    ping -n 2 127.0.0.1 >nul 2>nul
 )
 
 :ready

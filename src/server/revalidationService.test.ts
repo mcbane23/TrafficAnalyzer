@@ -112,6 +112,32 @@ describe('RevalidationService', () => {
     expect(service.getStatus().state).toBe('idle');
   });
 
+  it('checks cameras in parallel up to the configured concurrency', async () => {
+    const entries = Array.from({ length: 7 }, (_, i) => makeCamera({ id: `cam-${i}` }));
+    const store = makeFakeStore(entries);
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const validator: CameraValidatorLike = {
+      validate: jest.fn(async (camera: CameraEntry) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight -= 1;
+        return { cameraId: camera.id, status: 'active' as const, checkedAt: '2026-01-01T00:00:00.000Z' };
+      }),
+    };
+    const service = new RevalidationService(store, validator, () => new Date('2026-01-01T00:00:00.000Z'), 3);
+
+    service.start();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(maxInFlight).toBe(3);
+    expect(validator.validate).toHaveBeenCalledTimes(7);
+    expect(service.getStatus()).toMatchObject({ state: 'idle', total: 7, checked: 7, active: 7 });
+    expect(store.saved).toHaveLength(1);
+  });
+
   it('marks the run as idle with an error message if validation throws', async () => {
     const entries = [makeCamera({ id: 'a' })];
     const store = makeFakeStore(entries);

@@ -157,8 +157,9 @@ describe('FrameGrabber', () => {
     it('starts a persistent stream and resolves once the first frame is decoded', async () => {
       const { runner, stdout } = makeFakeStreamRunner();
       const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
 
-      const pending = grabber.grabFrame(makeCamera(), { streaming: true });
+      const pending = capture.next();
       stdout.emit('data', makeJpeg('frame-1'));
 
       const result = await pending;
@@ -166,49 +167,134 @@ describe('FrameGrabber', () => {
       expect(runner).toHaveBeenCalledTimes(1);
     });
 
-    it('reuses the same stream (does not re-spawn) across repeated calls for the same camera', async () => {
+    it('reuses the same stream (does not re-spawn), and waits for a genuinely new frame rather than re-serving an already-consumed one', async () => {
       const { runner, stdout } = makeFakeStreamRunner();
       const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
 
-      const first = grabber.grabFrame(makeCamera(), { streaming: true });
+      const first = capture.next();
       stdout.emit('data', makeJpeg('frame-1'));
       await first;
 
-      const second = await grabber.grabFrame(makeCamera(), { streaming: true });
-      expect(second).toEqual({ ok: true, buffer: makeJpeg('frame-1') });
+      // This is the regression this test guards: these HLS relays deliver
+      // video in bursts (a whole fetched segment decodes in under 100ms)
+      // separated by multi-second silent gaps with no new data at all. A
+      // call landing in that gap must wait for the next real frame, not
+      // instantly resolve with frame-1 again - re-serving it silently
+      // reproduced the exact same stale detection result for the entire
+      // gap in production, sometimes for 7+ seconds at a stretch.
+      let secondResolved = false;
+      const second = capture.next().then((r) => {
+        secondResolved = true;
+        return r;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(secondResolved).toBe(false);
+
+      stdout.emit('data', makeJpeg('frame-2'));
+      expect(await second).toEqual({ ok: true, buffer: makeJpeg('frame-2') });
       expect(runner).toHaveBeenCalledTimes(1);
     });
 
     it('returns the most recently decoded frame, not a stale earlier one', async () => {
       const { runner, stdout } = makeFakeStreamRunner();
       const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
 
-      const first = grabber.grabFrame(makeCamera(), { streaming: true });
+      const first = capture.next();
       stdout.emit('data', makeJpeg('frame-1'));
       await first;
 
       stdout.emit('data', makeJpeg('frame-2'));
-      const second = await grabber.grabFrame(makeCamera(), { streaming: true });
+      const second = await capture.next();
       expect(second).toEqual({ ok: true, buffer: makeJpeg('frame-2') });
     });
 
     it('assembles a JPEG frame split across multiple stdout data chunks', async () => {
       const { runner, stdout } = makeFakeStreamRunner();
       const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
       const jpeg = makeJpeg('split-frame');
 
-      const pending = grabber.grabFrame(makeCamera(), { streaming: true });
+      const pending = capture.next();
       stdout.emit('data', jpeg.subarray(0, 3));
       stdout.emit('data', jpeg.subarray(3));
 
       expect(await pending).toEqual({ ok: true, buffer: jpeg });
     });
 
+    it('discards leading bytes that are not part of a frame and still decodes the frame that follows', async () => {
+      const { runner, stdout } = makeFakeStreamRunner();
+      const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
+
+      const pending = capture.next();
+      stdout.emit('data', Buffer.from('not-a-jpeg-header'));
+      stdout.emit('data', makeJpeg('frame-1'));
+
+      expect(await pending).toEqual({ ok: true, buffer: makeJpeg('frame-1') });
+    });
+
+    it('decodes a frame whose start marker straddles two chunks', async () => {
+      const { runner, stdout } = makeFakeStreamRunner();
+      const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
+      const jpeg = makeJpeg('frame-1');
+
+      const pending = capture.next();
+      // First chunk ends mid-marker: trailing 0xff, with the 0xd8 in the next chunk.
+      stdout.emit('data', Buffer.concat([Buffer.from('junk'), jpeg.subarray(0, 1)]));
+      stdout.emit('data', jpeg.subarray(1));
+
+      expect(await pending).toEqual({ ok: true, buffer: jpeg });
+    });
+
+    // A burst is one fetched HLS segment's worth of frames, arriving within
+    // a single stdout chunk (or a handful of them) essentially all at once.
+    // Collapsing that to only the newest would throw away everything but
+    // one frame per segment fetch; queueing plays the burst back across
+    // successive calls instead.
+    it('serves frames from a single burst in arrival order across successive calls, rather than collapsing to only the newest', async () => {
+      const { runner, stdout } = makeFakeStreamRunner();
+      const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
+
+      const pending = capture.next();
+      stdout.emit('data', Buffer.concat([makeJpeg('frame-1'), makeJpeg('frame-2'), makeJpeg('frame-3')]));
+
+      expect(await pending).toEqual({ ok: true, buffer: makeJpeg('frame-1') });
+      expect(await capture.next()).toEqual({ ok: true, buffer: makeJpeg('frame-2') });
+      expect(await capture.next()).toEqual({ ok: true, buffer: makeJpeg('frame-3') });
+    });
+
+    it('drops the oldest queued frames once more than maxQueuedFrames arrive unconsumed, keeping the ones closest to live', async () => {
+      const { runner, stdout } = makeFakeStreamRunner();
+      const grabber = new FrameGrabber({ ffmpegStreamRunner: runner, maxQueuedFrames: 2 });
+      const capture = grabber.openCapture(makeCamera());
+
+      // Establish the stream and drain a warm-up frame first, so the burst
+      // below arrives with no waiter already pending to claim its first
+      // frame directly - otherwise all three would fit under the cap and
+      // the drop this test is checking for would never happen.
+      const warmup = capture.next();
+      stdout.emit('data', makeJpeg('warmup'));
+      await warmup;
+
+      // Nobody is waiting now, so all three of these frames would queue -
+      // only the newest `maxQueuedFrames` should survive the cap.
+      stdout.emit('data', Buffer.concat([makeJpeg('frame-1'), makeJpeg('frame-2'), makeJpeg('frame-3')]));
+
+      expect(await capture.next()).toEqual({ ok: true, buffer: makeJpeg('frame-2') });
+      expect(await capture.next()).toEqual({ ok: true, buffer: makeJpeg('frame-3') });
+    });
+
     it('uses -vf fps=<streamFps> instead of -frames:v 1 for streaming captures', async () => {
       const { runner, stdout } = makeFakeStreamRunner();
       const grabber = new FrameGrabber({ ffmpegStreamRunner: runner, streamFps: 4 });
+      const capture = grabber.openCapture(makeCamera({ url: 'https://example.com/live.m3u8' }));
 
-      const pending = grabber.grabFrame(makeCamera({ url: 'https://example.com/live.m3u8' }), { streaming: true });
+      const pending = capture.next();
       stdout.emit('data', makeJpeg('frame-1'));
       await pending;
 
@@ -221,36 +307,82 @@ describe('FrameGrabber', () => {
     it('resolves with a failure if the stream process exits before any frame is decoded', async () => {
       const { runner, fireExit } = makeFakeStreamRunner();
       const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
 
-      const pending = grabber.grabFrame(makeCamera(), { streaming: true });
+      const pending = capture.next();
       fireExit('ffmpeg stream exited with code 1');
 
       expect(await pending).toEqual({ ok: false, error: 'ffmpeg stream exited with code 1' });
     });
 
-    it('kills the underlying process and clears cached state when stopStreaming is called', async () => {
+    it('kills the underlying process when the capture is closed, and refuses to serve frames afterwards', async () => {
       const { runner, stdout, kill } = makeFakeStreamRunner();
       const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
 
-      const pending = grabber.grabFrame(makeCamera(), { streaming: true });
+      const pending = capture.next();
       stdout.emit('data', makeJpeg('frame-1'));
       await pending;
 
-      grabber.stopStreaming('cam-1');
+      capture.close();
       expect(kill).toHaveBeenCalledTimes(1);
 
-      // A subsequent streaming call for the same camera must start a fresh process, not reuse the killed one.
-      const restarted = grabber.grabFrame(makeCamera(), { streaming: true });
-      stdout.emit('data', makeJpeg('frame-2'));
-      expect(await restarted).toEqual({ ok: true, buffer: makeJpeg('frame-2') });
-      expect(runner).toHaveBeenCalledTimes(2);
+      // A closed capture stays closed - it must never quietly respawn the
+      // process its holder just asked to stop.
+      expect(await capture.next()).toEqual({ ok: false, error: 'capture closed' });
+      expect(runner).toHaveBeenCalledTimes(1);
     });
 
-    it('is a no-op when stopStreaming is called for a camera with no active stream', () => {
+    it('fails a pending next() when the capture is closed while it is waiting', async () => {
+      const { runner } = makeFakeStreamRunner();
+      const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
+
+      const pending = capture.next();
+      capture.close();
+
+      expect(await pending).toEqual({ ok: false, error: 'capture closed' });
+    });
+
+    it('close() is idempotent', () => {
+      const { runner, kill } = makeFakeStreamRunner();
+      const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
+
+      capture.next();
+      capture.close();
+      capture.close();
+
+      expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not spawn a process until the first frame is requested', () => {
       const { runner } = makeFakeStreamRunner();
       const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
 
-      expect(() => grabber.stopStreaming('unknown-cam')).not.toThrow();
+      grabber.openCapture(makeCamera());
+
+      expect(runner).not.toHaveBeenCalled();
+    });
+
+    // A network blip that kills ffmpeg mid-capture must not leave the
+    // capture permanently dead - its holder has no way to tell, and would
+    // otherwise sit on a broken stream until the viewer closed the page.
+    it('respawns transparently if the process dies mid-capture', async () => {
+      const { runner, stdout, fireExit } = makeFakeStreamRunner();
+      const grabber = new FrameGrabber({ ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
+
+      const pending = capture.next();
+      stdout.emit('data', makeJpeg('frame-1'));
+      await pending;
+
+      fireExit('ffmpeg stream exited with code 1');
+
+      const restarted = capture.next();
+      stdout.emit('data', makeJpeg('frame-2'));
+      expect(await restarted).toEqual({ ok: true, buffer: makeJpeg('frame-2') });
+      expect(runner).toHaveBeenCalledTimes(2);
     });
   });
 });

@@ -1,9 +1,10 @@
-import express, { Express, Response } from 'express';
+import express, { Express } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CameraService } from './cameraService';
 import { RevalidationService } from './revalidationService';
 import { HlsProxyService } from './hlsProxyService';
+import { SseChannel } from './sseChannel';
 import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
 
 /**
@@ -13,13 +14,16 @@ import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
  * check the `cameras:revalidate` CLI performs), an HLS proxy route for
  * cameras that need special request headers the browser can't send
  * itself, the vehicle-traffic-analysis routes (bootstrap + SSE streams +
- * history, all thin wiring over `TrafficAnalysisService`), plus (when a
- * built frontend is present) static file serving and an SPA fallback so
- * Vue Router's history-mode routes work on a hard refresh/direct link.
+ * history), plus (when a built frontend is present) static file serving
+ * and an SPA fallback so Vue Router's history-mode routes work on a hard
+ * refresh/direct link.
  *
- * This module is intentionally thin wiring around `CameraService`,
- * `RevalidationService`, `HlsProxyService`, and `TrafficAnalysisService` -
- * it has no logic worth unit testing beyond what's already covered there.
+ * This module is thin wiring around `CameraService`, `RevalidationService`,
+ * `HlsProxyService`, `SseChannel` and `TrafficAnalysisService` - it has no
+ * logic worth unit testing beyond what's already covered there. Keeping it
+ * that way is why `SseChannel` exists: everything it takes to hold a live
+ * stream open used to sit in this file, exempted from tests by that same
+ * rule.
  */
 export function createApp(
   cameraService: CameraService,
@@ -101,20 +105,23 @@ export function createApp(
 
   // Dashboard-wide SSE stream: lightweight count + traffic-level overview for every analyzed camera.
   app.get('/api/analysis/stream', (req, res) => {
-    startSse(res);
-    const unsubscribe = trafficAnalysisService.subscribeOverview((overview) => writeSseEvent(res, overview));
-    req.on('close', unsubscribe);
+    let unsubscribe = () => undefined as void;
+    const channel = SseChannel.open(req, res, () => unsubscribe());
+    unsubscribe = trafficAnalysisService.subscribeOverview((overview) => channel.send(overview));
   });
 
-  // Per-camera SSE stream: full detection results (counts, per-class breakdown, colors, boxes). Opening this
-  // connection is what boosts that camera's sampling rate - see TrafficAnalysisService.subscribeCameraDetail.
+  // Per-camera SSE stream: full detection results (count, occupancy, boxes). Opening this connection is what
+  // boosts that camera's sampling rate - see TrafficAnalysisService.subscribeCameraDetail.
   app.get('/api/cameras/:id/analysis/stream', (req, res) => {
-    startSse(res);
-    const unsubscribe = trafficAnalysisService.subscribeCameraDetail(req.params.id, (result) => writeSseEvent(res, result));
-    req.on('close', unsubscribe);
+    let unsubscribe = () => undefined as void;
+    const channel = SseChannel.open(req, res, () => unsubscribe());
+    unsubscribe = trafficAnalysisService.subscribeCameraDetail(req.params.id, (result) => channel.send(result));
   });
 
   app.get('/api/cameras/:id/analysis/history', (req, res) => {
+    // Passed through as-is: coercing and bounding the limit is
+    // `TrafficHistoryStore.normalizeLimit`'s job, and it has to do it anyway
+    // for any other caller.
     const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
     const sinceIso = typeof req.query.since === 'string' ? req.query.since : undefined;
     res.json(trafficAnalysisService.getHistory(req.params.id, { limit, sinceIso }));
@@ -137,15 +144,3 @@ export function createApp(
   return app;
 }
 
-/** Sends the headers that open a Server-Sent Events connection and flushes them immediately. */
-function startSse(res: Response): void {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
-}
-
-/** Writes a single SSE event carrying a JSON payload. */
-function writeSseEvent(res: Response, payload: unknown): void {
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}

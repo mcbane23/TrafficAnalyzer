@@ -7,9 +7,9 @@ import type { CameraAnalysisOverview, TrafficLevel } from '../../types/analysis'
 const props = defineProps<{ camera: CameraEntry; overview?: CameraAnalysisOverview }>();
 
 const TRAFFIC_BADGE_STYLES: Record<TrafficLevel, string> = {
-  light: 'bg-emerald-100 text-emerald-700',
-  moderate: 'bg-amber-100 text-amber-700',
-  heavy: 'bg-red-100 text-red-700',
+  light: 'bg-emerald-500/15 text-emerald-400',
+  moderate: 'bg-amber-500/15 text-amber-400',
+  heavy: 'bg-red-500/15 text-red-400',
 };
 
 const TRAFFIC_LABELS: Record<TrafficLevel, string> = {
@@ -37,11 +37,30 @@ const lastVerifiedLabel = computed(() => {
   return new Date(props.camera.lastVerifiedAt).toLocaleString();
 });
 
+// The dashboard's count/badge is a snapshot taken once when the server
+// started (or, if someone's actively viewing this camera's detail page
+// right now, whenever that live view last ticked) - not a continuously
+// refreshed reading (see TrafficAnalysisService's class docstring). Showing
+// when it was taken makes that explicit instead of implying a live count.
+const reportedAtLabel = computed(() => {
+  if (!props.overview) return null;
+  return new Date(props.overview.timestamp).toLocaleTimeString();
+});
+
 const previewVideo = ref<HTMLVideoElement | null>(null);
 const previewError = ref(false);
 let hls: Hls | null = null;
 let observer: IntersectionObserver | null = null;
+let attachTimer: ReturnType<typeof setTimeout> | null = null;
 let triedAlternate = false;
+
+// Every card already in the viewport on page load intersects in the same
+// tick, so without this every one of them would open its HLS connection at
+// the exact same instant - several cameras on this dashboard share the same
+// small upstream relay, and opening all of them at once has been observed
+// to make a chunk of that first batch fail (timeouts/502s) even though each
+// succeeds fine in isolation. A small random jitter spreads those opens out.
+const PREVIEW_JITTER_MAX_MS = 1500;
 
 function loadPreview(url: string) {
   const video = previewVideo.value;
@@ -101,7 +120,10 @@ onMounted(() => {
   observer = new IntersectionObserver(
     (entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return;
-      attachPreview();
+      attachTimer = setTimeout(() => {
+        attachTimer = null;
+        attachPreview();
+      }, Math.random() * PREVIEW_JITTER_MAX_MS);
       observer?.disconnect();
       observer = null;
     },
@@ -112,6 +134,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   observer?.disconnect();
+  if (attachTimer !== null) clearTimeout(attachTimer);
   hls?.destroy();
   previewVideo.value?.removeEventListener('error', handlePreviewFailure);
 });
@@ -120,10 +143,10 @@ onBeforeUnmount(() => {
 <template>
   <router-link
     :to="`/cameras/${camera.id}`"
-    class="block rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md hover:border-slate-300"
+    class="block rounded-xl border border-slate-800 bg-slate-900 p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md hover:border-slate-600"
     :class="{ 'opacity-60': !isActive }"
   >
-    <div class="-mx-4 -mt-4 mb-3 aspect-video overflow-hidden rounded-t-xl bg-slate-900">
+    <div class="-mx-4 -mt-4 mb-3 aspect-video overflow-hidden rounded-t-xl bg-slate-950">
       <video
         v-if="canPreview && !previewError"
         ref="previewVideo"
@@ -132,27 +155,27 @@ onBeforeUnmount(() => {
         autoplay
         playsinline
       ></video>
-      <div v-else class="flex h-full w-full items-center justify-center px-2 text-center text-xs text-slate-400">
+      <div v-else class="flex h-full w-full items-center justify-center px-2 text-center text-xs text-slate-500">
         {{ isActive ? 'Preview unavailable' : 'Camera offline' }}
       </div>
     </div>
 
     <div class="flex items-start justify-between gap-2">
-      <h3 class="font-semibold text-slate-900">{{ camera.name }}</h3>
+      <h3 class="font-semibold text-slate-100">{{ camera.name }}</h3>
       <span
         class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium"
-        :class="isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'"
+        :class="isActive ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-800 text-slate-400'"
       >
         {{ camera.status }}
       </span>
     </div>
-    <p class="mt-1 truncate text-sm text-slate-500">{{ locationLabel }}</p>
+    <p class="mt-1 truncate text-sm text-slate-400">{{ locationLabel }}</p>
 
     <div v-if="isActive" class="mt-3 flex items-center justify-between gap-2">
-      <span v-if="hasTrafficData" class="text-sm font-medium text-slate-700">
+      <span v-if="hasTrafficData" class="text-sm font-medium text-slate-300">
         {{ overview!.totalCount }} vehicle{{ overview!.totalCount === 1 ? '' : 's' }}
       </span>
-      <span v-else class="text-xs text-slate-400">Analyzing…</span>
+      <span v-else class="text-xs text-slate-500">Analyzing…</span>
       <span
         v-if="hasTrafficData"
         class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium"
@@ -161,16 +184,18 @@ onBeforeUnmount(() => {
         {{ TRAFFIC_LABELS[overview!.trafficLevel] }}
       </span>
     </div>
+    <!-- A snapshot, not a live count - see reportedAtLabel above. -->
+    <p v-if="hasTrafficData" class="mt-1 text-right text-xs text-slate-500">as of {{ reportedAtLabel }}</p>
 
     <dl class="mt-3 grid grid-cols-2 gap-y-1 text-xs">
-      <dt class="font-medium text-slate-400">Source</dt>
-      <dd class="truncate text-right text-slate-600">{{ camera.source }}</dd>
-      <dt class="font-medium text-slate-400">Protocol</dt>
-      <dd class="text-right text-slate-600">{{ camera.protocol }}</dd>
-      <dt class="font-medium text-slate-400">Resolution</dt>
-      <dd class="text-right text-slate-600">{{ camera.resolution ?? 'unknown' }}</dd>
-      <dt class="font-medium text-slate-400">Last verified</dt>
-      <dd class="text-right text-slate-600">{{ lastVerifiedLabel }}</dd>
+      <dt class="font-medium text-slate-500">Source</dt>
+      <dd class="truncate text-right text-slate-300">{{ camera.source }}</dd>
+      <dt class="font-medium text-slate-500">Protocol</dt>
+      <dd class="text-right text-slate-300">{{ camera.protocol }}</dd>
+      <dt class="font-medium text-slate-500">Resolution</dt>
+      <dd class="text-right text-slate-300">{{ camera.resolution ?? 'unknown' }}</dd>
+      <dt class="font-medium text-slate-500">Last verified</dt>
+      <dd class="text-right text-slate-300">{{ lastVerifiedLabel }}</dd>
     </dl>
   </router-link>
 </template>
