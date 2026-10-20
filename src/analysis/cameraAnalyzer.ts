@@ -69,7 +69,7 @@ const DISABLED_OCCUPANCY: OccupancyEstimatorLike = { update: async () => ({ occu
  * signal later changes this module only.
  *
  * `TrafficAnalysisService` keeps what is genuinely *not* per-camera:
- * scheduling, boosting, the concurrency pool, persistence and subscriber
+ * the capture loops, the concurrency pool, persistence and subscriber
  * fan-out. It hands frames in and gets results out.
  *
  * The pipeline is: detect moving objects -> assign stable track ids ->

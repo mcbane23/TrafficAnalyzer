@@ -424,6 +424,24 @@ describe('TrafficAnalysisService', () => {
     ctx.service.stop();
   });
 
+  it('keeps the latest decoded frame per camera for thumbnails', async () => {
+    const ctx = setup();
+    await ctx.service.start();
+    expect(ctx.service.getLatestFrame('cam-1')).toBeNull();
+    ctx.fireAll();
+
+    ctx.captures.get('cam-1')!.frame(0);
+    await settle();
+    ctx.captures.get('cam-1')!.frame(500);
+    await settle();
+    ctx.captures.get('cam-1')!.fail('stalled');
+    await settle();
+
+    expect(ctx.service.getLatestFrame('cam-1')).toEqual({ buffer: Buffer.from('frame@500'), capturedAt: new Date(T0 + 500).toISOString() });
+    expect(ctx.service.getLatestFrame('unknown')).toBeNull();
+    ctx.service.stop();
+  });
+
   it('seeds the latest overview from history on construction', () => {
     const seed = [{ cameraId: 'cam-9', timestamp: 't', totalCount: 4, trafficLevel: 'heavy' as const }];
     const service = new TrafficAnalysisService(makeSource([]), makeFrameGrabber().grabber, makeHistoryStore(seed));

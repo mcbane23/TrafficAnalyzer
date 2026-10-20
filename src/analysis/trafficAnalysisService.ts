@@ -103,6 +103,8 @@ interface CameraState {
   /** Counts accumulated since the last history row. */
   historyWindow: { startedAt: number; counts: number[]; lastResult: CameraAnalysisResult | null };
   lastOverviewAt: number;
+  /** Most recent successfully decoded frame - served as the camera's still thumbnail. */
+  latestFrame: { buffer: Buffer; capturedAt: string } | null;
 }
 
 const DEFAULTS = {
@@ -215,6 +217,7 @@ export class TrafficAnalysisService {
         startHandle: null,
         historyWindow: { startedAt: this.options.now().getTime(), counts: [], lastResult: null },
         lastOverviewAt: -Infinity,
+        latestFrame: null,
       };
       this.cameraStates.set(camera.id, state);
       state.startHandle = this.options.scheduler.setTimeout(() => this.startCamera(state), activeIndex * STARTUP_STAGGER_STEP_MS);
@@ -244,6 +247,15 @@ export class TrafficAnalysisService {
   /** Latest known overview (count + traffic level) for every camera analyzed so far - used to bootstrap the dashboard before its SSE connection delivers the first live update. */
   getLatestOverview(): CameraAnalysisOverview[] {
     return Array.from(this.latestOverview.values());
+  }
+
+  /**
+   * The most recent frame decoded for this camera (JPEG), or null if none
+   * yet / not an active camera. Comes from the capture already running for
+   * analysis, so a thumbnail costs no extra ffmpeg process.
+   */
+  getLatestFrame(cameraId: string): { buffer: Buffer; capturedAt: string } | null {
+    return this.cameraStates.get(cameraId)?.latestFrame ?? null;
   }
 
   getHistory(cameraId: string, options?: { sinceIso?: string; limit?: number }): StoredAnalysisResult[] {
@@ -331,6 +343,7 @@ export class TrafficAnalysisService {
     // A frame's own capture time is its timestamp - not when analysis got
     // round to it - since that's what the tracker's motion model runs on.
     const timestamp = frame.ok ? new Date(frame.capturedAt).toISOString() : this.options.now().toISOString();
+    if (frame.ok) state.latestFrame = { buffer: frame.buffer, capturedAt: timestamp };
     const result = frame.ok
       ? await state.analyzer.analyze(frame.buffer, timestamp)
       : state.analyzer.errorResult(timestamp, frame.error);
