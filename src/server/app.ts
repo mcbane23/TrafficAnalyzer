@@ -6,6 +6,7 @@ import { RevalidationService } from './revalidationService';
 import { HlsProxyService } from './hlsProxyService';
 import { SseChannel } from './sseChannel';
 import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
+import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
 
 /**
  * Creates the Express app: read-only camera API routes, a background
@@ -19,7 +20,8 @@ import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
  * refresh/direct link.
  *
  * This module is thin wiring around `CameraService`, `RevalidationService`,
- * `HlsProxyService`, `SseChannel` and `TrafficAnalysisService` - it has no
+ * `HlsProxyService`, `SseChannel`, `TrafficAnalysisService` and
+ * `TrafficStatsService` - it has no
  * logic worth unit testing beyond what's already covered there. Keeping it
  * that way is why `SseChannel` exists: everything it takes to hold a live
  * stream open used to sit in this file, exempted from tests by that same
@@ -30,6 +32,7 @@ export function createApp(
   revalidationService: RevalidationService,
   hlsProxyService: HlsProxyService,
   trafficAnalysisService: TrafficAnalysisService,
+  trafficStatsService: TrafficStatsService,
   staticDir?: string,
 ): Express {
   const app = express();
@@ -126,6 +129,55 @@ export function createApp(
     const sinceIso = typeof req.query.since === 'string' ? req.query.since : undefined;
     res.json(trafficAnalysisService.getHistory(req.params.id, { limit, sinceIso }));
   });
+
+  // Latest analyzed frame as a still thumbnail, so the dashboard doesn't need a live video per card.
+  app.get('/api/cameras/:id/snapshot.jpg', (req, res) => {
+    const frame = trafficAnalysisService.getLatestFrame(req.params.id);
+    if (!frame) {
+      res.status(404).json({ error: 'No frame captured yet for this camera.' });
+      return;
+    }
+    res.set('Cache-Control', 'no-store').set('X-Captured-At', frame.capturedAt).type('image/jpeg').send(frame.buffer);
+  });
+
+  // Traffic statistics (vehicle passages per bucket, by direction and size class). Parameter validation is
+  // TrafficStatsService's job; a StatsQueryError becomes a 400.
+  type StatsHandler = (req: express.Request<{ id: string }>, res: express.Response) => void;
+  const statsRoute = (handler: StatsHandler): StatsHandler => (req, res) => {
+    try {
+      handler(req, res);
+    } catch (err) {
+      if (err instanceof StatsQueryError) res.status(400).json({ error: err.message });
+      else res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute statistics' });
+    }
+  };
+
+  app.get('/api/stats/summary', statsRoute((req, res) => {
+    res.json(trafficStatsService.getSummary(parseRange(req.query.range)));
+  }));
+
+  app.get('/api/cameras/:id/stats', statsRoute((req, res) => {
+    const range = parseRange(req.query.range);
+    res.json(trafficStatsService.getCameraStats(req.params.id, range, parseBucket(range, req.query.bucket)));
+  }));
+
+  app.get('/api/cameras/:id/stats.csv', statsRoute((req, res) => {
+    const range = parseRange(req.query.range);
+    const stats = trafficStatsService.getCameraStats(req.params.id, range, parseBucket(range, req.query.bucket));
+    res
+      .type('text/csv')
+      .attachment(`${req.params.id}-${range}-${stats.bucket}.csv`)
+      .send(trafficStatsService.toCsv(stats));
+  }));
+
+  app.get('/api/cameras/:id/stats/heatmap', statsRoute((req, res) => {
+    const days = req.query.days === undefined ? undefined : Number(req.query.days);
+    res.json(trafficStatsService.getHeatmap(req.params.id, days));
+  }));
+
+  app.get('/api/cameras/:id/stats/live', statsRoute((req, res) => {
+    res.json(trafficStatsService.getLiveCounts(req.params.id));
+  }));
 
   if (staticDir && fs.existsSync(staticDir)) {
     app.use(express.static(staticDir));

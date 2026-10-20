@@ -1,29 +1,27 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import Hls from 'hls.js';
 import type { CameraEntry } from '../../types/camera';
-import type { CameraAnalysisOverview, TrafficLevel } from '../../types/analysis';
+import type { CameraAnalysisOverview } from '../../types/analysis';
+import type { CameraSummary, StatsRange } from '../../types/stats';
+import { cameraSnapshotUrl } from '../services/stats';
+import { RANGES, TRAFFIC_BADGE_STYLES, TRAFFIC_LABELS, formatCount } from '../composables/trafficUi';
+import Sparkline from './charts/Sparkline.vue';
 
-const props = defineProps<{ camera: CameraEntry; overview?: CameraAnalysisOverview }>();
-
-const TRAFFIC_BADGE_STYLES: Record<TrafficLevel, string> = {
-  light: 'bg-emerald-500/15 text-emerald-400',
-  moderate: 'bg-amber-500/15 text-amber-400',
-  heavy: 'bg-red-500/15 text-red-400',
-};
-
-const TRAFFIC_LABELS: Record<TrafficLevel, string> = {
-  light: 'Light',
-  moderate: 'Moderate',
-  heavy: 'Heavy',
-};
-
-const hasTrafficData = computed(() => Boolean(props.overview) && !props.overview?.error);
+const props = defineProps<{
+  camera: CameraEntry;
+  overview?: CameraAnalysisOverview;
+  summary?: CameraSummary;
+  range: StatsRange;
+  layout: 'grid' | 'list';
+  /** Bumped by the dashboard to refresh every card's thumbnail together. */
+  snapshotTick: number;
+}>();
 
 const isActive = computed(() => props.camera.status === 'active');
-// Preview playback reuses the same HLS-only support StreamPlayer has;
-// other protocols/inactive cameras fall back to a placeholder instead.
-const canPreview = computed(() => isActive.value && props.camera.protocol === 'HLS');
+const hasTrafficData = computed(() => Boolean(props.overview) && !props.overview?.error);
+const feedError = computed(() => (isActive.value ? props.overview?.error : undefined));
+const rangeLabel = computed(() => RANGES.find((r) => r.value === props.range)?.label ?? props.range);
 
 const locationLabel = computed(() => {
   const { location } = props.camera;
@@ -32,170 +30,144 @@ const locationLabel = computed(() => {
   return 'Unknown location';
 });
 
-const lastVerifiedLabel = computed(() => {
-  if (!props.camera.lastVerifiedAt) return 'never';
-  return new Date(props.camera.lastVerifiedAt).toLocaleString();
-});
+const snapshotFailed = ref(false);
+const snapshotSrc = computed(() => cameraSnapshotUrl(props.camera.id, props.snapshotTick));
+watch(
+  () => props.snapshotTick,
+  () => (snapshotFailed.value = false),
+);
 
-// The dashboard's count/badge is a snapshot taken once when the server
-// started (or, if someone's actively viewing this camera's detail page
-// right now, whenever that live view last ticked) - not a continuously
-// refreshed reading (see TrafficAnalysisService's class docstring). Showing
-// when it was taken makes that explicit instead of implying a live count.
-const reportedAtLabel = computed(() => {
-  if (!props.overview) return null;
-  return new Date(props.overview.timestamp).toLocaleTimeString();
-});
-
+// Live preview only while hovered: a still thumbnail per card replaces the
+// old always-on video per card, which opened ~20 HLS streams at once
+// against the same small upstream relays and made a chunk of them fail.
 const previewVideo = ref<HTMLVideoElement | null>(null);
-const previewError = ref(false);
+const previewing = ref(false);
 let hls: Hls | null = null;
-let observer: IntersectionObserver | null = null;
-let attachTimer: ReturnType<typeof setTimeout> | null = null;
-let triedAlternate = false;
+let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+const canPreview = computed(() => isActive.value && props.camera.protocol === 'HLS');
 
-// Every card already in the viewport on page load intersects in the same
-// tick, so without this every one of them would open its HLS connection at
-// the exact same instant - several cameras on this dashboard share the same
-// small upstream relay, and opening all of them at once has been observed
-// to make a chunk of that first batch fail (timeouts/502s) even though each
-// succeeds fine in isolation. A small random jitter spreads those opens out.
-const PREVIEW_JITTER_MAX_MS = 1500;
-
-function loadPreview(url: string) {
-  const video = previewVideo.value;
-  if (!video) return;
-
-  if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    // Native HLS support (Safari) - no hls.js needed.
-    video.addEventListener('error', handlePreviewFailure);
-    video.src = url;
-    video.play().catch(() => undefined);
-    return;
-  }
-
-  if (Hls.isSupported()) {
-    hls = new Hls();
-    hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal) handlePreviewFailure();
+function startPreview() {
+  if (!canPreview.value || previewing.value) return;
+  // A short delay so sweeping the mouse across the grid doesn't open a stream per card passed over.
+  hoverTimer = setTimeout(() => {
+    hoverTimer = null;
+    previewing.value = true;
+    requestAnimationFrame(() => {
+      const video = previewVideo.value;
+      if (!video) return;
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = props.camera.url;
+        video.play().catch(() => undefined);
+      } else if (Hls.isSupported()) {
+        hls = new Hls({ liveSyncDurationCount: 2 });
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (data.fatal) stopPreview();
+        });
+        hls.loadSource(props.camera.url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => undefined));
+      }
     });
-    hls.loadSource(url);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      video.play().catch(() => undefined);
-    });
-    return;
-  }
-
-  previewError.value = true;
+  }, 400);
 }
 
-/**
- * If the primary preview fails and the camera has an `alternateUrl`,
- * retry once with the alternate before giving up and showing the
- * "Preview unavailable" placeholder.
- */
-function handlePreviewFailure() {
-  if (!triedAlternate && props.camera.alternateUrl) {
-    triedAlternate = true;
-    hls?.destroy();
-    hls = null;
-    previewVideo.value?.removeEventListener('error', handlePreviewFailure);
-    loadPreview(props.camera.alternateUrl);
-    return;
-  }
-  previewError.value = true;
-}
-
-function attachPreview() {
-  if (!previewVideo.value || !canPreview.value) return;
-  loadPreview(props.camera.url);
-}
-
-onMounted(() => {
-  if (!canPreview.value || !previewVideo.value) return;
-
-  // Only start streaming once the card actually scrolls into view, so a
-  // dashboard listing many cameras doesn't open dozens of streams at once.
-  observer = new IntersectionObserver(
-    (entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return;
-      attachTimer = setTimeout(() => {
-        attachTimer = null;
-        attachPreview();
-      }, Math.random() * PREVIEW_JITTER_MAX_MS);
-      observer?.disconnect();
-      observer = null;
-    },
-    { rootMargin: '200px' },
-  );
-  observer.observe(previewVideo.value);
-});
-
-onBeforeUnmount(() => {
-  observer?.disconnect();
-  if (attachTimer !== null) clearTimeout(attachTimer);
+function stopPreview() {
+  if (hoverTimer !== null) clearTimeout(hoverTimer);
+  hoverTimer = null;
   hls?.destroy();
-  previewVideo.value?.removeEventListener('error', handlePreviewFailure);
-});
+  hls = null;
+  if (previewVideo.value) {
+    previewVideo.value.removeAttribute('src');
+    previewVideo.value.load();
+  }
+  previewing.value = false;
+}
+
+onBeforeUnmount(stopPreview);
 </script>
 
 <template>
+  <!-- Grid layout: thumbnail card. -->
   <router-link
-    :to="`/cameras/${camera.id}`"
-    class="block rounded-xl border border-slate-800 bg-slate-900 p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md hover:border-slate-600"
+    v-if="layout === 'grid'"
+    :to="{ path: `/cameras/${camera.id}`, query: { range } }"
+    class="group block overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-slate-600"
     :class="{ 'opacity-60': !isActive }"
+    @mouseenter="startPreview"
+    @mouseleave="stopPreview"
   >
-    <div class="-mx-4 -mt-4 mb-3 aspect-video overflow-hidden rounded-t-xl bg-slate-950">
-      <video
-        v-if="canPreview && !previewError"
-        ref="previewVideo"
-        class="h-full w-full object-cover"
-        muted
-        autoplay
-        playsinline
-      ></video>
-      <div v-else class="flex h-full w-full items-center justify-center px-2 text-center text-xs text-slate-500">
-        {{ isActive ? 'Preview unavailable' : 'Camera offline' }}
+    <div class="relative aspect-video bg-slate-950">
+      <video v-if="previewing" ref="previewVideo" class="absolute inset-0 h-full w-full object-cover" muted playsinline></video>
+      <img
+        v-else-if="isActive && !snapshotFailed"
+        :src="snapshotSrc"
+        :alt="`Latest frame from ${camera.name}`"
+        class="absolute inset-0 h-full w-full object-cover"
+        loading="lazy"
+        @error="snapshotFailed = true"
+      />
+      <div v-else class="flex h-full items-center justify-center text-xs text-slate-500">
+        {{ isActive ? 'No frame yet' : 'Camera offline' }}
       </div>
-    </div>
-
-    <div class="flex items-start justify-between gap-2">
-      <h3 class="font-semibold text-slate-100">{{ camera.name }}</h3>
-      <span
-        class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium"
-        :class="isActive ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-800 text-slate-400'"
-      >
-        {{ camera.status }}
-      </span>
-    </div>
-    <p class="mt-1 truncate text-sm text-slate-400">{{ locationLabel }}</p>
-
-    <div v-if="isActive" class="mt-3 flex items-center justify-between gap-2">
-      <span v-if="hasTrafficData" class="text-sm font-medium text-slate-300">
-        {{ overview!.totalCount }} vehicle{{ overview!.totalCount === 1 ? '' : 's' }}
-      </span>
-      <span v-else class="text-xs text-slate-500">Analyzing…</span>
       <span
         v-if="hasTrafficData"
-        class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium"
+        class="absolute left-2 top-2 rounded-full px-2 py-0.5 text-xs font-medium backdrop-blur"
         :class="TRAFFIC_BADGE_STYLES[overview!.trafficLevel]"
       >
         {{ TRAFFIC_LABELS[overview!.trafficLevel] }}
       </span>
+      <span v-if="feedError" class="absolute left-2 top-2 rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-300 backdrop-blur" :title="feedError">
+        Feed error
+      </span>
+      <span v-if="canPreview && !previewing" class="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-slate-300 opacity-0 transition group-hover:opacity-100">
+        Live preview…
+      </span>
     </div>
-    <!-- A snapshot, not a live count - see reportedAtLabel above. -->
-    <p v-if="hasTrafficData" class="mt-1 text-right text-xs text-slate-500">as of {{ reportedAtLabel }}</p>
 
-    <dl class="mt-3 grid grid-cols-2 gap-y-1 text-xs">
-      <dt class="font-medium text-slate-500">Source</dt>
-      <dd class="truncate text-right text-slate-300">{{ camera.source }}</dd>
-      <dt class="font-medium text-slate-500">Protocol</dt>
-      <dd class="text-right text-slate-300">{{ camera.protocol }}</dd>
-      <dt class="font-medium text-slate-500">Resolution</dt>
-      <dd class="text-right text-slate-300">{{ camera.resolution ?? 'unknown' }}</dd>
-      <dt class="font-medium text-slate-500">Last verified</dt>
-      <dd class="text-right text-slate-300">{{ lastVerifiedLabel }}</dd>
-    </dl>
+    <div class="p-4">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <h3 class="truncate font-semibold text-slate-100">{{ camera.name }}</h3>
+          <p class="truncate text-xs text-slate-400">{{ locationLabel }}</p>
+        </div>
+        <div class="shrink-0 text-right">
+          <p class="text-lg font-semibold tabular-nums text-slate-100">{{ summary ? formatCount(summary.total) : '–' }}</p>
+          <p class="text-[11px] text-slate-500">passed · {{ rangeLabel }}</p>
+        </div>
+      </div>
+      <div class="mt-3">
+        <Sparkline v-if="summary" :values="summary.sparkline" />
+        <div v-else class="h-7"></div>
+        <div class="mt-1 flex justify-between text-[10px] text-slate-500">
+          <span>24 h ago</span>
+          <span v-if="hasTrafficData">{{ overview!.totalCount }} in view now</span>
+          <span>now</span>
+        </div>
+      </div>
+    </div>
+  </router-link>
+
+  <!-- List layout: one compact row. -->
+  <router-link
+    v-else
+    :to="{ path: `/cameras/${camera.id}`, query: { range } }"
+    class="grid grid-cols-[1fr_auto] items-center gap-4 rounded-lg border border-slate-800 bg-slate-900 px-4 py-3 transition hover:border-slate-600 sm:grid-cols-[minmax(0,2fr)_6rem_minmax(0,1fr)_5rem]"
+    :class="{ 'opacity-60': !isActive }"
+  >
+    <div class="min-w-0">
+      <p class="truncate font-medium text-slate-100">{{ camera.name }}</p>
+      <p class="truncate text-xs text-slate-400">{{ locationLabel }}</p>
+    </div>
+    <div class="hidden sm:block">
+      <span v-if="!isActive" class="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">Offline</span>
+      <span v-else-if="feedError" class="rounded-full bg-red-500/20 px-2 py-0.5 text-xs text-red-300" :title="feedError">Feed error</span>
+      <span v-else-if="hasTrafficData" class="rounded-full px-2 py-0.5 text-xs font-medium" :class="TRAFFIC_BADGE_STYLES[overview!.trafficLevel]">
+        {{ TRAFFIC_LABELS[overview!.trafficLevel] }}
+      </span>
+    </div>
+    <div class="hidden sm:block">
+      <Sparkline v-if="summary" :values="summary.sparkline" :height="22" />
+    </div>
+    <p class="text-right font-semibold tabular-nums text-slate-100">{{ summary ? formatCount(summary.total) : '–' }}</p>
   </router-link>
 </template>

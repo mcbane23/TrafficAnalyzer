@@ -2,8 +2,9 @@
 
 TrafficAnalyzer detects traffic congestion and vehicle counts from live Belgrade camera feeds.
 Currently implemented: a validated camera registry, CLI revalidation tooling, a web dashboard for
-browsing/watching cameras, and a real-time traffic-analysis pipeline (background-subtraction motion
-detection, SQLite history, SSE push to the frontend).
+browsing/watching cameras, a real-time traffic-analysis pipeline (background-subtraction motion
+detection, SQLite history, SSE push to the frontend), and traffic statistics (vehicles passed per
+period, by direction and coarse size class).
 
 Background/requirements: [docs/prd/belgrade-camera-registry.md](docs/prd/belgrade-camera-registry.md)
 (registry + validator), [docs/prd/camera-dashboard-web-app.md](docs/prd/camera-dashboard-web-app.md)
@@ -42,8 +43,11 @@ colocated `*.test.ts`:
 | `VehicleColorEstimator` | [src/analysis/vehicleColorEstimator.ts](src/analysis/vehicleColorEstimator.ts) | No — best-effort/cosmetic, low-risk (explicit PRD call-out). Currently unwired, see below |
 | `TrafficHistoryStore` | [src/analysis/trafficHistoryStore.ts](src/analysis/trafficHistoryStore.ts) | Yes — against a real in-memory (`:memory:`) SQLite DB, not mocked |
 | `TrafficAnalysisService` | [src/analysis/trafficAnalysisService.ts](src/analysis/trafficAnalysisService.ts) | Yes — mocks `FrameGrabberLike`/`CameraAnalyzerLike`/`TrafficHistoryStoreLike`/`AnalysisScheduler` |
+| `CameraPassageModel` (`DirectionModel`, `SizeClassifier`) | [src/analysis/passageModel.ts](src/analysis/passageModel.ts) | Yes — pure logic over synthetic tracks |
+| `TrafficStatsStore` | [src/analysis/trafficStatsStore.ts](src/analysis/trafficStatsStore.ts) | Through `TrafficStatsService`'s tests, against a real `:memory:` DB |
+| `TrafficStatsService` | [src/analysis/trafficStatsService.ts](src/analysis/trafficStatsService.ts) | Yes — real `:memory:` `TrafficStatsStore` plus an injected `now` |
 | Pipeline end-to-end | [src/analysis/pipeline.test.ts](src/analysis/pipeline.test.ts) | Yes — real ffmpeg + detector + tracker on committed synthetic footage with known ground truth ([__fixtures__/syntheticFootage.ts](src/analysis/__fixtures__/syntheticFootage.ts)) |
-| Express app / routes | [src/server/app.ts](src/server/app.ts) | No — thin wiring around `CameraService`/`RevalidationService`/`HlsProxyService`/`SseChannel`/`TrafficAnalysisService` |
+| Express app / routes | [src/server/app.ts](src/server/app.ts) | No — thin wiring around `CameraService`/`RevalidationService`/`HlsProxyService`/`SseChannel`/`TrafficAnalysisService`/`TrafficStatsService` |
 | Revalidate CLI | [src/cli/revalidate.ts](src/cli/revalidate.ts) | No — thin orchestrator |
 
 Rule of thumb: new logic worth testing goes in a deep module with an injectable seam (constructor
@@ -234,3 +238,39 @@ precedent for Vue components.
   `CameraAnalysisOverview` down to `CameraCard.vue` as a prop — cards do not each open their own SSE
   connection. `StreamPlayer.vue`'s canvas overlay is expected to lag the live video slightly
   (`-re` pacing + HLS buffering + analysis time); that's an accepted tradeoff, not a bug.
+
+## Traffic statistics feature
+
+- **Counts are passages, not snapshots.** `totalCount` on a result is vehicles in view on one
+  frame; statistics count each vehicle once, when its track finishes. `TrafficStatsService`
+  consumes `TrafficAnalysisService`'s `onResult` hook (wired in `src/server/index.ts`) and turns
+  every `FinishedTrack` into a `VehiclePassage` via that camera's `CameraPassageModel`. It never
+  sees error or warm-up results (the hook doesn't fire for them).
+- **Direction** is learned, not configured: `DirectionModel` takes the principal axis of passage
+  displacement vectors, oriented so `A` = down the frame (left-to-right on a near-horizontal road).
+  The axis is re-seeded from persisted passages (last 7 days) on first use after a restart so labels
+  stay stable. Optional human names live in the registry as `directions: { a, b }`.
+- **Size class** (`car` / `large`) is approximate by design (Bane chose this over dropping type or
+  reviving an ML classifier): box area compared with the median of recent vehicles in the same
+  horizontal band of the frame, to cancel perspective. The UI always labels it approximate.
+- **Coverage is stored next to counts.** `analysis_minutes` records which minutes each camera was
+  actually analyzed (plus occupancy); every bucket in the API carries `coverage`, and the UI shades
+  low-coverage buckets as "not analyzed" instead of drawing zero traffic — same principle as
+  "failed ticks are never persisted".
+- Storage: `data/traffic-stats.db` (gitignored), separate from `traffic-history.db`. `vehicle_passages`
+  holds one row per vehicle; `passage_hours` is an hourly roll-up maintained in the same transaction
+  on every insert, and `TrafficStatsStore.passageBuckets` serves any hour-aligned, hour-or-coarser
+  query from it (5m/15m buckets and the rolling 5-minute/1-hour live counters read raw rows).
+- Time zone: day buckets, "today" and the weekday x hour heatmap use `STATS_TIMEZONE` (default
+  `Europe/Belgrade`), not the server's zone (UTC in Docker). Sub-day buckets align to UTC hours,
+  which assumes a whole-hour UTC offset.
+- API (thin routes in `app.ts`; a `StatsQueryError` becomes a 400): `GET /api/stats/summary?range=`,
+  `GET /api/cameras/:id/stats?range=&bucket=`, `.../stats.csv`, `.../stats/heatmap?days=`,
+  `.../stats/live`, plus `GET /api/cameras/:id/snapshot.jpg` (the analysis capture's latest frame,
+  via `TrafficAnalysisService.getLatestFrame`). Allowed range/bucket pairs are `ALLOWED_BUCKETS` in
+  `trafficStatsService.ts`, mirrored as `ALLOWED_BUCKETS_UI` in `src/web/composables/trafficUi.ts`.
+- Frontend: a top bar (`App.vue`) with Dashboard / Statistics and a global range picker kept in the
+  URL (`?range=`, via `useStatsRange`). Dashboard cards show the snapshot thumbnail and only open a
+  live HLS preview on hover — never one video per card. Chart views (`CameraDetailView`,
+  `StatisticsView`) are lazy-loaded routes so Chart.js stays out of the dashboard bundle; shared
+  colors/labels live in `trafficUi.ts`.
