@@ -13,7 +13,14 @@ import { DIRECTION_COLORS, TRAFFIC_BADGE_STYLES, TRAFFIC_BAR_STYLES, TRAFFIC_LAB
  * recently (polled from the stats API - passages land once per vehicle, so
  * a few seconds' delay is invisible next to a 5-minute window).
  */
-const props = defineProps<{ camera: CameraEntry; directionLabels: { a: string; b: string } }>();
+/**
+ * `inViewCount` is the number of boxes the player is drawing over the same
+ * picture. When given it replaces the analysis result's own count: the boxes
+ * on a watched camera come from the appearance detector, which sees far more
+ * vehicles than the motion analysis behind `totalCount`, and two different
+ * numbers for one picture read as a bug.
+ */
+const props = defineProps<{ camera: CameraEntry; directionLabels: { a: string; b: string }; inViewCount?: number | null }>();
 
 const LIVE_POLL_MS = 5000;
 
@@ -125,7 +132,7 @@ onBeforeUnmount(stop);
         <div class="mt-4 grid grid-cols-2 gap-3">
           <div>
             <p class="text-xs text-slate-500">In view</p>
-            <p class="text-3xl font-bold tabular-nums text-slate-100">{{ result.totalCount }}</p>
+            <p class="text-3xl font-bold tabular-nums text-slate-100">{{ inViewCount ?? result.totalCount }}</p>
           </div>
           <div>
             <p class="text-xs text-slate-500">Road occupancy</p>

@@ -40,8 +40,19 @@ interface WatchedCamera {
   subscribers: Set<OverlaySubscriber>;
   recent: LiveOverlayResult[];
   stopHandle: unknown;
-  /** Frames analyzed and detection time spent since the last throughput log line. */
-  stats: { since: number; frames: number; detectMs: number; vehicles: number };
+  /** Frames analyzed, detection time spent and stream time covered since the last throughput log line. */
+  stats: OverlayStats;
+}
+
+interface OverlayStats {
+  since: number;
+  frames: number;
+  detectMs: number;
+  vehicles: number;
+  /** Stream time of the first and latest frame in this window, and when (wall clock) the first one was analyzed. */
+  firstStreamTime?: number;
+  firstStreamAt?: number;
+  lastStreamTime?: number;
 }
 
 const DEFAULTS = {
@@ -215,7 +226,7 @@ export class LiveOverlayService {
           const startedAt = Date.now();
           const detected = await entry.pipeline.detector.detect(frame.frame);
           const tracked = entry.pipeline.tracker.update(detected.detections, frame.capturedAt);
-          this.recordThroughput(entry, Date.now() - startedAt, tracked.tracks.length);
+          this.recordThroughput(entry, Date.now() - startedAt, tracked.tracks.length, frame.streamTime);
           result = {
             cameraId: entry.camera.id,
             timestamp,
@@ -233,18 +244,34 @@ export class LiveOverlayService {
   /**
    * Logs, once a minute per watched camera, how fast the detector actually
    * runs on this host - the first thing to look at when boxes are sparse
-   * (a detector slower than the capture's fps means dropped frames).
+   * (a detector slower than the capture's fps means dropped frames). The
+   * stream-seconds-per-second figure is whether the capture itself keeps up:
+   * below 1x (ffmpeg starved of CPU) the overlay falls further behind the
+   * picture every second, and once the player overtakes it there are no
+   * boxes to draw however fast the detector is.
    */
-  private recordThroughput(entry: WatchedCamera, detectMs: number, vehicles: number): void {
+  private recordThroughput(entry: WatchedCamera, detectMs: number, vehicles: number, streamTime?: number): void {
     const stats = entry.stats;
     stats.frames += 1;
     stats.detectMs += detectMs;
     stats.vehicles += vehicles;
+    if (streamTime !== undefined) {
+      if (stats.firstStreamTime === undefined) {
+        stats.firstStreamTime = streamTime;
+        stats.firstStreamAt = Date.now();
+      }
+      stats.lastStreamTime = streamTime;
+    }
     const elapsed = Date.now() - stats.since;
     if (elapsed < THROUGHPUT_LOG_MS) return;
+    const streamWallMs = stats.firstStreamAt === undefined ? 0 : Date.now() - stats.firstStreamAt;
+    const covered =
+      stats.firstStreamTime !== undefined && stats.lastStreamTime !== undefined && streamWallMs > 0 && stats.lastStreamTime >= stats.firstStreamTime
+        ? `, stream ${((stats.lastStreamTime - stats.firstStreamTime) / (streamWallMs / 1000)).toFixed(2)}x real time`
+        : '';
     console.log(
       `[LiveOverlayService] ${entry.camera.id}: ${((stats.frames * 1000) / elapsed).toFixed(1)} frames/s, ` +
-        `detection ${Math.round(stats.detectMs / stats.frames)} ms/frame, ${(stats.vehicles / stats.frames).toFixed(1)} vehicles/frame`,
+        `detection ${Math.round(stats.detectMs / stats.frames)} ms/frame, ${(stats.vehicles / stats.frames).toFixed(1)} vehicles/frame${covered}`,
     );
     entry.stats = { since: Date.now(), frames: 0, detectMs: 0, vehicles: 0 };
   }

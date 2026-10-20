@@ -21,6 +21,8 @@ const error = ref<string | null>(null);
 const showBoxes = ref(true);
 const showTrails = ref(false);
 const player = ref<InstanceType<typeof StreamPlayer> | null>(null);
+/** Vehicles boxed on the picture right now, so the "Now" panel's count matches what is drawn. */
+const inViewCount = ref<number | null>(null);
 
 const bucket = ref<StatsBucket | null>(null);
 const stats = ref<CameraStats | null>(null);
@@ -122,7 +124,7 @@ watch([range, activeBucket], () => loadStats());
 
       <div class="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div class="lg:col-span-2">
-          <StreamPlayer ref="player" :camera="camera" :show-boxes="showBoxes" :show-trails="showTrails" />
+          <StreamPlayer ref="player" :camera="camera" :show-boxes="showBoxes" :show-trails="showTrails" @in-view="inViewCount = $event" />
           <div class="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-400">
             <label class="inline-flex cursor-pointer items-center gap-1.5">
               <input v-model="showBoxes" type="checkbox" class="accent-sky-400" /> Vehicle boxes
@@ -135,7 +137,7 @@ watch([range, activeBucket], () => loadStats());
             </button>
           </div>
         </div>
-        <AnalysisPanel :camera="camera" :direction-labels="labels" />
+        <AnalysisPanel :camera="camera" :direction-labels="labels" :in-view-count="inViewCount" />
       </div>
 
       <section class="mt-8 rounded-xl border border-slate-800 bg-slate-900 p-5">

@@ -5,6 +5,19 @@ import type { CameraEntry } from '../../types/camera';
 import type { BoundingBox, VehicleDetection } from '../../types/analysis';
 import { fetchRecentAnalysis, subscribeCameraAnalysis, subscribeCameraOverlay } from '../services/analysis';
 
+/**
+ * `inView`: how many vehicle boxes belong on the picture on screen right now
+ * (whether or not they are drawn), so a panel next to the player can show
+ * the same count the viewer sees boxed - null while there is nothing to go on.
+ */
+const emit = defineEmits<{ inView: [count: number | null] }>();
+let lastInView: number | null = null;
+function reportInView(count: number | null) {
+  if (count === lastInView) return;
+  lastInView = count;
+  emit('inView', count);
+}
+
 const props = withDefaults(defineProps<{ camera: CameraEntry; showBoxes?: boolean; showTrails?: boolean }>(), {
   showBoxes: true,
   showTrails: false,
@@ -472,6 +485,7 @@ function drawOverlay() {
   if (streamTime !== null) {
     trimSynced(streamTime);
     const boxes = boxesAt(streamTime);
+    reportInView(boxes.length);
     if (props.showTrails) {
       for (const { detection } of boxes) {
         if (detection.trackId == null) continue;
@@ -483,6 +497,7 @@ function drawOverlay() {
     return;
   }
 
+  reportInView(lastDetectionsAt === null ? null : trackedBoxes.size + untrackedBoxes.length);
   if (props.showTrails) {
     for (const [trackId, trail] of trails) {
       const entry = trackedBoxes.get(trackId);
@@ -542,6 +557,7 @@ function attachOverlay() {
   untrackedBoxes = [];
   lastDetectionsAt = null;
   synced = [];
+  reportInView(null);
 
   if (props.camera.status !== 'active') return;
 

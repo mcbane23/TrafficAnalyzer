@@ -294,7 +294,15 @@ precedent for Vue components.
   (box diagonals per second) caps the association gate: with `minHits: 1` and ~1 fps on the N150,
   a young track's Kalman gate spanned the whole picture and its box slid across to another car. The player holds/interpolates across gaps up to 2s. Throughput is logged
   once a minute as `[LiveOverlayService] <id>: X frames/s, detection N ms/frame, V vehicles/frame`;
-  on 3 sandbox cores it ran ~2.9 fps at ~155ms/frame with ~10 vehicles per frame on Slavija.
+  on 3 sandbox cores it ran ~2.9 fps at ~155ms/frame with ~10 vehicles per frame on Slavija. The
+  line also reports the capture's stream seconds per wall second: below 1x the overlay ffmpeg is
+  starved of CPU (seen in the sandbox with the fleet plus YOLO on the CPU: 0.5-0.7x) and falls
+  behind until the player overtakes it and draws no boxes.
+- **The camera page's "In view" is the number of boxes drawn**, not the motion analysis's
+  `totalCount`: `StreamPlayer` emits `inView` with the boxes it places on the current picture, and
+  `CameraDetailView` passes it to `AnalysisPanel` (falling back to `totalCount` before the first
+  result). YOLO boxed 13-14 vehicles where motion analysis said 4. The dashboard cards still show
+  `totalCount`.
 - **Motion-detection false positives, as measured on live footage**, and their fixes: a fountain
   (Slavija) and LED billboards (Gazela, Autokomanda) are covered by per-camera `ignoreZones` in
   `belgrade.json` (normalized polygons that `BackgroundModel` never treats as foreground or roadway,
