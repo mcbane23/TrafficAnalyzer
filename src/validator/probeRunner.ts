@@ -9,6 +9,15 @@ import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 export const BUNDLED_FFPROBE_PATH = ffprobeInstaller.path;
 
 /**
+ * The ffprobe actually used by default: `FFPROBE_PATH` from the environment
+ * if set, else the bundled binary. The bundled Linux build is a static-glibc
+ * build, and static glibc cannot resolve hostnames - it segfaults on any
+ * `https://` URL whose host needs a DNS lookup. So on Linux (the Docker
+ * image) a system ffprobe must be supplied this way; see the Dockerfile.
+ */
+export const FFPROBE_PATH = process.env.FFPROBE_PATH || BUNDLED_FFPROBE_PATH;
+
+/**
  * Result of running a single ffprobe invocation.
  */
 export interface ProbeOutcome {
@@ -34,7 +43,7 @@ export type ProbeRunner = (args: string[], timeoutMs: number) => Promise<ProbeOu
  * so no system-wide ffmpeg install is required. Pass an explicit path to use
  * a different (e.g. system-installed) ffprobe instead.
  */
-export function createFfprobeRunner(ffprobePath: string = BUNDLED_FFPROBE_PATH): ProbeRunner {
+export function createFfprobeRunner(ffprobePath: string = FFPROBE_PATH): ProbeRunner {
   return (args, timeoutMs) =>
     new Promise<ProbeOutcome>((resolve) => {
       execFile(

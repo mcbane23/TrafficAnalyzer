@@ -20,13 +20,23 @@ RUN npm run build \
  && npm prune --omit=dev
 
 # ---- Runtime stage -------------------------------------------------------
-# Debian-based (not alpine): @ffprobe-installer/ffprobe and
-# @ffmpeg-installer/ffmpeg only ship glibc binaries for linux, which
-# musl-based alpine images can't run.
+# Debian-based (not alpine): better-sqlite3's native module is compiled
+# against glibc in the build stage, and Debian's ffmpeg is installed below.
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3001
+
+# Debian's ffmpeg/ffprobe, used instead of the bundled npm binaries. Those are
+# static-glibc builds, which cannot resolve hostnames: they segfault on every
+# https:// camera URL, so no capture or revalidation could ever succeed in
+# this image. FFMPEG_PATH/FFPROBE_PATH (see ffmpegRunner.ts/probeRunner.ts)
+# point the app at these instead.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/bin/ffprobe
 
 COPY package.json package-lock.json ./
 # Production-only dependencies, pruned and natively compiled in the build stage.

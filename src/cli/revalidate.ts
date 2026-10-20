@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { CameraRegistryStore } from '../registry/cameraRegistryStore';
 import { CameraValidator } from '../validator/cameraValidator';
-import { BUNDLED_FFPROBE_PATH } from '../validator/probeRunner';
+import { FFPROBE_PATH } from '../validator/probeRunner';
 
 const DEFAULT_REGISTRY_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.json');
 const DEFAULT_SCHEMA_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.schema.json');
@@ -27,8 +27,8 @@ async function main(): Promise<void> {
     .option('-t, --timeout <ms>', 'per-camera probe timeout in milliseconds', (v) => parseInt(v, 10), 15_000)
     .option(
       '--ffprobe-path <path>',
-      'path to the ffprobe executable (defaults to the bundled @ffprobe-installer/ffprobe binary)',
-      BUNDLED_FFPROBE_PATH,
+      'path to the ffprobe executable (defaults to $FFPROBE_PATH, else the bundled @ffprobe-installer/ffprobe binary)',
+      FFPROBE_PATH,
     )
     .parse(process.argv);
 

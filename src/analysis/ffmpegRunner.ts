@@ -8,6 +8,17 @@ import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
  */
 export const BUNDLED_FFMPEG_PATH = ffmpegInstaller.path;
 
+/**
+ * The ffmpeg actually used by default: `FFMPEG_PATH` from the environment if
+ * set, else the bundled binary. The bundled Linux build is a static-glibc
+ * build, and static glibc cannot resolve hostnames - it segfaults on any
+ * `https://` camera URL whose host needs a DNS lookup, so every live capture
+ * dies before producing a frame. On Linux (the Docker image) a system ffmpeg
+ * must be supplied this way; see the Dockerfile. The bundled binary is fine
+ * for local files, which is all the tests feed it.
+ */
+export const FFMPEG_PATH = process.env.FFMPEG_PATH || BUNDLED_FFMPEG_PATH;
+
 /** Result of running a single ffmpeg invocation. */
 export interface FfmpegOutcome {
   /** Process exit code, or null if the process was killed (e.g. on timeout). */
@@ -32,7 +43,7 @@ export type FfmpegRunner = (args: string[], timeoutMs: number) => Promise<Ffmpeg
  * Pass an explicit path to use a different (e.g. system-installed) ffmpeg
  * instead.
  */
-export function createFfmpegRunner(ffmpegPath: string = BUNDLED_FFMPEG_PATH): FfmpegRunner {
+export function createFfmpegRunner(ffmpegPath: string = FFMPEG_PATH): FfmpegRunner {
   return (args, timeoutMs) =>
     new Promise<FfmpegOutcome>((resolve) => {
       execFile(
@@ -90,7 +101,7 @@ export type FfmpegStreamRunner = (args: string[]) => FfmpegStreamHandle;
  * `ffmpeg` process via `spawn` (as opposed to `createFfmpegRunner`'s
  * `execFile`, which waits for the process to exit before resolving).
  */
-export function createFfmpegStreamRunner(ffmpegPath: string = BUNDLED_FFMPEG_PATH): FfmpegStreamRunner {
+export function createFfmpegStreamRunner(ffmpegPath: string = FFMPEG_PATH): FfmpegStreamRunner {
   return (args) => {
     const child = spawn(ffmpegPath, args, { windowsHide: true });
     let exited = false;
