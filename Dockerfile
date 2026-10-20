@@ -48,10 +48,14 @@ ENV PORT=3001
 # talks to when OVERLAY_DEVICE=GPU; it only does anything if the host's
 # /dev/dri is passed into the container.
 COPY --from=build /intel-graphics.gpg /usr/share/keyrings/intel-graphics.gpg
-RUN echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble unified" \
+# ca-certificates goes in first: the slim image has none, and Intel's
+# repository is HTTPS-only.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble unified" \
       > /etc/apt/sources.list.d/intel-gpu.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg ca-certificates intel-opencl-icd \
+ && apt-get install -y --no-install-recommends ffmpeg intel-opencl-icd \
  && rm -rf /var/lib/apt/lists/*
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV FFPROBE_PATH=/usr/bin/ffprobe
