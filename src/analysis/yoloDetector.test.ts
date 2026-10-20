@@ -43,6 +43,15 @@ describe('letterboxToTensor', () => {
     }
   });
 
+  it('fits a frame into a non-square input', () => {
+    // 4x4 frame into 8x4: scale 1, columns 4-7 are padding.
+    const { tensor, scale } = letterboxToTensor(solidFrame(4, 4, 235), 8, 4);
+    expect(scale).toBe(1);
+    expect(tensor.length).toBe(3 * 32);
+    expect(tensor[3]).toBeCloseTo(1, 2);
+    expect(tensor[4]).toBeCloseTo(114 / 255, 5);
+  });
+
   it('converts chroma, so a red frame comes out red', () => {
     // BT.601 limited-range pure red.
     const { tensor } = letterboxToTensor(solidFrame(2, 2, 81, 90, 240), 2);
@@ -92,12 +101,13 @@ describe('YoloDetector', () => {
       [480, 360, 40, 40, 2, 0.9], // centre (0.75, 0.75)
     ]);
     const session: YoloSession & { run: jest.Mock } = { run: jest.fn(async () => output) };
-    const detector = new YoloDetector(session, { inputSize: 640, ignoreZones: [[[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]]] });
+    const detector = new YoloDetector(session, { ignoreZones: [[[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]]] });
 
     const result = await detector.detect(solidFrame(640, 480, 100));
 
-    expect(session.run).toHaveBeenCalledWith(expect.any(Float32Array), 640);
-    expect((session.run.mock.calls[0][0] as Float32Array).length).toBe(3 * 640 * 640);
+    // Default input is the overlay capture's own 640x480 - no padding at all.
+    expect(session.run).toHaveBeenCalledWith(expect.any(Float32Array), 640, 480);
+    expect((session.run.mock.calls[0][0] as Float32Array).length).toBe(3 * 640 * 480);
     expect(result.warmingUp).toBe(false);
     expect(result.detections).toHaveLength(1);
     expect(result.detections[0].box.x).toBeCloseTo(460 / 640, 5);

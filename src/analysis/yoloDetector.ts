@@ -6,16 +6,20 @@ import { VideoFrame } from './videoFrame';
 
 /**
  * One inference call against a YOLO-family detector exported to ONNX with a
- * square `size x size` RGB input. Kept as a narrow, injectable seam so
+ * fixed `width x height` RGB input. Kept as a narrow, injectable seam so
  * pre- and post-processing can be unit tested with synthetic tensors,
  * without loading the real model.
  */
 export interface YoloSession {
-  /** `input` is NCHW float32 RGB in 0-1, shape `[1, 3, size, size]`. Returns the raw `[1, 4 + classes, anchors]` output. */
-  run(input: Float32Array, size: number): Promise<{ data: Float32Array; dims: readonly number[] }>;
+  /** `input` is NCHW float32 RGB in 0-1, shape `[1, 3, height, width]`. Returns the raw `[1, 4 + classes, anchors]` output. */
+  run(input: Float32Array, width: number, height: number): Promise<{ data: Float32Array; dims: readonly number[] }>;
 }
 
-/** Path to the bundled YOLO11n (COCO-pretrained, 640x640 input) ONNX model. */
+/**
+ * Path to the bundled YOLO11n (COCO-pretrained) ONNX model, exported with a
+ * 640x480 input: the overlay capture is 640x480, and a square 640x640 input
+ * spent a quarter of every inference on letterbox padding.
+ */
 export const BUNDLED_YOLO_MODEL_PATH = path.resolve(__dirname, '../../models/yolo11n.onnx');
 
 /**
@@ -32,8 +36,8 @@ export async function createOnnxYoloSession(modelPath: string = BUNDLED_YOLO_MOD
   const inputName = session.inputNames[0];
   const outputName = session.outputNames[0];
   return {
-    run: async (input, size) => {
-      const outputs = await session.run({ [inputName]: new ort.Tensor('float32', input, [1, 3, size, size]) });
+    run: async (input, width, height) => {
+      const outputs = await session.run({ [inputName]: new ort.Tensor('float32', input, [1, 3, height, width]) });
       const output = outputs[outputName];
       return { data: output.data as Float32Array, dims: output.dims };
     },
@@ -50,9 +54,11 @@ const COCO_VEHICLES: ReadonlyMap<number, VehicleClass> = new Map<number, Vehicle
 ]);
 
 export interface YoloDetectorOptions {
-  /** Model input side, in pixels. Must match the exported model. Defaults to 640. */
-  inputSize?: number;
-  /** Class score below which a candidate is discarded. Defaults to 0.3. */
+  /** Model input width, in pixels. Must match the exported model. Defaults to 640. */
+  inputWidth?: number;
+  /** Model input height, in pixels. Must match the exported model. Defaults to 480. */
+  inputHeight?: number;
+  /** Class score below which a candidate is discarded. Defaults to 0.25, the usual YOLO setting. */
   minConfidence?: number;
   /** Overlap (IoU) above which the weaker of two boxes is suppressed. Defaults to 0.5. */
   iouThreshold?: number;
@@ -61,8 +67,9 @@ export interface YoloDetectorOptions {
 }
 
 const DEFAULTS = {
-  inputSize: 640,
-  minConfidence: 0.3,
+  inputWidth: 640,
+  inputHeight: 480,
+  minConfidence: 0.25,
   iouThreshold: 0.5,
 };
 
@@ -86,7 +93,8 @@ const ZONE_GRID = 200;
  * always false.
  */
 export class YoloDetector {
-  private readonly inputSize: number;
+  private readonly inputWidth: number;
+  private readonly inputHeight: number;
   private readonly minConfidence: number;
   private readonly iouThreshold: number;
   private readonly ignored: Uint8Array | null;
@@ -95,7 +103,8 @@ export class YoloDetector {
     private readonly session: YoloSession,
     options: YoloDetectorOptions = {},
   ) {
-    this.inputSize = options.inputSize ?? DEFAULTS.inputSize;
+    this.inputWidth = options.inputWidth ?? DEFAULTS.inputWidth;
+    this.inputHeight = options.inputHeight ?? DEFAULTS.inputHeight;
     this.minConfidence = options.minConfidence ?? DEFAULTS.minConfidence;
     this.iouThreshold = options.iouThreshold ?? DEFAULTS.iouThreshold;
     const zones = options.ignoreZones ?? [];
@@ -103,8 +112,8 @@ export class YoloDetector {
   }
 
   async detect(frame: VideoFrame): Promise<DetectionResult> {
-    const letterbox = letterboxToTensor(frame, this.inputSize);
-    const output = await this.session.run(letterbox.tensor, this.inputSize);
+    const letterbox = letterboxToTensor(frame, this.inputWidth, this.inputHeight);
+    const output = await this.session.run(letterbox.tensor, this.inputWidth, this.inputHeight);
     const detections = decodeYoloOutput(output.data, output.dims, {
       ...letterbox,
       frameWidth: frame.width,
@@ -124,7 +133,7 @@ export class YoloDetector {
 }
 
 export interface Letterbox {
-  /** NCHW float32 RGB, 0-1, `size x size`. */
+  /** NCHW float32 RGB, 0-1, `width x height`. */
   tensor: Float32Array;
   /** Model-input pixels per frame pixel. */
   scale: number;
@@ -132,16 +141,16 @@ export interface Letterbox {
 
 /**
  * Converts a `yuv420p` frame to the model's input: scaled (nearest
- * neighbour) to fit `size x size` with its aspect ratio kept, anchored top
- * left, the rest padded grey as YOLO was trained with. BT.601 limited-range
- * conversion, which is what these camera encoders emit.
+ * neighbour) to fit `inputWidth x inputHeight` with its aspect ratio kept,
+ * anchored top left, the rest padded grey as YOLO was trained with. BT.601
+ * limited-range conversion, which is what these camera encoders emit.
  */
-export function letterboxToTensor(frame: VideoFrame, size: number): Letterbox {
+export function letterboxToTensor(frame: VideoFrame, inputWidth: number, inputHeight: number = inputWidth): Letterbox {
   const { width, height, data } = frame;
-  const scale = Math.min(size / width, size / height);
-  const outW = Math.min(size, Math.round(width * scale));
-  const outH = Math.min(size, Math.round(height * scale));
-  const plane = size * size;
+  const scale = Math.min(inputWidth / width, inputHeight / height);
+  const outW = Math.min(inputWidth, Math.round(width * scale));
+  const outH = Math.min(inputHeight, Math.round(height * scale));
+  const plane = inputWidth * inputHeight;
   const tensor = new Float32Array(3 * plane).fill(114 / 255);
 
   const chromaW = Math.ceil(width / 2);
@@ -157,7 +166,7 @@ export function letterboxToTensor(frame: VideoFrame, size: number): Letterbox {
       const c = 1.164 * (data[lumaRow + sx] - 16);
       const u = data[uOffset + chromaRow + (sx >> 1)] - 128;
       const v = data[vOffset + chromaRow + (sx >> 1)] - 128;
-      const i = y * size + x;
+      const i = y * inputWidth + x;
       tensor[i] = clamp01((c + 1.596 * v) / 255);
       tensor[plane + i] = clamp01((c - 0.392 * u - 0.813 * v) / 255);
       tensor[2 * plane + i] = clamp01((c + 2.017 * u) / 255);

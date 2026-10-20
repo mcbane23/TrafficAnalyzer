@@ -49,6 +49,15 @@ export interface VehicleTrackerOptions {
    * that then stops at a red light keeps its box.
    */
   minTravel?: number;
+  /**
+   * How long (ms) a confirmed track that missed this frame keeps being
+   * reported, at its predicted position. Defaults to 0: only tracks matched
+   * on this frame are reported, which is right for counting. For drawing
+   * an appearance model's boxes it isn't - such a model misses a given car
+   * on one frame in three or so, and a box that blinks out for a frame
+   * reads as the detector failing.
+   */
+  reportCoastingMs?: number;
 }
 
 const DEFAULTS = {
@@ -60,6 +69,7 @@ const DEFAULTS = {
   accelerationNoise: 0.5,
   sizeSmoothing: 0.4,
   minTravel: 0.6,
+  reportCoastingMs: 0,
 };
 
 /** Initial velocity variance for a brand new track, in (frame-widths per second)^2 - a new vehicle could be moving any which way. */
@@ -137,6 +147,8 @@ interface Track {
   lastSeenMs: number;
   firstBox: BoundingBox;
   lastBox: BoundingBox;
+  /** The last detection matched to this track - what a coasting track is reported as. */
+  lastDetection: VehicleDetection;
   /** Index of the detection this track was matched to on the current frame, or -1 - set during `update`. */
   matchedIndex: number;
 }
@@ -188,6 +200,7 @@ export class VehicleTracker {
   private readonly accelerationNoise: number;
   private readonly sizeSmoothing: number;
   private readonly minTravel: number;
+  private readonly reportCoastingMs: number;
   private tracks: Track[] = [];
   private nextId = 1;
   private lastFrameMs: number | null = null;
@@ -201,6 +214,7 @@ export class VehicleTracker {
     this.accelerationNoise = options.accelerationNoise ?? DEFAULTS.accelerationNoise;
     this.sizeSmoothing = options.sizeSmoothing ?? DEFAULTS.sizeSmoothing;
     this.minTravel = options.minTravel ?? DEFAULTS.minTravel;
+    this.reportCoastingMs = options.reportCoastingMs ?? DEFAULTS.reportCoastingMs;
   }
 
   /** Feeds one frame's detections, taken at `timestampMs` (epoch ms), through the tracker. */
@@ -256,9 +270,14 @@ export class VehicleTracker {
     }
 
     const reported = this.tracks
-      .filter((t) => t.confirmed && t.travelled && t.matchedIndex >= 0)
-      .sort((a, b) => a.matchedIndex - b.matchedIndex)
-      .map((t): TrackedVehicleDetection => ({ ...detections[t.matchedIndex], trackId: t.id, box: currentBox(t) }));
+      .filter(
+        (t) =>
+          t.confirmed &&
+          t.travelled &&
+          (t.matchedIndex >= 0 || (this.reportCoastingMs > 0 && timestampMs - t.lastSeenMs <= this.reportCoastingMs)),
+      )
+      .sort((a, b) => (a.matchedIndex < 0 ? Infinity : a.matchedIndex) - (b.matchedIndex < 0 ? Infinity : b.matchedIndex))
+      .map((t): TrackedVehicleDetection => ({ ...t.lastDetection, trackId: t.id, box: currentBox(t) }));
 
     return { tracks: reported, finished };
   }
@@ -340,6 +359,7 @@ export class VehicleTracker {
     track.hits += 1;
     track.lastSeenMs = timestampMs;
     track.lastBox = box;
+    track.lastDetection = detections[index];
     track.matchedIndex = index;
     if (track.hits >= this.minHits) track.confirmed = true;
     if (!track.travelled) {
@@ -367,6 +387,7 @@ export class VehicleTracker {
       lastSeenMs: timestampMs,
       firstBox: box,
       lastBox: box,
+      lastDetection: detection,
       matchedIndex: index,
     };
   }

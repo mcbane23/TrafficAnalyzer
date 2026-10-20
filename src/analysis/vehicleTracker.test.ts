@@ -210,4 +210,21 @@ describe('VehicleTracker', () => {
 
     expect(updates.slice(-10).every((u) => u.tracks.length === 1 && u.tracks[0].trackId === 1)).toBe(true);
   });
+
+  it('keeps reporting a confirmed track at its predicted position for reportCoastingMs after a miss, then stops', () => {
+    const tracker = new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 500 });
+    const car = { ...det({ x: 0.3, y: 0.5 }), class: 'car' as const };
+    run(tracker, [[car], [car]]);
+
+    const missed = tracker.update([], T0 + 400);
+    expect(missed.tracks).toHaveLength(1);
+    expect(missed.tracks[0]).toMatchObject({ trackId: 1, class: 'car' });
+    expect(tracker.update([], T0 + 800).tracks).toEqual([]);
+  });
+
+  it('reports only tracks matched on this frame by default', () => {
+    const tracker = new VehicleTracker({ minHits: 1, minTravel: 0 });
+    run(tracker, [[det({ x: 0.3, y: 0.5 })]]);
+    expect(tracker.update([], T0 + 200).tracks).toEqual([]);
+  });
 });
