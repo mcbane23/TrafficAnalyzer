@@ -23,6 +23,64 @@ export interface YoloSession {
 export const BUNDLED_YOLO_MODEL_PATH = path.resolve(__dirname, '../../models/yolo11n.onnx');
 
 /**
+ * Path to the bundled YOLO11s (COCO-pretrained) OpenVINO IR model, FP16, with
+ * a 960x736 input, for an Intel GPU. On the 704x576 camera streams YOLO11n at
+ * 640px found 3 of ~100 cars on Gazela; this one finds ~40, at roughly 4x the
+ * compute - affordable on an iGPU, not on the CPU next to the fleet analysis.
+ */
+export const BUNDLED_OPENVINO_MODEL_PATH = path.resolve(__dirname, '../../models/yolo11s-openvino/yolo11s.xml');
+
+/** A loaded detector model: how to run it, and the input size it was exported with. */
+export interface YoloModel {
+  session: YoloSession;
+  inputWidth: number;
+  inputHeight: number;
+  /** What runs where, for the logs - e.g. "YOLO11s on OpenVINO GPU". */
+  label: string;
+}
+
+export interface LoadYoloModelOptions {
+  /**
+   * OpenVINO device to run the larger model on (e.g. "GPU"), or undefined /
+   * "CPU" for YOLO11n on onnxruntime. A device that fails to load (no
+   * /dev/dri in the container, no driver) falls back to the CPU model.
+   */
+  device?: string;
+  /** onnxruntime threads for the CPU model. Defaults to 2. */
+  threads?: number;
+  /** OpenVINO compiled-model cache, so a restart doesn't recompile for the GPU (tens of seconds). */
+  cacheDir?: string;
+}
+
+export interface YoloModelLoaders {
+  openVino: (modelPath: string, device: string, cacheDir?: string) => Promise<YoloSession>;
+  onnx: (modelPath: string | undefined, threads: number) => Promise<YoloSession>;
+}
+
+/**
+ * Loads the overlay's detector: YOLO11s through OpenVINO on `device` when
+ * one is asked for, else - or when that fails - YOLO11n on the CPU.
+ */
+export async function loadYoloModel(
+  options: LoadYoloModelOptions = {},
+  loaders: YoloModelLoaders = { openVino: createOpenVinoYoloSession, onnx: createOnnxYoloSession },
+): Promise<YoloModel> {
+  const device = options.device?.trim().toUpperCase();
+  if (device && device !== 'CPU') {
+    try {
+      const session = await loaders.openVino(BUNDLED_OPENVINO_MODEL_PATH, device, options.cacheDir);
+      return { session, inputWidth: 960, inputHeight: 736, label: `YOLO11s on OpenVINO ${device}` };
+    } catch (err) {
+      console.warn(
+        `[YoloDetector] OpenVINO device ${device} unavailable, using YOLO11n on the CPU: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  const session = await loaders.onnx(undefined, options.threads ?? 2);
+  return { session, inputWidth: 640, inputHeight: 480, label: 'YOLO11n on CPU' };
+}
+
+/**
  * Opens an onnxruntime CPU session over a YOLO ONNX model. `onnxruntime-node`
  * is loaded lazily, so nothing that merely imports this module pays for it.
  */
@@ -44,6 +102,35 @@ export async function createOnnxYoloSession(modelPath: string = BUNDLED_YOLO_MOD
   };
 }
 
+/**
+ * Compiles an OpenVINO IR (or ONNX) YOLO model for `device`. `openvino-node`
+ * is loaded lazily, like onnxruntime. Inference is serialized on one infer
+ * request: the GPU runs one frame at a time anyway, and an infer request
+ * can't be reused while busy.
+ */
+export async function createOpenVinoYoloSession(modelPath: string, device: string, cacheDir?: string): Promise<YoloSession> {
+  const { addon: ov } = await import('openvino-node');
+  const core = new ov.Core();
+  const compiled = await core.compileModel(modelPath, device, {
+    PERFORMANCE_HINT: 'LATENCY',
+    ...(cacheDir ? { CACHE_DIR: cacheDir } : {}),
+  });
+  const request = compiled.createInferRequest();
+  let queue: Promise<unknown> = Promise.resolve();
+  return {
+    run: (input, width, height) => {
+      const result = queue.then(async () => {
+        const outputs = await request.inferAsync([new ov.Tensor(ov.element.f32, [1, 3, height, width], input)]);
+        const output = Object.values(outputs)[0];
+        // Copied: the request's output buffer is overwritten by the next frame.
+        return { data: new Float32Array(output.data as Float32Array), dims: output.getShape() };
+      });
+      queue = result.catch(() => undefined);
+      return result;
+    },
+  };
+}
+
 /** COCO class ids this detector reports, and what they are reported as. Trams come out of COCO models as "train". */
 const COCO_VEHICLES: ReadonlyMap<number, VehicleClass> = new Map<number, VehicleClass>([
   [2, 'car'],
@@ -54,10 +141,6 @@ const COCO_VEHICLES: ReadonlyMap<number, VehicleClass> = new Map<number, Vehicle
 ]);
 
 export interface YoloDetectorOptions {
-  /** Model input width, in pixels. Must match the exported model. Defaults to 640. */
-  inputWidth?: number;
-  /** Model input height, in pixels. Must match the exported model. Defaults to 480. */
-  inputHeight?: number;
   /** Class score below which a candidate is discarded. Defaults to 0.25, the usual YOLO setting. */
   minConfidence?: number;
   /** Overlap (IoU) above which the weaker of two boxes is suppressed. Defaults to 0.5. */
@@ -67,8 +150,6 @@ export interface YoloDetectorOptions {
 }
 
 const DEFAULTS = {
-  inputWidth: 640,
-  inputHeight: 480,
   minConfidence: 0.25,
   iouThreshold: 0.5,
 };
@@ -86,25 +167,23 @@ const ZONE_GRID = 200;
  * exactly where motion detection fails on this fleet: a fountain or a
  * billboard is not a vehicle whatever it does, and a queue of cars is several
  * boxes rather than one merged blob. Where it loses is small, distant
- * vehicles on wide views, which the 640px input shrinks below what a nano
- * model can see.
+ * vehicles on wide views, which a 640px input shrinks below what a nano
+ * model can see - hence the larger model when a GPU is available.
  *
  * It needs no warm-up and holds no per-camera state, so `warmingUp` is
- * always false.
+ * always false. The model is asked for on every frame rather than passed
+ * in, so it can be loaded (and the CPU-or-GPU choice made) only once
+ * someone actually watches a camera; the caller caches it.
  */
 export class YoloDetector {
-  private readonly inputWidth: number;
-  private readonly inputHeight: number;
   private readonly minConfidence: number;
   private readonly iouThreshold: number;
   private readonly ignored: Uint8Array | null;
 
   constructor(
-    private readonly session: YoloSession,
+    private readonly model: () => Promise<YoloModel>,
     options: YoloDetectorOptions = {},
   ) {
-    this.inputWidth = options.inputWidth ?? DEFAULTS.inputWidth;
-    this.inputHeight = options.inputHeight ?? DEFAULTS.inputHeight;
     this.minConfidence = options.minConfidence ?? DEFAULTS.minConfidence;
     this.iouThreshold = options.iouThreshold ?? DEFAULTS.iouThreshold;
     const zones = options.ignoreZones ?? [];
@@ -112,8 +191,9 @@ export class YoloDetector {
   }
 
   async detect(frame: VideoFrame): Promise<DetectionResult> {
-    const letterbox = letterboxToTensor(frame, this.inputWidth, this.inputHeight);
-    const output = await this.session.run(letterbox.tensor, this.inputWidth, this.inputHeight);
+    const { session, inputWidth, inputHeight } = await this.model();
+    const letterbox = letterboxToTensor(frame, inputWidth, inputHeight);
+    const output = await session.run(letterbox.tensor, inputWidth, inputHeight);
     const detections = decodeYoloOutput(output.data, output.dims, {
       ...letterbox,
       frameWidth: frame.width,

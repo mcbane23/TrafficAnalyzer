@@ -273,6 +273,18 @@ precedent for Vue components.
   AGPL-3.0, exported with a 640x480 input to match the capture - a square 640 input wasted a quarter
   of each inference on padding). `onnxruntime-node` is loaded lazily, and `.npmrc` skips its CUDA
   download. The Dockerfile drops its darwin/win32 binaries.
+- **`OVERLAY_DEVICE=GPU` runs the overlay on an Intel iGPU via OpenVINO** (Bane's call after
+  measuring recall: YOLO11n at 640px saw 3 of ~100 cars on Gazela, YOLO11s at 960px ~25-40, at ~4x
+  the compute). `loadYoloModel` compiles `models/yolo11s-openvino/yolo11s.xml` (FP16 IR, 960x736
+  input, output tensor renamed `output0` - an unnamed output makes `openvino-node` throw) on that
+  device, caching kernels in `data/openvino-cache`, and falls back to YOLO11n on onnxruntime CPU if
+  it fails; the overlay capture is 960x720 in GPU mode. `YoloDetector` takes a `() =>
+  Promise<YoloModel>` so the CPU-or-GPU choice is made lazily on the first viewer. The container
+  needs `/dev/dri` and the host's `render` GID in `group_add`. The runtime image is Debian trixie
+  with Intel's Ubuntu 24.04 `intel-opencl-icd` (bookworm's 2022 driver predates the N150 iGPU);
+  the Dockerfile drops `openvino-node`'s unused frontends and NPU plugin but must keep the IR
+  frontend. The GPU path can't be exercised in CI or the sandbox (OpenVINO's CPU device can, with
+  the same IR).
 - **The overlay must never fall behind the player** (regression found on Bane's N150: boxes only
   flickered on now and then). Its capture uses `maxQueuedFrames: 1`, so a detector slower than
   `OVERLAY_FPS` skips frames instead of working through a growing backlog that the player soon
@@ -282,7 +294,15 @@ precedent for Vue components.
   (box diagonals per second) caps the association gate: with `minHits: 1` and ~1 fps on the N150,
   a young track's Kalman gate spanned the whole picture and its box slid across to another car. The player holds/interpolates across gaps up to 2s. Throughput is logged
   once a minute as `[LiveOverlayService] <id>: X frames/s, detection N ms/frame, V vehicles/frame`;
-  on 3 sandbox cores it ran ~2.9 fps at ~155ms/frame with ~10 vehicles per frame on Slavija.
+  on 3 sandbox cores it ran ~2.9 fps at ~155ms/frame with ~10 vehicles per frame on Slavija. The
+  line also reports the capture's stream seconds per wall second: below 1x the overlay ffmpeg is
+  starved of CPU (seen in the sandbox with the fleet plus YOLO on the CPU: 0.5-0.7x) and falls
+  behind until the player overtakes it and draws no boxes.
+- **The camera page's "In view" is the number of boxes drawn**, not the motion analysis's
+  `totalCount`: `StreamPlayer` emits `inView` with the boxes it places on the current picture, and
+  `CameraDetailView` passes it to `AnalysisPanel` (falling back to `totalCount` before the first
+  result). YOLO boxed 13-14 vehicles where motion analysis said 4. The dashboard cards still show
+  `totalCount`.
 - **Motion-detection false positives, as measured on live footage**, and their fixes: a fountain
   (Slavija) and LED billboards (Gazela, Autokomanda) are covered by per-camera `ignoreZones` in
   `belgrade.json` (normalized polygons that `BackgroundModel` never treats as foreground or roadway,

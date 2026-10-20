@@ -54,6 +54,7 @@
     "express": "^5.2.1",
     "hls.js": "^1.6.16",
     "onnxruntime-node": "^1.30.0",
+    "openvino-node": "^2026.4.1",
     "sharp": "^0.35.3",
     "vue": "^3.5.40",
     "vue-chartjs": "^5.3.4",

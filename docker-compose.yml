@@ -8,6 +8,15 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
+      # Run the live-view vehicle detector on an Intel GPU (OpenVINO). Needs the
+      # `devices` / `group_add` lines below; without them it falls back to the CPU.
+      # - OVERLAY_DEVICE=GPU
+    # Intel GPU for OVERLAY_DEVICE=GPU. group_add is the host's `render` group id:
+    # `stat -c %g /dev/dri/renderD128`.
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - "107"
     volumes:
       # Persist registry edits made by `docker compose exec trafficanalyzer node dist/cli/revalidate.js`,
       # and TrafficHistoryStore's traffic-history.db (created on first run) across container recreation.

@@ -12,7 +12,7 @@ import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
 import { TrafficStatsStore } from '../analysis/trafficStatsStore';
 import { TrafficStatsService } from '../analysis/trafficStatsService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
-import { YoloDetector, YoloSession, createOnnxYoloSession } from '../analysis/yoloDetector';
+import { YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
 import { VehicleTracker } from '../analysis/vehicleTracker';
 
 const REGISTRY_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.json');
@@ -20,6 +20,8 @@ const SCHEMA_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.schema.
 // Runtime-generated - not committed (see .gitignore) - recreated on first boot.
 const TRAFFIC_HISTORY_DB_PATH = path.resolve(__dirname, '../../data/traffic-history.db');
 const TRAFFIC_STATS_DB_PATH = path.resolve(__dirname, '../../data/traffic-stats.db');
+// Runtime-generated as well: OpenVINO's compiled GPU kernels for the overlay model.
+const OPENVINO_CACHE_DIR = path.resolve(__dirname, '../../data/openvino-cache');
 // Resolved from the working directory, not `__dirname` like the paths above:
 // `__dirname` is src/server under `tsx watch` (uncompiled) but dist/server
 // once built, so a `__dirname`-relative `../web` would land on src/web (raw
@@ -55,17 +57,23 @@ const trafficAnalysisService = new TrafficAnalysisService(
   { onResult: (result) => trafficStatsService.handleResult(result) },
 );
 // Boxes over the camera someone is watching come from an appearance model
-// (YOLO11n), run only while that camera has viewers - see LiveOverlayService.
+// (YOLO), run only while that camera has viewers - see LiveOverlayService.
 // OVERLAY_DETECTOR=off falls back to drawing the motion-detection boxes;
 // OVERLAY_FPS (default 3) and OVERLAY_THREADS (default 2) trade smoothness
-// against CPU.
-let overlaySession: Promise<YoloSession> | null = null;
-const lazyOverlaySession: YoloSession = {
-  run: async (input, width, height) => {
-    overlaySession ??= createOnnxYoloSession(undefined, Number(process.env.OVERLAY_THREADS) || 2);
-    return (await overlaySession).run(input, width, height);
-  },
-};
+// against CPU. OVERLAY_DEVICE=GPU runs the larger YOLO11s on an Intel GPU
+// through OpenVINO (the container needs /dev/dri), falling back to YOLO11n
+// on the CPU if the GPU can't be used.
+const overlayDevice = process.env.OVERLAY_DEVICE?.trim().toUpperCase() || 'CPU';
+let overlayModel: Promise<YoloModel> | null = null;
+const loadOverlayModel = (): Promise<YoloModel> =>
+  (overlayModel ??= loadYoloModel({
+    device: overlayDevice,
+    threads: Number(process.env.OVERLAY_THREADS) || 2,
+    cacheDir: OPENVINO_CACHE_DIR,
+  }).then((model) => {
+    console.log(`[LiveOverlayService] detector: ${model.label}`);
+    return model;
+  }));
 const liveOverlayService =
   process.env.OVERLAY_DETECTOR === 'off'
     ? null
@@ -77,12 +85,14 @@ const liveOverlayService =
         // second, until the player overtakes it and has no boxes to draw.
         new FrameGrabber({
           streamFps: Number(process.env.OVERLAY_FPS) || undefined,
-          frameWidth: 640,
-          frameHeight: 480,
+          // The GPU model's 960px input is fed a matching frame (the streams
+          // are 704x576, so this upscales; small cars get more pixels).
+          frameWidth: overlayDevice === 'CPU' ? 640 : 960,
+          frameHeight: overlayDevice === 'CPU' ? 480 : 720,
           maxQueuedFrames: 1,
         }),
         (camera) => ({
-          detector: new YoloDetector(lazyOverlaySession, { ignoreZones: camera.ignoreZones?.map((zone) => zone.points) }),
+          detector: new YoloDetector(loadOverlayModel, { ignoreZones: camera.ignoreZones?.map((zone) => zone.points) }),
           // Every vehicle the model sees is drawn, parked or queued ones
           // included (no travel gate, no confirmation delay), and a car the
           // model misses on one frame keeps its box for a second instead of
