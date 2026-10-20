@@ -86,8 +86,9 @@ const liveOverlayService =
           // Every vehicle the model sees is drawn, parked or queued ones
           // included (no travel gate, no confirmation delay), and a car the
           // model misses on one frame keeps its box for a second instead of
-          // blinking out.
-          tracker: new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 1000 }),
+          // blinking out. maxSpeed stops a track from jumping to a different
+          // car when frames are a second apart on a slow host.
+          tracker: new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 1000, maxSpeed: 2 }),
         }),
       );
 const app = createApp(
