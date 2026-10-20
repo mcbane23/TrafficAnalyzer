@@ -1,12 +1,15 @@
 import { execFile, spawn } from 'node:child_process';
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 
 /**
  * Path to the ffmpeg binary bundled via `@ffmpeg-installer/ffmpeg`, mirroring
  * how `probeRunner.ts` bundles ffprobe - no system-wide ffmpeg install is
- * required.
+ * required. Loaded on demand, not at import: the Docker image sets
+ * `FFMPEG_PATH` and deletes the bundled binaries (~66 MB), so the package must
+ * not be required when the override is present.
  */
-export const BUNDLED_FFMPEG_PATH = ffmpegInstaller.path;
+export function bundledFfmpegPath(): string {
+  return (require('@ffmpeg-installer/ffmpeg') as { path: string }).path;
+}
 
 /**
  * The ffmpeg actually used by default: `FFMPEG_PATH` from the environment if
@@ -17,7 +20,7 @@ export const BUNDLED_FFMPEG_PATH = ffmpegInstaller.path;
  * must be supplied this way; see the Dockerfile. The bundled binary is fine
  * for local files, which is all the tests feed it.
  */
-export const FFMPEG_PATH = process.env.FFMPEG_PATH || BUNDLED_FFMPEG_PATH;
+export const FFMPEG_PATH = process.env.FFMPEG_PATH || bundledFfmpegPath();
 
 /** Result of running a single ffmpeg invocation. */
 export interface FfmpegOutcome {

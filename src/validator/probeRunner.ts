@@ -1,12 +1,15 @@
 import { execFile } from 'node:child_process';
-import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 
 /**
  * Path to the ffprobe binary bundled via `@ffprobe-installer/ffprobe`. Used as
  * the default so the app works standalone, without requiring ffmpeg to be
- * installed separately on the host machine.
+ * installed separately on the host machine. Loaded on demand, not at import:
+ * the Docker image sets `FFPROBE_PATH` and deletes the bundled binaries
+ * (~76 MB), so the package must not be required when the override is present.
  */
-export const BUNDLED_FFPROBE_PATH = ffprobeInstaller.path;
+export function bundledFfprobePath(): string {
+  return (require('@ffprobe-installer/ffprobe') as { path: string }).path;
+}
 
 /**
  * The ffprobe actually used by default: `FFPROBE_PATH` from the environment
@@ -15,7 +18,7 @@ export const BUNDLED_FFPROBE_PATH = ffprobeInstaller.path;
  * `https://` URL whose host needs a DNS lookup. So on Linux (the Docker
  * image) a system ffprobe must be supplied this way; see the Dockerfile.
  */
-export const FFPROBE_PATH = process.env.FFPROBE_PATH || BUNDLED_FFPROBE_PATH;
+export const FFPROBE_PATH = process.env.FFPROBE_PATH || bundledFfprobePath();
 
 /**
  * Result of running a single ffprobe invocation.
