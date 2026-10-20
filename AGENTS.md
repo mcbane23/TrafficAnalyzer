@@ -40,6 +40,7 @@ colocated `*.test.ts`:
 | `VehicleTracker` | [src/analysis/vehicleTracker.ts](src/analysis/vehicleTracker.ts) | Yes — pure ByteTrack-style logic (Kalman + Hungarian via [assignment.ts](src/analysis/assignment.ts)), timestamps passed in, no injectable seam needed |
 | `OccupancyEstimator` | [src/analysis/occupancyEstimator.ts](src/analysis/occupancyEstimator.ts) | Yes — same, through the `BackgroundModel` it wraps |
 | `CameraAnalyzer` | [src/analysis/cameraAnalyzer.ts](src/analysis/cameraAnalyzer.ts) | Yes — injects a fake detector/tracker/occupancy estimator; canned detections in, a result out |
+| `AnalysisWorkerPool` | [src/analysis/analysisWorkerPool.ts](src/analysis/analysisWorkerPool.ts) | Yes — `AnalysisWorkerHost` driven by an in-process fake worker (`createWorker` seam); [analysisWorker.ts](src/analysis/analysisWorker.ts) is the thin `worker_threads` entry |
 | `VehicleColorEstimator` | [src/analysis/vehicleColorEstimator.ts](src/analysis/vehicleColorEstimator.ts) | No — best-effort/cosmetic, low-risk (explicit PRD call-out). Currently unwired, see below |
 | `TrafficHistoryStore` | [src/analysis/trafficHistoryStore.ts](src/analysis/trafficHistoryStore.ts) | Yes — against a real in-memory (`:memory:`) SQLite DB, not mocked |
 | `TrafficAnalysisService` | [src/analysis/trafficAnalysisService.ts](src/analysis/trafficAnalysisService.ts) | Yes — mocks `FrameGrabberLike`/`CameraAnalyzerLike`/`TrafficHistoryStoreLike`/`AnalysisScheduler` |
@@ -220,6 +221,15 @@ precedent for Vue components.
   fixed spec. Continuous analysis of every camera is a deliberate product choice so
   statistics cover the whole fleet; the earlier design analyzed one frame per camera at startup,
   which never got past the detector's 20-frame warm-up, so every dashboard count was a zero.
+- **The fleet's motion analysis runs on worker threads** (`AnalysisWorkerPool`, `ANALYSIS_THREADS`,
+  default 2; `0` keeps it on the main thread). Measured on Bane's N150 with the GPU overlay: the
+  main Node thread, not the CPU (231% of 400%), was the bottleneck. While it was busy it read the
+  overlay's ffmpeg pipe late, so the overlay ran at 0.33-0.73x real time; at `ANALYSIS_FPS=1` it was
+  1.00x. The pool's `createAnalyzer` plugs into `TrafficAnalysisService`'s existing seam, each camera
+  stays on one worker (its learned state lives there), and a dead worker is replaced after
+  `restartDelayMs` with its cameras re-created from scratch. Under `tsx` the worker registers
+  `tsx/cjs/api` itself, since a worker thread doesn't inherit tsx's loader. On 20 synthetic cameras
+  in the sandbox, main-thread busy time dropped from 39% to 8% with identical results.
 - `VehicleColorEstimator` is currently **unwired** — nothing constructs or calls it. Per-detection
   crop+resize cost, compounding with detection count, slowed every tick down for a field nothing
   needed yet. It's kept on disk because re-enabling it is a one-line change inside
