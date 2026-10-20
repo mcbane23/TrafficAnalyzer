@@ -11,6 +11,9 @@ services:
       # Run the live-view vehicle detector on an Intel GPU (OpenVINO). Needs the
       # `devices` / `group_add` lines below; without them it falls back to the CPU.
       # - OVERLAY_DEVICE=GPU
+      # Live-view model on the GPU: yolo11s (default, finds the most distant cars),
+      # yolo26n (~2.4x faster, misses more distant cars) or yolo26s.
+      # - OVERLAY_MODEL=yolo11s
     # Intel GPU for OVERLAY_DEVICE=GPU. group_add is the host's `render` group id:
     # `stat -c %g /dev/dri/renderD128`.
     # devices:

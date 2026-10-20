@@ -134,6 +134,23 @@ describe('loadYoloModel', () => {
     expect(model).toMatchObject({ inputWidth: 960, inputHeight: 736, label: 'YOLO11s on OpenVINO GPU' });
   });
 
+  it('runs the OpenVINO model picked by name', async () => {
+    const openVino = jest.fn(async () => session);
+    const model = await loadYoloModel({ device: 'GPU', model: ' YOLO26n ' }, { openVino, onnx: jest.fn() });
+    expect(openVino).toHaveBeenCalledWith(expect.stringMatching(/yolo26n-openvino\/yolo26n\.xml$/), 'GPU', undefined);
+    expect(model).toMatchObject({ inputWidth: 960, inputHeight: 736, label: 'YOLO26n on OpenVINO GPU' });
+  });
+
+  it('falls back to YOLO11s for an unknown model name', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const openVino = jest.fn(async () => session);
+    const model = await loadYoloModel({ device: 'GPU', model: 'yolo99x' }, { openVino, onnx: jest.fn() });
+    expect(openVino).toHaveBeenCalledWith(expect.stringMatching(/yolo11s\.xml$/), 'GPU', undefined);
+    expect(model.label).toBe('YOLO11s on OpenVINO GPU');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('yolo99x'));
+    warn.mockRestore();
+  });
+
   it('falls back to the CPU model when the device fails to load', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const onnx = jest.fn(async () => session);

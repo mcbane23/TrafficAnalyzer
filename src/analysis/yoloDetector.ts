@@ -30,6 +30,21 @@ export const BUNDLED_YOLO_MODEL_PATH = path.resolve(__dirname, '../../models/yol
  */
 export const BUNDLED_OPENVINO_MODEL_PATH = path.resolve(__dirname, '../../models/yolo11s-openvino/yolo11s.xml');
 
+/**
+ * The OpenVINO models `OVERLAY_MODEL` can pick, all FP16 with the same
+ * 960x736 input and `[1, 84, anchors]` output. YOLO11s is the default. On six
+ * camera frames (960px, confidence 0.25, OpenVINO CPU) it found 112 vehicles
+ * in 145 ms per frame; YOLO26n found 77 (Gazela 7 against 26) in 59 ms, and
+ * YOLO26s 98 in 139 ms. The YOLO26 ones are there to compare live, or for
+ * when speed matters more than distant cars.
+ */
+export const OPENVINO_MODELS: Readonly<Record<string, { path: string; label: string }>> = {
+  yolo11s: { path: BUNDLED_OPENVINO_MODEL_PATH, label: 'YOLO11s' },
+  yolo26n: { path: path.resolve(__dirname, '../../models/yolo26n-openvino/yolo26n.xml'), label: 'YOLO26n' },
+  yolo26s: { path: path.resolve(__dirname, '../../models/yolo26s-openvino/yolo26s.xml'), label: 'YOLO26s' },
+};
+const DEFAULT_OPENVINO_MODEL = 'yolo11s';
+
 /** A loaded detector model: how to run it, and the input size it was exported with. */
 export interface YoloModel {
   session: YoloSession;
@@ -46,6 +61,8 @@ export interface LoadYoloModelOptions {
    * /dev/dri in the container, no driver) falls back to the CPU model.
    */
   device?: string;
+  /** Which of `OPENVINO_MODELS` to run on that device. Defaults to yolo11s; an unknown name falls back to it with a warning. */
+  model?: string;
   /** onnxruntime threads for the CPU model. Defaults to 2. */
   threads?: number;
   /** OpenVINO compiled-model cache, so a restart doesn't recompile for the GPU (tens of seconds). */
@@ -58,8 +75,9 @@ export interface YoloModelLoaders {
 }
 
 /**
- * Loads the overlay's detector: YOLO11s through OpenVINO on `device` when
- * one is asked for, else - or when that fails - YOLO11n on the CPU.
+ * Loads the overlay's detector: `model` (YOLO11s by default) through
+ * OpenVINO on `device` when one is asked for, else - or when that fails -
+ * YOLO11n on the CPU.
  */
 export async function loadYoloModel(
   options: LoadYoloModelOptions = {},
@@ -67,9 +85,15 @@ export async function loadYoloModel(
 ): Promise<YoloModel> {
   const device = options.device?.trim().toUpperCase();
   if (device && device !== 'CPU') {
+    const requested = options.model?.trim().toLowerCase() || DEFAULT_OPENVINO_MODEL;
+    let model = OPENVINO_MODELS[requested];
+    if (!model) {
+      console.warn(`[YoloDetector] Unknown model "${requested}" (expected ${Object.keys(OPENVINO_MODELS).join(', ')}), using ${DEFAULT_OPENVINO_MODEL}`);
+      model = OPENVINO_MODELS[DEFAULT_OPENVINO_MODEL];
+    }
     try {
-      const session = await loaders.openVino(BUNDLED_OPENVINO_MODEL_PATH, device, options.cacheDir);
-      return { session, inputWidth: 960, inputHeight: 736, label: `YOLO11s on OpenVINO ${device}` };
+      const session = await loaders.openVino(model.path, device, options.cacheDir);
+      return { session, inputWidth: 960, inputHeight: 736, label: `${model.label} on OpenVINO ${device}` };
     } catch (err) {
       console.warn(
         `[YoloDetector] OpenVINO device ${device} unavailable, using YOLO11n on the CPU: ${err instanceof Error ? err.message : String(err)}`,
