@@ -36,6 +36,19 @@ export interface VehicleTrackerOptions {
   accelerationNoise?: number;
   /** Weight (0-1) given to a frame's raw detected size versus the track's current size. Defaults to 0.4. */
   sizeSmoothing?: number;
+  /**
+   * How far a confirmed track's centre must have travelled from where it was
+   * first seen, as a multiple of its own larger box side, before it is
+   * reported or counted. Defaults to 0.6; 0 switches the check off.
+   *
+   * Motion detection reports anything that changes, and much of what changes
+   * in a fixed view never goes anywhere: a fountain, an LED billboard, a tree
+   * in the wind, a ghost left where a parked car pulled out. All of those
+   * produce blobs that are stable enough to confirm, but they churn in place.
+   * Vehicles travel. Once a track has travelled it stays reported, so a car
+   * that then stops at a red light keeps its box.
+   */
+  minTravel?: number;
 }
 
 const DEFAULTS = {
@@ -46,6 +59,7 @@ const DEFAULTS = {
   minSimilarity: 0.25,
   accelerationNoise: 0.5,
   sizeSmoothing: 0.4,
+  minTravel: 0.6,
 };
 
 /** Initial velocity variance for a brand new track, in (frame-widths per second)^2 - a new vehicle could be moving any which way. */
@@ -117,6 +131,8 @@ interface Track {
   height: number;
   hits: number;
   confirmed: boolean;
+  /** Whether the track has ever travelled `minTravel` from its first position - see that option. */
+  travelled: boolean;
   firstSeenMs: number;
   lastSeenMs: number;
   firstBox: BoundingBox;
@@ -171,6 +187,7 @@ export class VehicleTracker {
   private readonly minSimilarity: number;
   private readonly accelerationNoise: number;
   private readonly sizeSmoothing: number;
+  private readonly minTravel: number;
   private tracks: Track[] = [];
   private nextId = 1;
   private lastFrameMs: number | null = null;
@@ -183,6 +200,7 @@ export class VehicleTracker {
     this.minSimilarity = options.minSimilarity ?? DEFAULTS.minSimilarity;
     this.accelerationNoise = options.accelerationNoise ?? DEFAULTS.accelerationNoise;
     this.sizeSmoothing = options.sizeSmoothing ?? DEFAULTS.sizeSmoothing;
+    this.minTravel = options.minTravel ?? DEFAULTS.minTravel;
   }
 
   /** Feeds one frame's detections, taken at `timestampMs` (epoch ms), through the tracker. */
@@ -225,7 +243,8 @@ export class VehicleTracker {
       if (!track.confirmed) continue; // Tentative and missed: noise, drop silently.
       const lostFor = timestampMs - track.lastSeenMs;
       if (lostFor > this.maxLostMs || isOutOfFrame(track)) {
-        finished.push(toFinished(track));
+        // Something that never went anywhere was never a vehicle passing.
+        if (track.travelled) finished.push(toFinished(track));
         continue;
       }
       survivors.push(track);
@@ -237,7 +256,7 @@ export class VehicleTracker {
     }
 
     const reported = this.tracks
-      .filter((t) => t.confirmed && t.matchedIndex >= 0)
+      .filter((t) => t.confirmed && t.travelled && t.matchedIndex >= 0)
       .sort((a, b) => a.matchedIndex - b.matchedIndex)
       .map((t): TrackedVehicleDetection => ({ ...detections[t.matchedIndex], trackId: t.id, box: currentBox(t) }));
 
@@ -252,7 +271,7 @@ export class VehicleTracker {
   }
 
   private finishAll(): FinishedTrack[] {
-    const finished = this.tracks.filter((t) => t.confirmed).map(toFinished);
+    const finished = this.tracks.filter((t) => t.confirmed && t.travelled).map(toFinished);
     this.tracks = [];
     return finished;
   }
@@ -323,6 +342,14 @@ export class VehicleTracker {
     track.lastBox = box;
     track.matchedIndex = index;
     if (track.hits >= this.minHits) track.confirmed = true;
+    if (!track.travelled) {
+      const first = track.firstBox;
+      const travel = Math.hypot(
+        box.x + box.width / 2 - (first.x + first.width / 2),
+        box.y + box.height / 2 - (first.y + first.height / 2),
+      );
+      track.travelled = travel >= this.minTravel * Math.max(box.width, box.height, first.width, first.height);
+    }
   }
 
   private createTrack(detection: VehicleDetection, index: number, timestampMs: number): Track {
@@ -335,6 +362,7 @@ export class VehicleTracker {
       height: box.height,
       hits: 1,
       confirmed: this.minHits <= 1,
+      travelled: this.minTravel <= 0,
       firstSeenMs: timestampMs,
       lastSeenMs: timestampMs,
       firstBox: box,

@@ -61,7 +61,7 @@ describe('CameraAnalyzer', () => {
 
   it('assigns stable track ids by running detections through the tracker, reporting only confirmed tracks', async () => {
     const box = { x: 0.2, y: 0.2, width: 0.1, height: 0.1 };
-    const analyzer = makeAnalyzer({ detections: [detection({ box })], tracker: new VehicleTracker({ minHits: 2 }) });
+    const analyzer = makeAnalyzer({ detections: [detection({ box })], tracker: new VehicleTracker({ minHits: 2, minTravel: 0 }) });
     const t0 = Date.parse(TIMESTAMP);
 
     const first = await analyzer.analyze(FRAME, new Date(t0).toISOString());

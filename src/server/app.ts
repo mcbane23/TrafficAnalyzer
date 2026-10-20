@@ -6,6 +6,7 @@ import { RevalidationService } from './revalidationService';
 import { HlsProxyService } from './hlsProxyService';
 import { SseChannel } from './sseChannel';
 import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
+import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
 
 /**
@@ -33,6 +34,7 @@ export function createApp(
   hlsProxyService: HlsProxyService,
   trafficAnalysisService: TrafficAnalysisService,
   trafficStatsService: TrafficStatsService,
+  liveOverlayService: LiveOverlayService | null,
   staticDir?: string,
 ): Express {
   const app = express();
@@ -119,6 +121,23 @@ export function createApp(
     let unsubscribe = () => undefined as void;
     const channel = SseChannel.open(req, res, () => unsubscribe());
     unsubscribe = trafficAnalysisService.subscribeCameraDetail(req.params.id, (result) => channel.send(result));
+  });
+
+  // Vehicle boxes for a watched camera from the appearance model, each tagged with its stream time. 404 when the
+  // overlay detector is switched off - the player then draws the motion-analysis boxes instead.
+  app.get('/api/cameras/:id/overlay/stream', (req, res) => {
+    if (!liveOverlayService) {
+      res.status(404).json({ error: 'Overlay detector is switched off.' });
+      return;
+    }
+    let unsubscribe = () => undefined as void;
+    const channel = SseChannel.open(req, res, () => unsubscribe());
+    unsubscribe = liveOverlayService.subscribe(req.params.id, (result) => channel.send(result));
+  });
+
+  // The last ~45s of per-frame results, so a just-opened player has boxes for the (older) picture it is about to show.
+  app.get('/api/cameras/:id/analysis/recent', (req, res) => {
+    res.json(trafficAnalysisService.getRecentResults(req.params.id));
   });
 
   app.get('/api/cameras/:id/analysis/history', (req, res) => {

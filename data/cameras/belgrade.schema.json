@@ -98,6 +98,28 @@
             "a": { "type": "string", "minLength": 1 },
             "b": { "type": "string", "minLength": 1 }
           }
+        },
+        "ignoreZones": {
+          "type": "array",
+          "description": "Regions of the view that traffic analysis ignores (things that move but are not traffic, e.g. a fountain or an LED billboard). Each zone is a polygon of [x, y] vertices in normalized 0-1 frame coordinates, with an optional name.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["points"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "points": {
+                "type": "array",
+                "minItems": 3,
+                "items": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": { "type": "number", "minimum": 0, "maximum": 1 }
+                }
+              }
+            }
+          }
         }
       }
     }

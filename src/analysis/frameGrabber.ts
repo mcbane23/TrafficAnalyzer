@@ -82,6 +82,17 @@ export interface GrabFrameSuccess {
   frame: VideoFrame;
   /** When the frame was decoded (epoch ms) - its timestamp for tracking purposes. */
   capturedAt: number;
+  /**
+   * The frame's presentation time in the source stream, in seconds - the
+   * MPEG-TS PTS the camera's encoder stamped on it, which the browser's
+   * player sees for the same frame. This, not `capturedAt`, is what lets a
+   * viewer line a result up with the video picture it describes: the
+   * analysis capture and the player join a live playlist at different
+   * segments, so the same wall-clock instant shows them different moments.
+   * Only set by continuous captures, and omitted for a frame whose time
+   * ffmpeg did not report.
+   */
+  streamTime?: number;
 }
 
 export interface GrabFrameFailure {
@@ -123,6 +134,27 @@ const DEFAULT_RESTART_DELAY_MS = 1_000;
 const DEFAULT_MAX_RESTART_DELAY_MS = 60_000;
 /** Read/write timeout for HTTP(S)-delivered streams, in microseconds (ffmpeg's unit) - a hung segment fetch fails instead of blocking forever. */
 const HTTP_RW_TIMEOUT_US = 15_000_000;
+/**
+ * Where a continuous capture joins a live HLS playlist: the second-to-last
+ * segment. ffmpeg's default (-3) put analysis a segment *behind* the
+ * browser's player (hls.js holds 3 target durations back from the end of
+ * the playlist), so results for the picture on screen had not been
+ * produced yet. Joining here keeps analysis about one segment ahead of the
+ * player - results are buffered client-side until the video catches up -
+ * while still leaving one whole segment of slack, so a paced (-re) capture
+ * doesn't run dry waiting on the next segment to be published.
+ */
+const LIVE_START_INDEX = -2;
+/** ffmpeg's log prefix for a line at error severity or worse, with `-loglevel level+...`. */
+const ERROR_LEVEL_TAG = /\[(error|fatal|panic)\]\s*/;
+/** A `showinfo` filter line for one output frame: its index within this process run, its pts, and that pts in seconds. */
+const SHOWINFO_FRAME_LINE = /Parsed_showinfo.*\bn:\s*(\d+)\b.*\bpts:\s*(-?\d+)\b.*\bpts_time:\s*(-?[0-9.e+]+)/;
+/**
+ * `showinfo`'s time base, logged once when the filter is configured. Used to
+ * compute seconds from the integer pts: `pts_time` is printed with only six
+ * significant digits, which at a stream clock of ~70000s is a tenth of a second.
+ */
+const SHOWINFO_TIME_BASE_LINE = /Parsed_showinfo.*config in time_base:\s*(\d+)\/(\d+)/;
 
 /**
  * FrameGrabber invokes ffmpeg against a camera's live stream URL and
@@ -270,6 +302,19 @@ class FfmpegFrameCapture implements FrameCapture {
    * of re-serving a stale one.
    */
   private readonly frameQueue: GrabFrameSuccess[] = [];
+  /**
+   * Presentation times reported by ffmpeg's `showinfo` filter, keyed by the
+   * frame's index within the current process run. stderr and stdout are
+   * separate pipes with no ordering between them, so a frame is matched to
+   * its time by index rather than by arrival order - a time arriving a beat
+   * after its frame then costs that one frame its `streamTime`, instead of
+   * shifting every later frame onto its neighbour's time.
+   */
+  private streamTimes = new Map<number, number>();
+  /** Incomplete trailing stderr line, carried over to the next chunk. */
+  private stderrRemainder = '';
+  /** `showinfo`'s time base for the current run, once logged. */
+  private showinfoTimeBase: { num: number; den: number } | null = null;
   private lastError: string | null = null;
   private waiters: Array<(result: GrabFrameResult) => void> = [];
   private closed = false;
@@ -343,6 +388,9 @@ class FfmpegFrameCapture implements FrameCapture {
     // previous one must not be glued onto its first bytes.
     this.pendingBytes = 0;
     this.framesThisRun = 0;
+    this.streamTimes.clear();
+    this.stderrRemainder = '';
+    this.showinfoTimeBase = null;
     this.lastFrameAt = Date.now();
 
     const handle = this.spawn();
@@ -352,8 +400,7 @@ class FfmpegFrameCapture implements FrameCapture {
       if (this.handle === handle) this.onData(chunk);
     });
     handle.stderr.on('data', (chunk: Buffer) => {
-      const line = firstNonEmptyLine(chunk.toString('utf8'));
-      if (line) this.lastError = line;
+      if (this.handle === handle) this.onStderr(chunk);
     });
     handle.onExit((reason) => {
       // Ignore a process this capture already gave up on (killed as stalled).
@@ -409,6 +456,41 @@ class FfmpegFrameCapture implements FrameCapture {
   }
 
   /**
+   * Reads ffmpeg's log: `showinfo` lines carry each output frame's
+   * presentation time, and lines at error severity are kept as the reason
+   * to report if the capture fails. Everything else (stream banners,
+   * segment opens) is info-level noise.
+   */
+  private onStderr(chunk: Buffer): void {
+    const lines = (this.stderrRemainder + chunk.toString('utf8')).split(/\r?\n/);
+    this.stderrRemainder = lines.pop() ?? '';
+    for (const line of lines) {
+      const frameInfo = SHOWINFO_FRAME_LINE.exec(line);
+      if (frameInfo) {
+        const index = Number(frameInfo[1]);
+        const timeBase = this.showinfoTimeBase;
+        const seconds = timeBase ? (Number(frameInfo[2]) * timeBase.num) / timeBase.den : Number(frameInfo[3]);
+        // Only frames still to come can claim a time - anything older was
+        // already handed out without one.
+        if (index >= this.framesThisRun && Number.isFinite(seconds)) this.streamTimes.set(index, seconds);
+        continue;
+      }
+      const timeBase = SHOWINFO_TIME_BASE_LINE.exec(line);
+      if (timeBase) {
+        const num = Number(timeBase[1]);
+        const den = Number(timeBase[2]);
+        if (num > 0 && den > 0) this.showinfoTimeBase = { num, den };
+        continue;
+      }
+      const severity = ERROR_LEVEL_TAG.exec(line);
+      if (severity) {
+        const reason = (line.slice(0, severity.index) + line.slice(severity.index + severity[0].length)).trim();
+        if (reason) this.lastError = reason;
+      }
+    }
+  }
+
+  /**
    * Cuts the raw ffmpeg stdout stream into frames. Raw video has no markers
    * to search for: every frame is exactly `frameBytes` long, so chunks are
    * copied into the frame being filled and a frame is complete when it is
@@ -433,7 +515,6 @@ class FfmpegFrameCapture implements FrameCapture {
     if (found.length === 0) return;
 
     const capturedAt = Date.now();
-    this.framesThisRun += found.length;
     this.lastFrameAt = capturedAt;
     this.lastError = null;
 
@@ -441,7 +522,15 @@ class FfmpegFrameCapture implements FrameCapture {
     // longest-waiting call gets the oldest new frame), then whatever's left
     // joins the queue for the next call to pick up immediately.
     for (const data of found) {
-      const result: GrabFrameSuccess = { ok: true, frame: { ...this.frameSize, data }, capturedAt };
+      const index = this.framesThisRun++;
+      const streamTime = this.streamTimes.get(index);
+      this.streamTimes.delete(index);
+      const result: GrabFrameSuccess = {
+        ok: true,
+        frame: { ...this.frameSize, data },
+        capturedAt,
+        ...(streamTime === undefined ? {} : { streamTime }),
+      };
       const waiter = this.waiters.shift();
       if (waiter) {
         waiter(result);
@@ -473,12 +562,15 @@ function buildArgs(camera: CameraEntry, size: FrameSize): string[] {
 }
 
 function buildStreamArgs(camera: CameraEntry, size: FrameSize, streamFps: number, realtime: boolean): string[] {
-  const args = buildCommonArgs(camera, realtime);
+  const args = buildCommonArgs(camera, { realtime, streaming: true });
   // Continuously decode, keep `streamFps` frames a second, scale those down
   // and emit them as raw video on stdout - the process is left running until
   // the capture is closed, rather than exiting after one frame. `fps` comes
-  // first so only the kept frames are ever scaled.
-  args.push('-vf', `fps=${streamFps},${scaleFilter(size)}`, ...rawVideoOutput());
+  // first so only the kept frames are ever scaled. `showinfo` logs each
+  // emitted frame's presentation time (kept in the source's own timeline by
+  // `-copyts`), which is how a result is later matched to the video picture
+  // it came from - see `GrabFrameSuccess.streamTime`.
+  args.push('-vf', `fps=${streamFps},${scaleFilter(size)},showinfo`, ...rawVideoOutput());
   return args;
 }
 
@@ -490,10 +582,12 @@ function rawVideoOutput(): string[] {
   return ['-f', 'rawvideo', '-pix_fmt', 'yuv420p', 'pipe:1'];
 }
 
-function buildCommonArgs(camera: CameraEntry, realtime = false): string[] {
-  // Errors only on stderr, so the first stderr line is a reason worth
-  // surfacing rather than ffmpeg's version banner.
-  const args: string[] = ['-hide_banner', '-nostats', '-loglevel', 'error'];
+function buildCommonArgs(camera: CameraEntry, mode: { realtime?: boolean; streaming?: boolean } = {}): string[] {
+  // A one-off grab logs errors only, so the first stderr line is a reason
+  // worth surfacing rather than ffmpeg's version banner. A continuous
+  // capture also needs `showinfo`'s info-level frame lines, so it logs at
+  // info with each line tagged by severity, and picks the errors back out.
+  const args: string[] = ['-hide_banner', '-nostats', '-loglevel', mode.streaming ? 'level+info' : 'error'];
   // One decoding thread per process. Every active camera has its own
   // ffmpeg, so there is already one process per stream to spread across
   // cores; ffmpeg's default of a thread per core on top of that only adds
@@ -516,8 +610,14 @@ function buildCommonArgs(camera: CameraEntry, realtime = false): string[] {
     // to be restarted.
     args.push('-rw_timeout', String(HTTP_RW_TIMEOUT_US), '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
   }
-  if (realtime) {
+  if (mode.realtime) {
     args.push('-re');
+  }
+  if (mode.streaming) {
+    // Keep the source's own timestamps rather than rebasing them to zero,
+    // so `streamTime` is the same clock the browser's player sees.
+    args.push('-copyts');
+    if (/\.m3u8($|\?)/i.test(camera.url)) args.push('-live_start_index', String(LIVE_START_INDEX));
   }
 
   args.push('-i', camera.url);

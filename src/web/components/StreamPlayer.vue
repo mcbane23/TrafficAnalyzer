@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import Hls from 'hls.js';
 import type { CameraEntry } from '../../types/camera';
 import type { BoundingBox, VehicleDetection } from '../../types/analysis';
-import { subscribeCameraAnalysis } from '../services/analysis';
+import { fetchRecentAnalysis, subscribeCameraAnalysis, subscribeCameraOverlay } from '../services/analysis';
 
 const props = withDefaults(defineProps<{ camera: CameraEntry; showBoxes?: boolean; showTrails?: boolean }>(), {
   showBoxes: true,
@@ -17,19 +17,26 @@ const error = ref<string | null>(null);
 const usingAlternate = ref(false);
 let hls: Hls | null = null;
 
-// Bounding-box overlay: sourced from the per-camera analysis SSE stream
-// (every active camera is analyzed continuously server-side; this only listens).
-// It's expected to lag the live video somewhat (frame-grab + inference time,
-// plus hls.js's own live-edge buffering below) - an accepted tradeoff, not a
-// bug. What is fixed here is that boxes used to only ever *snap* to each new
-// server update rather than moving continuously between them - see
-// `applyDetections`/`interpolatedBox` below.
+// Bounding-box overlay. Boxes come from the appearance-model overlay stream
+// (YOLO, run server-side only while this camera is watched - see
+// LiveOverlayService), falling back to the fleet-wide motion analysis when
+// that is unavailable.
 //
-// Detection no longer classifies vehicle type (see MotionDetector), so
-// there's nothing to color by class any more - every box is colored purely
-// by tracked instance (trackId), cycling through this palette so two
-// vehicles on screen at once are visually distinguishable and a single
-// vehicle keeps the same color as it moves across frames.
+// Boxes are drawn *in sync with the picture*, not when they arrive. Every
+// result carries `streamTime`, the source stream's own presentation time of
+// the frame it was computed from, and hls.js reports the same clock for the
+// frame on screen (see `currentStreamTime`). The server's capture runs about
+// one HLS segment ahead of this player, so results arrive before their
+// picture, wait in `synced`, and are drawn when the video reaches them -
+// interpolated between the two results either side of the current frame.
+// Drawing results as they arrived put every box several seconds away from
+// its vehicle, by an amount that changed each time either side reconnected.
+// Without a stream clock (Safari's native player, or results lacking
+// `streamTime`) boxes fall back to that arrival-time drawing.
+//
+// Boxes are colored by tracked instance (trackId), cycling through this
+// palette so two vehicles on screen at once are visually distinguishable and
+// a single vehicle keeps the same color as it moves across frames.
 const TRACK_COLOR_PALETTE = [
   '#38bdf8',
   '#f97316',
@@ -52,9 +59,116 @@ function colorForDetection(detection: VehicleDetection): string {
   return DEFAULT_COLOR;
 }
 
-/** There's no vehicle type to label a box with any more (see MotionDetector) - a best-effort color name if one was estimated, otherwise a generic "Vehicle". */
+const CLASS_LABELS: Record<VehicleDetection['class'], string> = {
+  vehicle: 'Vehicle',
+  car: 'Car',
+  motorcycle: 'Motorcycle',
+  bus: 'Bus',
+  truck: 'Truck',
+};
+
+/** The vehicle type where the detector knows it (the overlay model does, motion detection doesn't). */
 function labelForDetection(detection: VehicleDetection): string {
-  return detection.color ?? 'Vehicle';
+  return CLASS_LABELS[detection.class] ?? 'Vehicle';
+}
+
+/** MPEG-TS timestamps are 33-bit 90kHz counters: they wrap every ~26.5 hours. */
+const PTS_WRAP_SECONDS = 2 ** 33 / 90_000;
+
+/** `a - b` in stream seconds, taking the shorter way round the PTS wrap. */
+function streamDiff(a: number, b: number): number {
+  const d = (((a - b) % PTS_WRAP_SECONDS) + PTS_WRAP_SECONDS) % PTS_WRAP_SECONDS;
+  return d > PTS_WRAP_SECONDS / 2 ? d - PTS_WRAP_SECONDS : d;
+}
+
+/** A result waiting for (or being drawn at) its moment in the video. */
+interface SyncedResult {
+  streamTime: number;
+  detections: VehicleDetection[];
+}
+/** Results by stream time, oldest first. */
+let synced: SyncedResult[] = [];
+/** How long one result is still drawn after its frame if the next one is missing (dropped frame) - beyond that, nothing is known about the picture. */
+const MAX_HOLD_SECONDS = 0.75;
+/** Two results further apart than this are not interpolated between. */
+const MAX_INTERPOLATION_GAP_SECONDS = 1.2;
+/** Results older than this (behind the playhead) are dropped. */
+const KEEP_BEHIND_SECONDS = 10;
+const MAX_SYNCED_RESULTS = 600;
+
+/** Stream-time offset of each hls.js discontinuity sequence: raw PTS (s) = media time + offset. */
+const ptsOffsetByCc = new Map<number, number>();
+let playingCc: number | null = null;
+let lastPtsOffset: number | null = null;
+
+/** The source-stream presentation time of the frame on screen, or null without hls.js / before it knows. */
+function currentStreamTime(video: HTMLVideoElement): number | null {
+  const offset = (playingCc !== null ? ptsOffsetByCc.get(playingCc) : undefined) ?? lastPtsOffset;
+  if (offset == null) return null;
+  return video.currentTime + offset;
+}
+
+function ingest(result: { streamTime?: number; detections: VehicleDetection[]; error?: string }) {
+  if (result.streamTime === undefined || !hls) {
+    // No stream clock on this result, or none for the picture (native
+    // player): arrival-time drawing (see the note at the top).
+    applyDetections(result.error ? [] : result.detections);
+    return;
+  }
+  const entry: SyncedResult = { streamTime: result.streamTime, detections: result.error ? [] : result.detections };
+  // Usually appended in order; a replayed batch may overlap what's already here.
+  let i = synced.length;
+  while (i > 0 && streamDiff(synced[i - 1].streamTime, entry.streamTime) > 0) i -= 1;
+  if (i > 0 && Math.abs(streamDiff(synced[i - 1].streamTime, entry.streamTime)) < 1e-3) synced[i - 1] = entry;
+  else synced.splice(i, 0, entry);
+  if (synced.length > MAX_SYNCED_RESULTS) synced.splice(0, synced.length - MAX_SYNCED_RESULTS);
+}
+
+/** Drops results the playhead has long passed. */
+function trimSynced(now: number) {
+  let stale = 0;
+  while (stale < synced.length - 1 && streamDiff(now, synced[stale].streamTime) > KEEP_BEHIND_SECONDS) stale += 1;
+  if (stale > 0) synced.splice(0, stale);
+}
+
+/** The boxes for the picture at stream time `t`: interpolated between the results either side of it. */
+function boxesAt(t: number): Array<{ detection: VehicleDetection; box: BoundingBox }> {
+  let i = synced.length - 1;
+  while (i >= 0 && streamDiff(synced[i].streamTime, t) > 0) i -= 1;
+  if (i < 0) return [];
+  const before = synced[i];
+  if (streamDiff(t, before.streamTime) > MAX_HOLD_SECONDS) return [];
+  const after = synced[i + 1];
+  const gap = after ? streamDiff(after.streamTime, before.streamTime) : Infinity;
+  const fraction = gap > 0 && gap <= MAX_INTERPOLATION_GAP_SECONDS ? streamDiff(t, before.streamTime) / gap : null;
+
+  return before.detections.map((detection) => {
+    const next = fraction !== null && detection.trackId != null ? after.detections.find((d) => d.trackId === detection.trackId) : undefined;
+    if (!next || fraction === null) return { detection, box: detection.box };
+    const a = detection.box;
+    const b = next.box;
+    return {
+      detection,
+      box: {
+        x: lerp(a.x, b.x, fraction),
+        y: lerp(a.y, b.y, fraction),
+        width: lerp(a.width, b.width, fraction),
+        height: lerp(a.height, b.height, fraction),
+      },
+    };
+  });
+}
+
+/** Box centres of one track over the last few seconds up to `t`, for the trail overlay. */
+function trailAt(trackId: number, t: number): Array<{ x: number; y: number }> {
+  const points: Array<{ x: number; y: number }> = [];
+  for (const entry of synced) {
+    const age = streamDiff(t, entry.streamTime);
+    if (age < 0 || age > 8) continue;
+    const d = entry.detections.find((x) => x.trackId === trackId);
+    if (d) points.push({ x: d.box.x + d.box.width / 2, y: d.box.y + d.box.height / 2 });
+  }
+  return points;
 }
 let unsubscribeAnalysis: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
@@ -169,6 +283,9 @@ function destroy() {
     hls.destroy();
     hls = null;
   }
+  ptsOffsetByCc.clear();
+  playingCc = null;
+  lastPtsOffset = null;
   videoRef.value?.removeEventListener('error', handleNativeError);
 }
 
@@ -189,19 +306,26 @@ function loadSource(url: string, onFailure: (message: string) => void) {
 
   if (Hls.isSupported()) {
     hls = new Hls({
-      // hls.js defaults to staying 3 segments behind the live edge before it
-      // even starts playing, purely to absorb network jitter. Our ffmpeg
-      // capture has no such deliberate buffer - it decodes continuously and
-      // hands back whatever frame it most recently finished with - so with
-      // the default the *video* trails noticeably further behind real time
-      // than the *detections* do, and the two end up depicting different
-      // moments: not just "a bit late" but visibly the wrong moment for the
-      // traffic actually on screen. Tightening the target narrows that gap.
-      // maxLiveSyncPlaybackRate lets it close any remaining gap with a subtle
-      // speed-up rather than a jarring seek/stutter when it briefly falls
-      // behind - the standard low-latency-HLS pairing for this option.
-      liveSyncDurationCount: 2,
+      // Three target durations behind the end of the playlist (~30s on these
+      // 10s-segment streams). The server's analysis capture joins one segment
+      // nearer the edge (FrameGrabber's LIVE_START_INDEX), so the results for
+      // each picture are already here, buffered, when it is shown. Playing
+      // closer to the edge than the analysis would leave the boxes nothing
+      // to draw. maxLiveSyncPlaybackRate closes a drift with a subtle
+      // speed-up rather than a seek.
+      liveSyncDurationCount: 3,
       maxLiveSyncPlaybackRate: 1.2,
+    });
+    // The stream clock for the overlay: hls.js maps each discontinuity
+    // sequence's PTS onto media time with its own base (raw = media + base).
+    hls.on(Hls.Events.INIT_PTS_FOUND, (_event, data) => {
+      if (data.id !== 'main') return;
+      const offset = data.initPTS / data.timescale;
+      ptsOffsetByCc.set(data.frag.cc, offset);
+      lastPtsOffset = offset;
+    });
+    hls.on(Hls.Events.FRAG_CHANGED, (_event, data) => {
+      playingCc = data.frag.cc;
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (data.fatal) {
@@ -339,22 +463,25 @@ function drawOverlay() {
   const content = getVideoContentRect(video, canvas.width, canvas.height);
   const now = performance.now();
 
+  const streamTime = synced.length > 0 ? currentStreamTime(video) : null;
+  if (streamTime !== null) {
+    trimSynced(streamTime);
+    const boxes = boxesAt(streamTime);
+    if (props.showTrails) {
+      for (const { detection } of boxes) {
+        if (detection.trackId == null) continue;
+        drawTrail(ctx, trailAt(detection.trackId, streamTime), content, colorForDetection(detection));
+      }
+    }
+    if (!props.showBoxes) return;
+    for (const { detection, box } of boxes) drawBox(ctx, box, content, colorForDetection(detection), labelForDetection(detection));
+    return;
+  }
+
   if (props.showTrails) {
     for (const [trackId, trail] of trails) {
       const entry = trackedBoxes.get(trackId);
-      if (!entry || trail.length < 2) continue;
-      ctx.strokeStyle = entry.color;
-      ctx.globalAlpha = 0.8;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      trail.forEach((point, i) => {
-        const px = content.x + point.x * content.width;
-        const py = content.y + point.y * content.height;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      });
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+      if (entry) drawTrail(ctx, trail, content, entry.color);
     }
   }
   if (!props.showBoxes) return;
@@ -364,6 +491,22 @@ function drawOverlay() {
   for (const detection of untrackedBoxes) {
     drawBox(ctx, detection.box, content, colorForDetection(detection), labelForDetection(detection));
   }
+}
+
+function drawTrail(ctx: CanvasRenderingContext2D, trail: Array<{ x: number; y: number }>, content: ReturnType<typeof getVideoContentRect>, color: string) {
+  if (trail.length < 2) return;
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.8;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  trail.forEach((point, i) => {
+    const px = content.x + point.x * content.width;
+    const py = content.y + point.y * content.height;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+  ctx.globalAlpha = 1;
 }
 
 /** Keeps the overlay canvas' pixel size in sync with the video element's displayed (CSS) size. */
@@ -381,7 +524,11 @@ function animationLoop() {
   animationFrameHandle = requestAnimationFrame(animationLoop);
 }
 
-/** Subscribes to the camera's analysis stream to keep the overlay's bounding boxes current. No-op for inactive cameras. */
+/**
+ * Subscribes to the camera's overlay boxes: the appearance-model stream
+ * first, the motion-analysis stream if that's unavailable. No-op for
+ * inactive cameras.
+ */
 function attachOverlay() {
   unsubscribeAnalysis?.();
   unsubscribeAnalysis = null;
@@ -389,11 +536,23 @@ function attachOverlay() {
   trails.clear();
   untrackedBoxes = [];
   lastDetectionsAt = null;
+  synced = [];
 
   if (props.camera.status !== 'active') return;
 
-  unsubscribeAnalysis = subscribeCameraAnalysis(props.camera.id, (result) => {
-    applyDetections(result.error ? [] : result.detections);
+  const cameraId = props.camera.id;
+  unsubscribeAnalysis = subscribeCameraOverlay(cameraId, ingest, () => {
+    if (props.camera.id !== cameraId) return;
+    synced = [];
+    const unsubscribeMotion = subscribeCameraAnalysis(cameraId, ingest);
+    unsubscribeAnalysis = unsubscribeMotion;
+    // The picture on screen is older than the frame the server is analyzing
+    // now - fetch the results already produced for it.
+    fetchRecentAnalysis(cameraId)
+      .then((recent) => {
+        if (unsubscribeAnalysis === unsubscribeMotion) recent.forEach(ingest);
+      })
+      .catch(() => undefined);
   });
 }
 

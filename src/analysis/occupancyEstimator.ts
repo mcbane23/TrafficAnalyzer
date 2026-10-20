@@ -1,4 +1,4 @@
-import { BackgroundModel, LumaExtractor } from './backgroundModel';
+import { BackgroundModel, LumaExtractor, NormalizedPolygon } from './backgroundModel';
 import { VideoFrame } from './videoFrame';
 
 export type { LumaExtractor };
@@ -23,6 +23,8 @@ export interface OccupancyEstimatorOptions {
   minActivityRate?: number;
   /** Upper bound of that rate. Defaults to 0.6. */
   maxActivityRate?: number;
+  /** Parts of the view never analyzed - see `BackgroundModel`'s `ignoreZones`. */
+  ignoreZones?: NormalizedPolygon[];
   /** Injectable luma extractor, primarily for testing. */
   lumaExtractor?: LumaExtractor;
 }

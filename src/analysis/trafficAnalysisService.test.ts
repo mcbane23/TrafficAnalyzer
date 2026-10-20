@@ -82,9 +82,9 @@ class FakeCapture implements FrameCapture {
     this.deliver({ ok: false, error: 'capture closed' });
   }
 
-  /** Delivers a frame captured at `T0 + atMs`. */
-  frame(atMs: number): void {
-    this.deliver({ ok: true, frame: fakeFrame(atMs), capturedAt: T0 + atMs });
+  /** Delivers a frame captured at `T0 + atMs`, optionally with its stream presentation time. */
+  frame(atMs: number, streamTime?: number): void {
+    this.deliver({ ok: true, frame: fakeFrame(atMs), capturedAt: T0 + atMs, ...(streamTime === undefined ? {} : { streamTime }) });
   }
 
   fail(error: string): void {
@@ -227,6 +227,31 @@ describe('TrafficAnalysisService', () => {
     await settle();
 
     expect(received.map((r) => r.totalCount)).toEqual([2, 2]);
+    ctx.service.stop();
+  });
+
+  it("stamps results with the frame's stream time and keeps the last recentResultsMs of them for late viewers", async () => {
+    const ctx = setup([makeCamera()], { recentResultsMs: 1000, impl: () => ({ totalCount: 1 }) });
+    const received: CameraAnalysisResult[] = [];
+    ctx.service.subscribeCameraDetail('cam-1', (r) => received.push(r));
+    await ctx.service.start();
+    ctx.fireAll();
+    const capture = ctx.captures.get('cam-1')!;
+
+    capture.frame(0, 500);
+    await settle();
+    capture.frame(600, 500.6);
+    await settle();
+    capture.frame(1200);
+    await settle();
+
+    expect(received.map((r) => r.streamTime)).toEqual([500, 500.6, undefined]);
+    // The first result is older than 1s by the newest one's capture time.
+    expect(ctx.service.getRecentResults('cam-1').map((r) => r.timestamp)).toEqual([
+      new Date(T0 + 600).toISOString(),
+      new Date(T0 + 1200).toISOString(),
+    ]);
+    expect(ctx.service.getRecentResults('unknown')).toEqual([]);
     ctx.service.stop();
   });
 

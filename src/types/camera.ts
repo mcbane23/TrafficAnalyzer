@@ -57,6 +57,13 @@ export interface CameraEntry {
    * or left-to-right on a near-horizontal road; `b` the opposite.
    */
   directions?: { a?: string; b?: string };
+  /**
+   * Regions of this camera's view that traffic analysis ignores, as
+   * polygons of `[x, y]` vertices in normalized (0-1) frame coordinates -
+   * things that move but are not traffic, such as a fountain or an LED
+   * billboard (see BackgroundModel's `ignoreZones`).
+   */
+  ignoreZones?: Array<{ name?: string; points: Array<[number, number]> }>;
 }
 
 /**

@@ -73,7 +73,7 @@ export interface TrafficAnalysisServiceOptions {
    * roadway, all of which describe a single fixed viewpoint and are
    * meaningless shared across cameras. Defaults to a real `CameraAnalyzer`.
    */
-  createAnalyzer?: (cameraId: string) => CameraAnalyzerLike;
+  createAnalyzer?: (cameraId: string, camera: CameraEntry) => CameraAnalyzerLike;
   /**
    * Called with every usable result - not errors, not warm-up frames - on
    * every frame, including its `finishedTracks`. This is the hook for
@@ -89,6 +89,14 @@ export interface TrafficAnalysisServiceOptions {
    * removed, for an image nobody looks at more than every few seconds.
    */
   thumbnailIntervalMs?: number;
+  /**
+   * How much of each camera's recent per-frame results (ms, by capture time)
+   * is kept for `getRecentResults`. Defaults to 45000. A viewer's player runs
+   * some way behind the analysis capture, so the results for the picture it
+   * is about to show were produced before it connected - see
+   * `getRecentResults`.
+   */
+  recentResultsMs?: number;
   /** Encodes a thumbnail. Defaults to `encodeJpeg`. */
   encodeThumbnail?: (frame: VideoFrame) => Promise<Buffer>;
   now?: () => Date;
@@ -118,6 +126,8 @@ interface CameraState {
   latestFrame: { buffer: Buffer; capturedAt: string } | null;
   /** Capture time (ms) of the frame the latest thumbnail encode was started from. */
   thumbnailStartedAt: number;
+  /** This camera's results from the last `recentResultsMs`, oldest first - see `getRecentResults`. */
+  recentResults: CameraAnalysisResult[];
 }
 
 const DEFAULTS = {
@@ -125,6 +135,7 @@ const DEFAULTS = {
   historyIntervalMs: 10_000,
   overviewIntervalMs: 2_000,
   thumbnailIntervalMs: 2_000,
+  recentResultsMs: 45_000,
 };
 
 /**
@@ -173,9 +184,10 @@ export class TrafficAnalysisService {
     maxConcurrency: number;
     historyIntervalMs: number;
     overviewIntervalMs: number;
-    createAnalyzer: (cameraId: string) => CameraAnalyzerLike;
+    createAnalyzer: (cameraId: string, camera: CameraEntry) => CameraAnalyzerLike;
     onResult: ((result: CameraAnalysisResult) => void) | null;
     thumbnailIntervalMs: number;
+    recentResultsMs: number;
     encodeThumbnail: (frame: VideoFrame) => Promise<Buffer>;
     now: () => Date;
     scheduler: AnalysisScheduler;
@@ -201,9 +213,12 @@ export class TrafficAnalysisService {
       maxConcurrency: options.maxConcurrency ?? DEFAULTS.maxConcurrency,
       historyIntervalMs: options.historyIntervalMs ?? DEFAULTS.historyIntervalMs,
       overviewIntervalMs: options.overviewIntervalMs ?? DEFAULTS.overviewIntervalMs,
-      createAnalyzer: options.createAnalyzer ?? ((cameraId) => new CameraAnalyzer(cameraId)),
+      createAnalyzer:
+        options.createAnalyzer ??
+        ((cameraId, camera) => new CameraAnalyzer(cameraId, { ignoreZones: camera.ignoreZones?.map((zone) => zone.points) })),
       onResult: options.onResult ?? null,
       thumbnailIntervalMs: options.thumbnailIntervalMs ?? DEFAULTS.thumbnailIntervalMs,
+      recentResultsMs: options.recentResultsMs ?? DEFAULTS.recentResultsMs,
       encodeThumbnail: options.encodeThumbnail ?? ((frame) => encodeJpeg(frame)),
       now: options.now ?? (() => new Date()),
       scheduler: options.scheduler ?? defaultScheduler,
@@ -230,13 +245,14 @@ export class TrafficAnalysisService {
       if (camera.status !== 'active') continue;
       const state: CameraState = {
         camera,
-        analyzer: this.options.createAnalyzer(camera.id),
+        analyzer: this.options.createAnalyzer(camera.id, camera),
         capture: null,
         startHandle: null,
         historyWindow: { startedAt: this.options.now().getTime(), counts: [], lastResult: null },
         lastOverviewAt: -Infinity,
         latestFrame: null,
         thumbnailStartedAt: -Infinity,
+        recentResults: [],
       };
       this.cameraStates.set(camera.id, state);
       state.startHandle = this.options.scheduler.setTimeout(() => this.startCamera(state), activeIndex * STARTUP_STAGGER_STEP_MS);
@@ -276,6 +292,18 @@ export class TrafficAnalysisService {
    */
   getLatestFrame(cameraId: string): { buffer: Buffer; capturedAt: string } | null {
     return this.cameraStates.get(cameraId)?.latestFrame ?? null;
+  }
+
+  /**
+   * This camera's per-frame results from the last `recentResultsMs`, oldest
+   * first. The live player shows a picture some seconds older than the frame
+   * analysis is working on, and draws each result only when the video
+   * reaches that result's `streamTime` - so a viewer who has just connected
+   * needs the results already produced for the stretch of video it is about
+   * to play, not only the ones that arrive from now on.
+   */
+  getRecentResults(cameraId: string): CameraAnalysisResult[] {
+    return [...(this.cameraStates.get(cameraId)?.recentResults ?? [])];
   }
 
   getHistory(cameraId: string, options?: { sinceIso?: string; limit?: number }): StoredAnalysisResult[] {
@@ -364,9 +392,13 @@ export class TrafficAnalysisService {
     // round to it - since that's what the tracker's motion model runs on.
     const timestamp = frame.ok ? new Date(frame.capturedAt).toISOString() : this.options.now().toISOString();
     if (frame.ok) this.refreshThumbnail(state, frame.frame, frame.capturedAt);
-    const result = frame.ok
+    const analyzed = frame.ok
       ? await state.analyzer.analyze(frame.frame, timestamp)
       : state.analyzer.errorResult(timestamp, frame.error);
+    // The analyzer doesn't need to know which stream moment a frame was; the
+    // overlay does, to line the result up with the picture.
+    const result = frame.ok && frame.streamTime !== undefined ? { ...analyzed, streamTime: frame.streamTime } : analyzed;
+    this.rememberRecent(state, result);
 
     const usable = !result.error && !result.warmingUp;
     if (usable) {
@@ -374,6 +406,15 @@ export class TrafficAnalysisService {
       if (this.options.onResult) notify(this.options.onResult, result);
     }
     this.publish(state, result, usable);
+  }
+
+  private rememberRecent(state: CameraState, result: CameraAnalysisResult): void {
+    const recent = state.recentResults;
+    recent.push(result);
+    const cutoff = Date.parse(result.timestamp) - this.options.recentResultsMs;
+    let stale = 0;
+    while (stale < recent.length && Date.parse(recent[stale].timestamp) < cutoff) stale += 1;
+    if (stale > 0) recent.splice(0, stale);
   }
 
   /**

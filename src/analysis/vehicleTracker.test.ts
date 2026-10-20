@@ -20,7 +20,7 @@ function movingVehicle(frames: number, start: { x: number; y: number }, step: { 
 describe('VehicleTracker', () => {
   it('does not report a new track until it has been seen on minHits frames', () => {
     const tracker = new VehicleTracker({ minHits: 3 });
-    const updates = run(tracker, movingVehicle(3, { x: 0.1, y: 0.5 }, { x: 0.01, y: 0 }));
+    const updates = run(tracker, movingVehicle(3, { x: 0.1, y: 0.5 }, { x: 0.03, y: 0 }));
 
     expect(updates[0].tracks).toEqual([]);
     expect(updates[1].tracks).toEqual([]);
@@ -161,9 +161,9 @@ describe('VehicleTracker', () => {
 
   it('finishes every track across a stream gap longer than maxFrameGapMs', () => {
     const tracker = new VehicleTracker({ maxFrameGapMs: 5000 });
-    run(tracker, movingVehicle(4, { x: 0.3, y: 0.5 }, { x: 0.01, y: 0 }));
+    run(tracker, movingVehicle(4, { x: 0.3, y: 0.5 }, { x: 0.02, y: 0 }));
 
-    const afterGap = tracker.update([det({ x: 0.34, y: 0.5 })], T0 + 60_000);
+    const afterGap = tracker.update([det({ x: 0.38, y: 0.5 })], T0 + 60_000);
 
     expect(afterGap.finished.map((f) => f.trackId)).toEqual([1]);
     expect(afterGap.tracks).toEqual([]); // The new detection starts a fresh, tentative track.
@@ -171,14 +171,15 @@ describe('VehicleTracker', () => {
 
   it('flush() finishes all confirmed tracks', () => {
     const tracker = new VehicleTracker();
-    run(tracker, [...movingVehicle(4, { x: 0.3, y: 0.5 }, { x: 0.01, y: 0 })]);
+    run(tracker, [...movingVehicle(4, { x: 0.3, y: 0.5 }, { x: 0.02, y: 0 })]);
 
     expect(tracker.flush().map((f) => f.trackId)).toEqual([1]);
     expect(tracker.flush()).toEqual([]);
   });
 
   it('smooths the reported box rather than snapping to each noisy detection', () => {
-    const tracker = new VehicleTracker({ minHits: 1 });
+    // Travel gating off: this jitters in place on purpose.
+    const tracker = new VehicleTracker({ minHits: 1, minTravel: 0 });
     const jitter = [0, 0.01, -0.01, 0.01, -0.01, 0.01, -0.01, 0.01];
     const updates = run(
       tracker,
@@ -187,5 +188,26 @@ describe('VehicleTracker', () => {
 
     const reportedXs = updates.slice(3).map((u) => u.tracks[0].box.x);
     for (const x of reportedXs) expect(Math.abs(x - 0.5)).toBeLessThan(0.01);
+  });
+
+  it('never reports or counts a blob that churns in place (fountain, billboard), however long it lasts', () => {
+    const tracker = new VehicleTracker({ minHits: 2 });
+    const wobble = Array.from({ length: 30 }, (_, i) => [det({ x: 0.5 + (i % 2 ? 0.01 : -0.01), y: 0.5, width: 0.1, height: 0.1 })]);
+    const updates = run(tracker, wobble);
+
+    expect(updates.every((u) => u.tracks.length === 0)).toBe(true);
+    // It goes away after the clip ends - and must not become a passage.
+    const ended = tracker.update([], T0 + 30 * 200 + 5000);
+    expect(ended.finished).toEqual([]);
+    expect(tracker.flush()).toEqual([]);
+  });
+
+  it('keeps reporting a vehicle that travelled and then stopped (red light)', () => {
+    const tracker = new VehicleTracker({ minHits: 2 });
+    const driving = movingVehicle(5, { x: 0.1, y: 0.5 }, { x: 0.04, y: 0 });
+    const stopped = Array.from({ length: 10 }, () => [det({ x: 0.26, y: 0.5 })]);
+    const updates = run(tracker, [...driving, ...stopped]);
+
+    expect(updates.slice(-10).every((u) => u.tracks.length === 1 && u.tracks[0].trackId === 1)).toBe(true);
   });
 });

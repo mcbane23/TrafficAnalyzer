@@ -7,6 +7,9 @@ import { VideoFrame, resampleLuma } from './videoFrame';
  */
 export type LumaExtractor = (frame: VideoFrame, width: number, height: number) => Uint8Array;
 
+/** A polygon in normalized (0-1) frame coordinates, as `[x, y]` vertices. */
+export type NormalizedPolygon = Array<[number, number]>;
+
 export interface BackgroundModelOptions {
   /** Working width the frame is reduced to before analysis. Defaults to 160. */
   width?: number;
@@ -29,6 +32,27 @@ export interface BackgroundModelOptions {
   minActivityRate?: number;
   /** Upper bound of that rate. Defaults to 0.6. */
   maxActivityRate?: number;
+  /**
+   * Regions of the view that are never analyzed: anything that moves there
+   * (a fountain, an LED billboard, a flag) is not traffic. Pixels inside are
+   * never foreground and never roadway. Configured per camera in the
+   * registry (`ignoreZones`), because what moves without being traffic is a
+   * fact about one viewpoint that no general rule recovers reliably.
+   */
+  ignoreZones?: NormalizedPolygon[];
+  /**
+   * Share (0-1) of the analyzed pixels that must all read as foreground at
+   * once, on `sceneChangeFrames` consecutive frames, for the model to decide
+   * the camera is now looking at a different scene and relearn it from
+   * scratch. Defaults to 0.6. Some cameras in the fleet pan between preset
+   * views; without this, the first view change turns the whole picture into
+   * "foreground", which the selective (slow) foreground rate then takes many
+   * minutes to absorb, so every pixel is reported as a vehicle meanwhile.
+   * A sudden global exposure jump is handled the same way, which is fine.
+   */
+  sceneChangeRatio?: number;
+  /** See `sceneChangeRatio`. Defaults to 2. */
+  sceneChangeFrames?: number;
   /** Injectable luma extractor, primarily for testing. */
   lumaExtractor?: LumaExtractor;
 }
@@ -63,6 +87,8 @@ const DEFAULTS = {
   warmupFrames: 20,
   minActivityRate: 0.02,
   maxActivityRate: 0.6,
+  sceneChangeRatio: 0.6,
+  sceneChangeFrames: 2,
 };
 
 const EMPTY_MASK = new Uint8Array(0);
@@ -119,6 +145,13 @@ export class BackgroundModel {
   private readonly minActivityRate: number;
   private readonly maxActivityRate: number;
   private readonly lumaExtractor: LumaExtractor;
+  private readonly sceneChangeRatio: number;
+  private readonly sceneChangeFrames: number;
+  /** 1 for pixels inside an ignore zone, or null when the camera has none. */
+  private readonly ignored: Uint8Array | null;
+  private readonly analyzedPixels: number;
+  /** Consecutive frames on which nearly the whole picture read as foreground. */
+  private sceneChangeStreak = 0;
 
   /** Per-pixel running average of the scene with transient objects averaged out. */
   private background: Float32Array | null = null;
@@ -136,6 +169,13 @@ export class BackgroundModel {
     this.minActivityRate = options.minActivityRate ?? DEFAULTS.minActivityRate;
     this.maxActivityRate = options.maxActivityRate ?? DEFAULTS.maxActivityRate;
     this.lumaExtractor = options.lumaExtractor ?? resampleLuma;
+    this.sceneChangeRatio = options.sceneChangeRatio ?? DEFAULTS.sceneChangeRatio;
+    this.sceneChangeFrames = options.sceneChangeFrames ?? DEFAULTS.sceneChangeFrames;
+    const zones = options.ignoreZones ?? [];
+    this.ignored = zones.length > 0 ? rasterizePolygons(zones, this.width, this.height) : null;
+    let ignoredPixels = 0;
+    if (this.ignored) for (const v of this.ignored) ignoredPixels += v;
+    this.analyzedPixels = this.width * this.height - ignoredPixels;
   }
 
   /** Folds one frame into the model and reports what it looked like against everything seen before. */
@@ -147,27 +187,33 @@ export class BackgroundModel {
     }
 
     if (!this.background || !this.foregroundHits) {
-      // Seed from the first frame rather than from zero, so the model doesn't
-      // spend its whole warmup climbing out of an all-black background that
-      // would read as total occupancy.
-      this.background = Float32Array.from(luma.subarray(0, n));
-      this.foregroundHits = new Uint32Array(n);
-      this.samples = 1;
-      return this.warmingObservation();
+      return this.seed(luma);
     }
 
     const bg = this.background;
     const hits = this.foregroundHits;
+    const ignored = this.ignored;
     const isForeground = new Uint8Array(n);
     // See the class docstring on why selectivity is suspended during warmup.
     const warming = this.samples <= this.warmupFrames;
+    let foregroundPixels = 0;
 
     for (let i = 0; i < n; i++) {
       const value = luma[i];
-      const fg = Math.abs(value - bg[i]) > this.pixelThreshold ? 1 : 0;
+      const fg = !(ignored && ignored[i]) && Math.abs(value - bg[i]) > this.pixelThreshold ? 1 : 0;
       isForeground[i] = fg;
-      if (fg) hits[i] += 1;
+      if (fg) {
+        hits[i] += 1;
+        foregroundPixels += 1;
+      }
       bg[i] += (value - bg[i]) * (fg && !warming ? this.foregroundLearningRate : this.learningRate);
+    }
+
+    if (!warming && this.analyzedPixels > 0 && foregroundPixels / this.analyzedPixels >= this.sceneChangeRatio) {
+      this.sceneChangeStreak += 1;
+      if (this.sceneChangeStreak >= this.sceneChangeFrames) return this.seed(luma);
+    } else {
+      this.sceneChangeStreak = 0;
     }
 
     this.samples += 1;
@@ -178,6 +224,7 @@ export class BackgroundModel {
     const roadway = new Uint8Array(n);
     let roadwayPixels = 0;
     for (let i = 0; i < n; i++) {
+      if (ignored && ignored[i]) continue;
       const rate = hits[i] / this.samples;
       if (rate < this.minActivityRate || rate > this.maxActivityRate) continue;
       roadway[i] = 1;
@@ -195,6 +242,23 @@ export class BackgroundModel {
     };
   }
 
+  /**
+   * (Re)starts the model from this frame: on the very first frame, and when
+   * the view has changed (see `sceneChangeRatio`). Seeding from a real frame
+   * rather than from zero means the model doesn't spend its whole warmup
+   * climbing out of an all-black background that would read as total
+   * occupancy. Everything learned about the old view goes, including which
+   * pixels are roadway - in a different view they are different pixels.
+   */
+  private seed(luma: Uint8Array): BackgroundObservation {
+    const n = this.width * this.height;
+    this.background = Float32Array.from(luma.subarray(0, n));
+    this.foregroundHits = new Uint32Array(n);
+    this.samples = 1;
+    this.sceneChangeStreak = 0;
+    return this.warmingObservation();
+  }
+
   private warmingObservation(): BackgroundObservation {
     return {
       warming: true,
@@ -206,4 +270,29 @@ export class BackgroundModel {
       roadwayPixels: 0,
     };
   }
+}
+
+/**
+ * Marks every pixel of a `width x height` grid whose centre falls inside any
+ * of `polygons` (normalized coordinates, even-odd rule).
+ */
+export function rasterizePolygons(polygons: NormalizedPolygon[], width: number, height: number): Uint8Array {
+  const mask = new Uint8Array(width * height);
+  for (const polygon of polygons) {
+    if (polygon.length < 3) continue;
+    for (let y = 0; y < height; y++) {
+      const py = (y + 0.5) / height;
+      for (let x = 0; x < width; x++) {
+        const px = (x + 0.5) / width;
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+          const [xi, yi] = polygon[i];
+          const [xj, yj] = polygon[j];
+          if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+        if (inside) mask[y * width + x] = 1;
+      }
+    }
+  }
+  return mask;
 }

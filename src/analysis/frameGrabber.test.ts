@@ -334,9 +334,47 @@ describe('FrameGrabber', () => {
       await pending;
 
       expect(runner).toHaveBeenCalledWith(
-        expect.arrayContaining(['-threads', '1', '-i', 'https://example.com/live.m3u8', '-vf', 'fps=4,scale=2:2,format=yuv420p', '-f', 'rawvideo']),
+        expect.arrayContaining(['-threads', '1', '-i', 'https://example.com/live.m3u8', '-vf', 'fps=4,scale=2:2,format=yuv420p,showinfo', '-f', 'rawvideo']),
       );
       expect(runner).toHaveBeenCalledWith(expect.not.arrayContaining(['-frames:v']));
+    });
+
+    it('tags each frame with its stream presentation time from showinfo, matched by frame index', async () => {
+      const { runner, stdout, stderr } = makeFakeStreamRunner();
+      const grabber = new FrameGrabber({ ...SIZE, ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera({ url: 'https://example.com/live.m3u8' }));
+
+      const first = capture.next();
+      stderr.emit('data', Buffer.from('[Parsed_showinfo_3 @ 0x1] [info] config in time_base: 1/3, frame_rate: 3/1\n'));
+      // Times can arrive split across chunks, and the second frame's time
+      // arrives only after its frame - it must not slide onto frame 3.
+      stderr.emit('data', Buffer.from('[Parsed_showinfo_3 @ 0x1] [info] n:   0 pts: 211076 pts_time:70358.6'));
+      stderr.emit('data', Buffer.from('667 duration: 1\n[hls @ 0x2] [info] Opening segment for reading\n'));
+      stdout.emit('data', raw('frame-1'));
+      expect(await first).toMatchObject({ ok: true, frame: frameOf('frame-1'), streamTime: 211076 / 3 });
+
+      stdout.emit('data', raw('frame-2'));
+      stderr.emit('data', Buffer.from('[Parsed_showinfo_3 @ 0x1] [info] n:   1 pts: 211077 pts_time:70359\n'));
+      stderr.emit('data', Buffer.from('[Parsed_showinfo_3 @ 0x1] [info] n:   2 pts: 211078 pts_time:70359.3333\n'));
+      stdout.emit('data', raw('frame-3'));
+
+      const second = await capture.next();
+      expect(second).toMatchObject({ ok: true, frame: frameOf('frame-2') });
+      expect(second).not.toHaveProperty('streamTime');
+      expect(await capture.next()).toMatchObject({ ok: true, frame: frameOf('frame-3'), streamTime: 211078 / 3 });
+      expect(runner).toHaveBeenCalledWith(expect.arrayContaining(['-copyts', '-live_start_index', '-2', '-loglevel', 'level+info']));
+    });
+
+    it('reports only error-level log lines as the failure reason, without their severity tag', async () => {
+      const { runner, stderr, fireExit } = makeFakeStreamRunner();
+      const grabber = new FrameGrabber({ ...SIZE, ffmpegStreamRunner: runner });
+      const capture = grabber.openCapture(makeCamera());
+
+      const pending = capture.next();
+      stderr.emit('data', Buffer.from('[info] Input #0, hls\n[https @ 0x9] [error] HTTP error 404 Not Found\n[info] Stream mapping:\n'));
+      fireExit('ffmpeg stream exited with code 1');
+
+      expect(await pending).toEqual({ ok: false, error: '[https @ 0x9] HTTP error 404 Not Found' });
     });
 
     it('resolves with a failure if the stream process exits before any frame is decoded', async () => {
