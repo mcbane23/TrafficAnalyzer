@@ -165,6 +165,17 @@ describe('TrafficStatsService', () => {
     expect(axis.y).toBeCloseTo(1);
   });
 
+  it('gives the same totals from the hourly roll-up as from individual passages', () => {
+    for (let i = 0; i < 40; i++) {
+      const at = NOW - i * 31 * MINUTE;
+      service.handleResult(result('cam', at, { finishedTracks: [finished(i, at, i % 3 !== 0, i % 5 === 0 ? 0.3 : 0.05)] }));
+    }
+    const hourly = service.getCameraStats('cam', '24h', '1h'); // served from passage_hours
+    const fine = service.getCameraStats('cam', '24h', '15m'); // served from vehicle_passages
+    expect(hourly.totals.total).toBeGreaterThan(0);
+    expect(hourly.totals).toEqual(fine.totals);
+  });
+
   it('exports buckets as CSV', () => {
     service.handleResult(result('cam', NOW - MINUTE, { occupancy: 0.25, finishedTracks: [finished(1, NOW - MINUTE)] }));
     service.flush();

@@ -12,9 +12,17 @@ import {
   StatsSummary,
 } from '../types/stats';
 import { CameraPassageModel } from './passageModel';
-import { BucketQuery, CoverageBucketRow, MINUTE_MS, MinuteSample, PassageBucketRow, TrafficStatsStore } from './trafficStatsStore';
+import {
+  BucketQuery,
+  CoverageBucketRow,
+  HOUR_MS,
+  MINUTE_MS,
+  MinuteSample,
+  PassageBucketRow,
+  TrafficStatsStore,
+  WHOLE_RANGE_BUCKET,
+} from './trafficStatsStore';
 
-const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
 /** The slice of `TrafficStatsStore` this service uses - the seam a test can fake. */
@@ -239,7 +247,7 @@ export class TrafficStatsService {
     // Day buckets are local days, which don't sit on epoch boundaries, so
     // they're rolled up from hourly rows instead of grouped in SQL directly.
     const sqlBucketMs = bucket === '1d' ? HOUR_MS : BUCKET_MS[bucket];
-    const query: BucketQuery = { cameraId, fromMs, toMs: nowMs, bucketMs: sqlBucketMs };
+    const query: BucketQuery = { cameraId, fromMs, toMs: nowMs + 1, bucketMs: sqlBucketMs };
     const passages = this.store.passageBuckets(query);
     const coverage = this.store.coverageBuckets(query);
 
@@ -274,7 +282,7 @@ export class TrafficStatsService {
     }
     const nowMs = this.now().getTime();
     const fromMs = this.calendar.addDays(this.calendar.startOfDay(nowMs), -(days - 1));
-    const query: BucketQuery = { cameraId, fromMs, toMs: nowMs, bucketMs: HOUR_MS };
+    const query: BucketQuery = { cameraId, fromMs, toMs: nowMs + 1, bucketMs: HOUR_MS };
 
     const slots = new Map<number, { count: number; coveredMinutes: number }>();
     const slotFor = (ms: number) => {
@@ -302,14 +310,19 @@ export class TrafficStatsService {
     return { cameraId, days, timeZone: this.calendar.timeZone, cells };
   }
 
-  /** Per-camera totals for the range plus a 24-hour hourly sparkline each, for the dashboard. */
+  /**
+   * Per-camera totals plus a 24-hour hourly sparkline each, for the
+   * dashboard. The range is whole clock hours ending with the current one
+   * (e.g. "24h" at 10:30 is 11:00 yesterday to now), so it can be read from
+   * the hourly roll-up instead of scanning every passage.
+   */
   getSummary(range: StatsRange): StatsSummary {
     const nowMs = this.now().getTime();
-    const fromMs = nowMs - RANGE_MS[range];
-    const whole: BucketQuery = { fromMs, toMs: nowMs, bucketMs: Number.MAX_SAFE_INTEGER };
+    const fromMs = (Math.floor(nowMs / HOUR_MS) + 1) * HOUR_MS - RANGE_MS[range];
+    const whole: BucketQuery = { fromMs, toMs: nowMs + 1, bucketMs: WHOLE_RANGE_BUCKET };
 
     const sparkFrom = (Math.floor(nowMs / HOUR_MS) - 23) * HOUR_MS;
-    const hourly: BucketQuery = { fromMs: sparkFrom, toMs: nowMs, bucketMs: HOUR_MS };
+    const hourly: BucketQuery = { fromMs: sparkFrom, toMs: nowMs + 1, bucketMs: HOUR_MS };
     const sparkPassages = this.store.passageBuckets(hourly);
     const sparkCoverage = this.store.coverageBuckets(hourly);
 
@@ -324,7 +337,7 @@ export class TrafficStatsService {
     };
 
     for (const row of this.store.passageBuckets(whole)) addCounts(summaryFor(row.cameraId), row);
-    const elapsedMinutes = RANGE_MS[range] / MINUTE_MS;
+    const elapsedMinutes = Math.max(1, (nowMs - fromMs) / MINUTE_MS);
     for (const row of this.store.coverageBuckets(whole)) {
       summaryFor(row.cameraId).coverage = Math.min(1, row.coveredMinutes / elapsedMinutes);
     }
@@ -347,7 +360,7 @@ export class TrafficStatsService {
     const nowMs = this.now().getTime();
     const countSince = (fromMs: number) => {
       const counts = emptyCounts();
-      for (const row of this.store.passageBuckets({ cameraId, fromMs, toMs: nowMs + 1, bucketMs: Number.MAX_SAFE_INTEGER })) {
+      for (const row of this.store.passageBuckets({ cameraId, fromMs, toMs: nowMs + 1, bucketMs: WHOLE_RANGE_BUCKET })) {
         addCounts(counts, row);
       }
       return counts;
