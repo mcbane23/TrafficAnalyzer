@@ -305,12 +305,14 @@ precedent for Vue components.
   the Dockerfile drops `openvino-node`'s unused frontends and NPU plugin but must keep the IR
   frontend. The GPU path can't be exercised in CI or the sandbox (OpenVINO's CPU device can, with
   the same IR).
-- **`OVERLAY_MODEL` picks the GPU model** (`OPENVINO_MODELS` in `yoloDetector.ts`): `yolo11s`
-  (default), `yolo26n`, `yolo26s`, all FP16 IR, 960x736, output renamed `output0`. Ultralytics
-  exports YOLO26 for OpenVINO with the same `[1, 84, anchors]` one-to-many head, so the same
-  decoder and NMS apply. On six camera frames (960px, conf 0.25, OpenVINO CPU): YOLO11s 112
-  vehicles at 145 ms, YOLO26n 77 at 59 ms (Gazela 7 vs 26), YOLO26s 98 at 139 ms. YOLO11s stays the
-  default (Bane can compare live).
+- **`OVERLAY_MODEL` picks the GPU model, `OVERLAY_CPU_MODEL` the CPU one** (`OPENVINO_MODELS` /
+  `ONNX_MODELS` in `yoloDetector.ts`). GPU: `yolo26s` (default), `yolo26n`, `yolo11s`, all FP16 IR,
+  960x736, output renamed `output0`. CPU (also the GPU's fallback): `yolo26n` (default), `yolo11n`,
+  ONNX 640x480. Ultralytics exports YOLO26 with the same `[1, 84, anchors]` one-to-many head, so
+  the same decoder and NMS apply. On six camera frames (960px, conf 0.25, OpenVINO CPU): YOLO11s
+  112 vehicles at 145 ms, YOLO26s 98 at 139 ms, YOLO26n 77 at 59 ms. Bane made YOLO26s/26n the
+  defaults after trying 26s live on the N150 (it misses mostly motorcycles and distant cars); the
+  YOLO11 models stay bundled so switching back is one env var.
 - **The overlay must never fall behind the player** (regression found on Bane's N150: boxes only
   flickered on now and then). Its capture uses `maxQueuedFrames: 1`, so a detector slower than
   `OVERLAY_FPS` skips frames instead of working through a growing backlog that the player soon
