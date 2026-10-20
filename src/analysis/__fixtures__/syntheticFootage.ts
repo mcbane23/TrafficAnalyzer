@@ -70,7 +70,7 @@ function render(ffmpegPath: string, outPath: string): void {
 
 if (require.main === module) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { BUNDLED_FFMPEG_PATH } = require('../ffmpegRunner') as typeof import('../ffmpegRunner');
-  render(BUNDLED_FFMPEG_PATH, SYNTHETIC_CLIP_PATH);
+  const { bundledFfmpegPath } = require('../ffmpegRunner') as typeof import('../ffmpegRunner');
+  render(bundledFfmpegPath(), SYNTHETIC_CLIP_PATH);
   console.log(`Wrote ${SYNTHETIC_CLIP_PATH}`);
 }

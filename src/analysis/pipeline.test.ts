@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { BUNDLED_FFMPEG_PATH } from './ffmpegRunner';
+import { bundledFfmpegPath } from './ffmpegRunner';
 import { CameraAnalyzer } from './cameraAnalyzer';
 import { FrameGrabber, GrabFrameSuccess } from './frameGrabber';
 import { VideoFrame, yuv420pFrameSize } from './videoFrame';
@@ -27,7 +27,7 @@ describe('vehicle analysis pipeline on synthetic footage', () => {
     // Decoded exactly as a live capture would be: scaled to FrameGrabber's
     // default frame size, as raw yuv420p.
     const raw = execFileSync(
-      BUNDLED_FFMPEG_PATH,
+      bundledFfmpegPath(),
       [
         '-hide_banner', '-loglevel', 'error', '-i', SYNTHETIC_CLIP_PATH,
         '-vf', `fps=${FPS},scale=${W}:${H},format=yuv420p`, '-f', 'rawvideo', 'pipe:1',

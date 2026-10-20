@@ -20,13 +20,28 @@ WORKDIR /app
 # neither curl nor gpg.
 RUN curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key | gpg --dearmor -o /intel-graphics.gpg
 
-COPY package.json package-lock.json ./
+# .npmrc too: it is what stops onnxruntime-node's install script downloading
+# its CUDA/TensorRT providers (~270 MB, useless without an NVIDIA GPU). Without
+# it in the build context at `npm ci`, they ended up in every image.
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 
 COPY . .
+# After pruning, delete what the amd64 Linux runtime never loads:
+# - the bundled ffmpeg/ffprobe (~140 MB): FFMPEG_PATH/FFPROBE_PATH point at
+#   Debian's, and ffmpegRunner.ts/probeRunner.ts only require the packages
+#   when those are unset;
+# - other platforms' native binaries (onnxruntime-node, sharp, better-sqlite3)
+#   and better-sqlite3's SQLite sources (it loads prebuilds/linux-x64.node);
+# - openvino-node's unused frontends and NPU plugin. The IR frontend (the
+#   model format) and the CPU and GPU plugins stay.
 RUN npm run build \
  && npm prune --omit=dev \
- && rm -rf node_modules/onnxruntime-node/bin/napi-v*/darwin node_modules/onnxruntime-node/bin/napi-v*/win32 \
+ && rm -rf node_modules/@ffmpeg-installer node_modules/@ffprobe-installer \
+ && rm -rf node_modules/onnxruntime-node/bin/napi-v*/darwin node_modules/onnxruntime-node/bin/napi-v*/win32 node_modules/onnxruntime-node/bin/napi-v*/linux/arm64 \
+ && rm -rf node_modules/@img/sharp-wasm32 node_modules/@img/sharp-linuxmusl-x64 node_modules/@img/sharp-libvips-linuxmusl-x64 \
+ && (cd node_modules/better-sqlite3 && rm -rf deps src && find prebuilds -type f ! -name linux-x64.node -delete) \
+ && ls node_modules/onnxruntime-node/bin/napi-v*/linux/x64/onnxruntime_binding.node node_modules/better-sqlite3/prebuilds/linux-x64.node >/dev/null \
  && (cd node_modules/openvino-node/bin && rm -f libopenvino_onnx_frontend.so* libopenvino_paddle_frontend.so* libopenvino_pytorch_frontend.so* libopenvino_tensorflow_frontend.so* libopenvino_tensorflow_lite_frontend.so* libopenvino_gguf_frontend.so* libopenvino_intel_npu_plugin.so) \
  && ls node_modules/openvino-node/bin/libopenvino_ir_frontend.so* >/dev/null
 
@@ -60,10 +75,10 @@ RUN apt-get update \
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV FFPROBE_PATH=/usr/bin/ffprobe
 
-COPY package.json package-lock.json ./
-# Production-only dependencies, pruned and natively compiled in the build stage
-# (onnxruntime-node trimmed to its Linux binaries; the CUDA download is skipped
-# by .npmrc).
+COPY package.json ./
+# Production-only dependencies, pruned and trimmed in the build stage. The
+# frontend's libraries (vue, chart.js, hls.js...) are devDependencies: Vite
+# bundles them into dist/web, so they aren't needed here.
 COPY --from=build /app/node_modules ./node_modules
 
 # Compiled server + frontend bundle.

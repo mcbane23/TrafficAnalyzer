@@ -119,6 +119,14 @@ precedent for Vue components.
   from source on install (node-gyp needs Python + a C++ toolchain); the runtime stage is
   `node:22-bookworm-slim` (glibc, not alpine — the bundled ffmpeg/ffprobe binaries need glibc) and
   copies the already-pruned `node_modules` from the build stage rather than running `npm ci` again.
+- Image size: `.npmrc` must be copied in before `npm ci` (it skips onnxruntime-node's ~270 MB
+  CUDA/TensorRT download, which silently landed in every image while it wasn't). Frontend libraries
+  (vue, chart.js, hls.js, ...) are devDependencies because Vite bundles them; keep them there, or
+  their optional peers (typescript, vite) come back into the prod tree. The build stage deletes the
+  bundled `@ffmpeg-installer`/`@ffprobe-installer` and other platforms' native binaries, so
+  `ffmpegRunner.ts`/`probeRunner.ts` must only `require` the bundled packages when
+  `FFMPEG_PATH`/`FFPROBE_PATH` are unset. Most of what's left is the apt layer: Intel's GPU compute
+  runtime (~260 MB unpacked) and Debian ffmpeg, whose SDL dependency drags in mesa + LLVM (~200 MB).
 - CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): every branch/PR runs `npm ci`, `npm test`,
   `npm run build` and a Docker build, and keeps **nothing** on GitHub — no uploaded artifacts, no
   build records (`DOCKER_BUILD_RECORD_UPLOAD=false`), no npm cache, no Docker layer cache writes.
