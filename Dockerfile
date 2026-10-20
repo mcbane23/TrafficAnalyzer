@@ -17,7 +17,8 @@ RUN npm ci
 
 COPY . .
 RUN npm run build \
- && npm prune --omit=dev
+ && npm prune --omit=dev \
+ && rm -rf node_modules/onnxruntime-node/bin/napi-v*/darwin node_modules/onnxruntime-node/bin/napi-v*/win32
 
 # ---- Runtime stage -------------------------------------------------------
 # Debian-based (not alpine): better-sqlite3's native module is compiled
@@ -39,7 +40,9 @@ ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV FFPROBE_PATH=/usr/bin/ffprobe
 
 COPY package.json package-lock.json ./
-# Production-only dependencies, pruned and natively compiled in the build stage.
+# Production-only dependencies, pruned and natively compiled in the build stage
+# (onnxruntime-node trimmed to its Linux binaries; the CUDA download is skipped
+# by .npmrc).
 COPY --from=build /app/node_modules ./node_modules
 
 # Compiled server + frontend bundle.
@@ -49,6 +52,9 @@ COPY --from=build /app/dist ./dist
 # `npm run cameras:revalidate`. Also holds traffic-history.db, the SQLite
 # file TrafficHistoryStore creates on first run - persisted the same way.
 COPY data ./data
+# YOLO11n (COCO, ONNX) for the boxes drawn over a watched camera - see
+# LiveOverlayService. Resolved relative to dist/, i.e. /app/models.
+COPY models ./models
 
 EXPOSE 3001
 CMD ["node", "dist/server/index.js"]

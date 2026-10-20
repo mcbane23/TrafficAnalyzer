@@ -1,4 +1,4 @@
-import { BackgroundModel, LumaExtractor } from './backgroundModel';
+import { BackgroundModel, LumaExtractor, NormalizedPolygon } from './backgroundModel';
 import { VideoFrame } from './videoFrame';
 import { VehicleDetection } from '../types/analysis';
 
@@ -70,6 +70,8 @@ export interface MotionDetectorOptions {
    * counted once. Defaults to 1.
    */
   mergeRadius?: number;
+  /** Parts of the view never analyzed - see `BackgroundModel`'s `ignoreZones`. */
+  ignoreZones?: NormalizedPolygon[];
   /** Injectable luma extractor, primarily for testing. */
   lumaExtractor?: LumaExtractor;
 }

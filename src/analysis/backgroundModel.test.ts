@@ -1,4 +1,4 @@
-import { BackgroundModel, LumaExtractor } from './backgroundModel';
+import { BackgroundModel, LumaExtractor, rasterizePolygons } from './backgroundModel';
 import { VideoFrame } from './videoFrame';
 
 const W = 20;
@@ -146,5 +146,65 @@ describe('BackgroundModel', () => {
     const model = makeModel(() => new Uint8Array(N - 1));
 
     expect(() => model.observe(FRAME)).toThrow(`Expected at least ${N} luma samples, got ${N - 1}`);
+  });
+
+  it('never reports foreground or roadway inside an ignore zone', async () => {
+    const { extractor, setFrame } = makeExtractor();
+    // Left half of the frame is ignored (a fountain, say).
+    const model = makeModel(extractor, { ignoreZones: [[[0, 0], [0.5, 0], [0.5, 1], [0, 1]]] });
+    await warmUp(model);
+
+    // Something bright in both halves, on alternating frames, so both look like roadway activity.
+    const both = emptyScene();
+    for (let y = 0; y < H; y++) {
+      both[y * W + 2] = 240;
+      both[y * W + 15] = 240;
+    }
+    let observation = model.observe(FRAME);
+    for (let i = 0; i < 6; i++) {
+      setFrame(i % 2 ? emptyScene() : both);
+      observation = model.observe(FRAME);
+    }
+    setFrame(both);
+    observation = model.observe(FRAME);
+
+    expect(observation.foreground[2]).toBe(0);
+    expect(observation.roadway[2]).toBe(0);
+    expect(observation.foreground[15]).toBe(1);
+  });
+
+  it('relearns from scratch when the whole view changes (a camera panning to another preset)', async () => {
+    const { extractor, setFrame } = makeExtractor();
+    const model = makeModel(extractor, { sceneChangeFrames: 2 });
+    await warmUp(model);
+
+    const otherView = new Uint8Array(N).fill(200);
+    setFrame(otherView);
+    expect(model.observe(FRAME).warming).toBe(false);
+    // Second consecutive all-foreground frame: the model gives up on the old view.
+    expect(model.observe(FRAME).warming).toBe(true);
+
+    for (let i = 0; i < WARMUP - 1; i++) model.observe(FRAME);
+    const settled = model.observe(FRAME);
+    expect(settled.warming).toBe(false);
+    expect(settled.foreground.every((v) => v === 0)).toBe(true);
+  });
+
+  it('does not relearn for a single frame of whole-picture change (a glitch)', async () => {
+    const { extractor, setFrame } = makeExtractor();
+    const model = makeModel(extractor, { sceneChangeFrames: 2 });
+    await warmUp(model);
+
+    setFrame(new Uint8Array(N).fill(200));
+    model.observe(FRAME);
+    setFrame(emptyScene());
+    expect(model.observe(FRAME).warming).toBe(false);
+  });
+});
+
+describe('rasterizePolygons', () => {
+  it('marks pixels whose centres fall inside the polygon', () => {
+    const mask = rasterizePolygons([[[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]], 4, 4);
+    expect(Array.from(mask)).toEqual([0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0]);
   });
 });

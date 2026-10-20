@@ -41,7 +41,72 @@
     "lastVerifiedAt": "2026-07-31T07:58:05.995Z",
     "lastError": null,
     "alternateUrl": "https://srbija-nadlanu.ott.solutions/srbija-nadlanu/bip-pivara/playlist.m3u8",
-    "alternateSource": "Informer.rs (Srbija na dlanu / ott.solutions network)"
+    "alternateSource": "Informer.rs (Srbija na dlanu / ott.solutions network)",
+    "ignoreZones": [
+      {
+        "name": "LED billboard (left)",
+        "points": [
+          [
+            0.27,
+            0.32
+          ],
+          [
+            0.375,
+            0.32
+          ],
+          [
+            0.375,
+            0.415
+          ],
+          [
+            0.27,
+            0.415
+          ]
+        ]
+      },
+      {
+        "name": "LED billboard (right)",
+        "points": [
+          [
+            0.79,
+            0.27
+          ],
+          [
+            0.89,
+            0.27
+          ],
+          [
+            0.89,
+            0.365
+          ],
+          [
+            0.79,
+            0.365
+          ]
+        ]
+      },
+      {
+        "name": "LED billboard (over the road)",
+        "points": [
+          [
+            0.38,
+            0.68
+          ],
+          [
+            0.465,
+            0.68
+          ],
+          [
+            0.465,
+            0.76
+          ],
+          [
+            0.38,
+            0.76
+          ]
+        ]
+      }
+    ]
   },
   {
     "id": "pancevacki-most",
@@ -105,7 +170,30 @@
     "lastVerifiedAt": "2026-07-31T07:58:12.995Z",
     "lastError": null,
     "alternateUrl": "https://srbija-nadlanu.ott.solutions/srbija-nadlanu/autokomanda/playlist.m3u8",
-    "alternateSource": "Informer.rs (Srbija na dlanu / ott.solutions network)"
+    "alternateSource": "Informer.rs (Srbija na dlanu / ott.solutions network)",
+    "ignoreZones": [
+      {
+        "name": "LED billboard",
+        "points": [
+          [
+            0.52,
+            0.3
+          ],
+          [
+            0.615,
+            0.3
+          ],
+          [
+            0.615,
+            0.4
+          ],
+          [
+            0.52,
+            0.4
+          ]
+        ]
+      }
+    ]
   },
   {
     "id": "usce-mihajla-pupina",
@@ -178,7 +266,46 @@
     "protocol": "HLS",
     "status": "active",
     "lastVerifiedAt": "2026-07-31T07:58:20.076Z",
-    "lastError": null
+    "lastError": null,
+    "ignoreZones": [
+      {
+        "name": "fountain",
+        "points": [
+          [
+            0.27,
+            0.3
+          ],
+          [
+            0.37,
+            0.16
+          ],
+          [
+            0.49,
+            0.16
+          ],
+          [
+            0.6,
+            0.29
+          ],
+          [
+            0.62,
+            0.37
+          ],
+          [
+            0.53,
+            0.42
+          ],
+          [
+            0.36,
+            0.42
+          ],
+          [
+            0.25,
+            0.37
+          ]
+        ]
+      }
+    ]
   },
   {
     "id": "plavi-most",

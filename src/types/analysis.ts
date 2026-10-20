@@ -4,15 +4,12 @@
  */
 
 /**
- * Detection no longer classifies vehicle type (see MotionDetector): low
- * resolution and motion blur make appearance-based classification
- * unreliable for moving traffic, so every moving object is surfaced as a
- * single generic class instead. Kept as a type (rather than dropping the
- * field outright) so `VehicleDetection`/`VehicleTracker` keep a stable
- * shape and a real discriminant, in case a distinct class is ever
- * reintroduced.
+ * Motion detection (MotionDetector, which drives counting and statistics)
+ * cannot tell vehicle types apart, so everything it finds is the generic
+ * `'vehicle'`. The appearance-based YoloDetector, which only drives the
+ * boxes drawn over the camera being watched, reports the specific type.
  */
-export type VehicleClass = 'vehicle';
+export type VehicleClass = 'vehicle' | 'car' | 'motorcycle' | 'bus' | 'truck';
 
 export type TrafficLevel = 'light' | 'moderate' | 'heavy';
 
@@ -75,6 +72,15 @@ export interface FinishedTrack {
 export interface CameraAnalysisResult {
   cameraId: string;
   timestamp: string;
+  /**
+   * Presentation time (seconds, the source stream's own MPEG-TS clock) of
+   * the frame this result was computed from. The browser's player knows the
+   * same clock for the picture it is showing, so this is what lets an
+   * overlay draw a result over the video frame it describes rather than
+   * over whatever is on screen when it arrives. Omitted when the capture
+   * could not report it (and on error results).
+   */
+  streamTime?: number;
   totalCount: number;
   trafficLevel: TrafficLevel;
   detections: VehicleDetection[];
@@ -99,6 +105,22 @@ export interface CameraAnalysisResult {
    */
   warmingUp?: boolean;
   /** Present when frame capture or detection failed for this tick; other fields are zeroed/defaulted. */
+  error?: string;
+}
+
+/**
+ * Vehicle boxes for the camera a viewer is watching, from the
+ * appearance-based detector (see LiveOverlayService) rather than the
+ * fleet-wide motion analysis. Drawing only - never counted or persisted.
+ */
+export interface LiveOverlayResult {
+  cameraId: string;
+  timestamp: string;
+  /** See `CameraAnalysisResult.streamTime`. */
+  streamTime?: number;
+  /** Tracked vehicles on this frame, with their type. */
+  detections: VehicleDetection[];
+  /** Set when the overlay can't be produced (camera inactive, detector busy or failing); `detections` is empty. */
   error?: string;
 }
 

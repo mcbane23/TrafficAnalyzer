@@ -11,6 +11,9 @@ import { TrafficHistoryStore } from '../analysis/trafficHistoryStore';
 import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
 import { TrafficStatsStore } from '../analysis/trafficStatsStore';
 import { TrafficStatsService } from '../analysis/trafficStatsService';
+import { LiveOverlayService } from '../analysis/liveOverlayService';
+import { YoloDetector, YoloSession, createOnnxYoloSession } from '../analysis/yoloDetector';
+import { VehicleTracker } from '../analysis/vehicleTracker';
 
 const REGISTRY_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.json');
 const SCHEMA_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.schema.json');
@@ -51,12 +54,36 @@ const trafficAnalysisService = new TrafficAnalysisService(
   new TrafficHistoryStore(TRAFFIC_HISTORY_DB_PATH),
   { onResult: (result) => trafficStatsService.handleResult(result) },
 );
+// Boxes over the camera someone is watching come from an appearance model
+// (YOLO11n), run only while that camera has viewers - see LiveOverlayService.
+// OVERLAY_DETECTOR=off falls back to drawing the motion-detection boxes;
+// OVERLAY_FPS (default 3) and OVERLAY_THREADS (default 2) trade smoothness
+// against CPU.
+let overlaySession: Promise<YoloSession> | null = null;
+const lazyOverlaySession: YoloSession = {
+  run: async (input, size) => {
+    overlaySession ??= createOnnxYoloSession(undefined, Number(process.env.OVERLAY_THREADS) || 2);
+    return (await overlaySession).run(input, size);
+  },
+};
+const liveOverlayService =
+  process.env.OVERLAY_DETECTOR === 'off'
+    ? null
+    : new LiveOverlayService(
+        store,
+        new FrameGrabber({ streamFps: Number(process.env.OVERLAY_FPS) || undefined, frameWidth: 640, frameHeight: 480 }),
+        (camera) => ({
+          detector: new YoloDetector(lazyOverlaySession, { ignoreZones: camera.ignoreZones?.map((zone) => zone.points) }),
+          tracker: new VehicleTracker({ minHits: 2 }),
+        }),
+      );
 const app = createApp(
   cameraService,
   revalidationService,
   hlsProxyService,
   trafficAnalysisService,
   trafficStatsService,
+  liveOverlayService,
   STATIC_DIR,
 );
 

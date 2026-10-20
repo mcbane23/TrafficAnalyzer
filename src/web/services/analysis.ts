@@ -1,4 +1,4 @@
-import type { CameraAnalysisOverview, CameraAnalysisResult, StoredAnalysisResult } from '../../types/analysis';
+import type { CameraAnalysisOverview, CameraAnalysisResult, LiveOverlayResult, StoredAnalysisResult } from '../../types/analysis';
 
 const CAMERAS_BASE_URL = '/api/cameras';
 const ANALYSIS_BASE_URL = '/api/analysis';
@@ -62,4 +62,53 @@ export function subscribeCameraAnalysis(
   };
   if (onError) source.onerror = onError;
   return () => source.close();
+}
+
+/** A camera's per-frame analysis results from the last ~45s, oldest first - what a just-opened player needs to draw boxes over the (older) picture it is about to show. */
+export async function fetchRecentAnalysis(cameraId: string): Promise<CameraAnalysisResult[]> {
+  const res = await fetch(`${CAMERAS_BASE_URL}/${encodeURIComponent(cameraId)}/analysis/recent`);
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res, `Failed to load recent analysis (${res.status})`));
+  }
+  return res.json();
+}
+
+/**
+ * Subscribes to a watched camera's appearance-model (YOLO) boxes. `onUnavailable`
+ * fires once if the server can't provide them - the detector is switched off
+ * (the stream is refused) or it reports an error for this camera - so the
+ * caller can fall back to the motion-analysis boxes. Returns an unsubscribe
+ * function.
+ */
+export function subscribeCameraOverlay(
+  cameraId: string,
+  onMessage: (result: LiveOverlayResult) => void,
+  onUnavailable: (reason: string) => void,
+): () => void {
+  const source = new EventSource(`${CAMERAS_BASE_URL}/${encodeURIComponent(cameraId)}/overlay/stream`);
+  let gaveUp = false;
+  const giveUp = (reason: string) => {
+    if (gaveUp) return;
+    gaveUp = true;
+    source.close();
+    onUnavailable(reason);
+  };
+  let consecutiveErrors = 0;
+  source.onmessage = (event) => {
+    const result = JSON.parse(event.data) as LiveOverlayResult;
+    // A capture error or two is transient (the pipeline keeps retrying), but a
+    // camera the server refuses, or one that keeps failing (e.g. the model
+    // can't be loaded), won't get overlay boxes at all.
+    consecutiveErrors = result.error ? consecutiveErrors + 1 : 0;
+    if (result.error && (/busy|not active|failed to start/.test(result.error) || consecutiveErrors >= 10)) giveUp(result.error);
+    else onMessage(result);
+  };
+  // A refused stream (404) closes for good; a dropped one is retried by the browser.
+  source.onerror = () => {
+    if (source.readyState === EventSource.CLOSED) giveUp('overlay stream unavailable');
+  };
+  return () => {
+    gaveUp = true;
+    source.close();
+  };
 }

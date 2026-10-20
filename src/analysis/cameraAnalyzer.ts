@@ -3,6 +3,7 @@ import { DetectionResult, MotionDetector } from './motionDetector';
 import { OccupancyEstimator } from './occupancyEstimator';
 import { TrackerUpdate, VehicleTracker } from './vehicleTracker';
 import { VideoFrame } from './videoFrame';
+import { NormalizedPolygon } from './backgroundModel';
 
 /**
  * Narrow seam over MotionDetector so tests can inject canned detections
@@ -42,6 +43,8 @@ export interface CameraAnalyzerOptions {
    * badge from the vehicle count alone.
    */
   occupancyEstimator?: OccupancyEstimatorLike | null;
+  /** This camera's ignore zones (see `CameraEntry.ignoreZones`), applied to the default detector and occupancy estimator. */
+  ignoreZones?: NormalizedPolygon[];
 }
 
 const DEFAULTS = {
@@ -100,13 +103,14 @@ export class CameraAnalyzer {
     this.heavyThreshold = options.heavyThreshold ?? DEFAULTS.heavyThreshold;
     this.moderateOccupancy = options.moderateOccupancy ?? DEFAULTS.moderateOccupancy;
     this.heavyOccupancy = options.heavyOccupancy ?? DEFAULTS.heavyOccupancy;
-    this.detector = options.detector ?? new MotionDetector();
+    const ignoreZones = options.ignoreZones;
+    this.detector = options.detector ?? new MotionDetector({ ignoreZones });
     this.tracker = options.tracker ?? new VehicleTracker();
     // `undefined` means "not specified, use the default"; an explicit null
     // means "occupancy off" - so the two can't collapse into one `??`.
     this.occupancyEstimator =
       options.occupancyEstimator === undefined
-        ? new OccupancyEstimator()
+        ? new OccupancyEstimator({ ignoreZones })
         : (options.occupancyEstimator ?? DISABLED_OCCUPANCY);
   }
 

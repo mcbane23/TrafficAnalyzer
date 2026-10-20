@@ -43,6 +43,8 @@ colocated `*.test.ts`:
 | `VehicleColorEstimator` | [src/analysis/vehicleColorEstimator.ts](src/analysis/vehicleColorEstimator.ts) | No — best-effort/cosmetic, low-risk (explicit PRD call-out). Currently unwired, see below |
 | `TrafficHistoryStore` | [src/analysis/trafficHistoryStore.ts](src/analysis/trafficHistoryStore.ts) | Yes — against a real in-memory (`:memory:`) SQLite DB, not mocked |
 | `TrafficAnalysisService` | [src/analysis/trafficAnalysisService.ts](src/analysis/trafficAnalysisService.ts) | Yes — mocks `FrameGrabberLike`/`CameraAnalyzerLike`/`TrafficHistoryStoreLike`/`AnalysisScheduler` |
+| `YoloDetector` | [src/analysis/yoloDetector.ts](src/analysis/yoloDetector.ts) | Yes — letterbox/decode/NMS on synthetic tensors via the `YoloSession` seam, no real model |
+| `LiveOverlayService` | [src/analysis/liveOverlayService.ts](src/analysis/liveOverlayService.ts) | Yes — mocks `FrameGrabberLike`, the per-camera pipeline factory and the scheduler |
 | `CameraPassageModel` (`DirectionModel`, `SizeClassifier`) | [src/analysis/passageModel.ts](src/analysis/passageModel.ts) | Yes — pure logic over synthetic tracks |
 | `TrafficStatsStore` | [src/analysis/trafficStatsStore.ts](src/analysis/trafficStatsStore.ts) | Through `TrafficStatsService`'s tests, against a real `:memory:` DB |
 | `TrafficStatsService` | [src/analysis/trafficStatsService.ts](src/analysis/trafficStatsService.ts) | Yes — real `:memory:` `TrafficStatsStore` plus an injected `now` |
@@ -241,8 +243,45 @@ precedent for Vue components.
   `DashboardView.vue` and `CameraDetailView.vue`). `DashboardView.vue` opens exactly **one** shared
   `subscribeOverview` connection for the whole dashboard and passes each camera's
   `CameraAnalysisOverview` down to `CameraCard.vue` as a prop — cards do not each open their own SSE
-  connection. `StreamPlayer.vue`'s canvas overlay is expected to lag the live video slightly
-  (`-re` pacing + HLS buffering + analysis time); that's an accepted tradeoff, not a bug.
+  connection. `StreamPlayer.vue`'s canvas overlay is synced to the picture by stream
+  time (see "Overlay sync" below), so boxes no longer lag the video.
+
+## Overlay sync and the watched-camera detector
+
+- **Boxes are drawn by stream time, not arrival time.** The camera streams have 10s segments, an
+  `EXT-X-DISCONTINUITY` on every segment and no `PROGRAM-DATE-TIME`, but their MPEG-TS PTS is
+  continuous, so it is the shared clock. Continuous captures run ffmpeg with `-copyts` and a
+  trailing `showinfo` filter (`-loglevel level+info`; `FfmpegFrameCapture.onStderr` pairs each
+  frame with its pts by `showinfo`'s frame index `n`, and keeps only `[error]`-tagged lines as
+  failure reasons). Results carry `streamTime` (seconds). In the browser, hls.js's
+  `INIT_PTS_FOUND` (`initPTS / timescale` per discontinuity `cc`) plus `video.currentTime` gives
+  the on-screen frame's PTS. `StreamPlayer.vue` buffers results and interpolates between the two
+  either side of it, with PTS wrap (~95443s) handled by `streamDiff`. Before this, boxes were
+  drawn on arrival and landed 5-10s away from their vehicles.
+- **Analysis must run ahead of the player.** Captures join HLS at `-live_start_index -2`
+  (`LIVE_START_INDEX`), and hls.js plays `liveSyncDurationCount: 3` (~30s behind live, which Bane
+  accepted). That puts analysis ~10s ahead. A just-opened player needs results produced before it
+  connected, which is what `TrafficAnalysisService.getRecentResults` (`GET
+  /api/cameras/:id/analysis/recent`, last 45s) and `LiveOverlayService`'s replay-on-subscribe are for.
+- **The watched camera gets YOLO boxes; statistics stay on motion detection** (Bane's call: YOLO11n
+  costs ~110-185ms per 640px frame per core, far too much for 22 cameras). `LiveOverlayService`
+  starts a 640x480 capture plus `YoloDetector` and its own `VehicleTracker` per camera on its first
+  viewer (`GET /api/cameras/:id/overlay/stream`, SSE), lingers 15s after the last one, and serves at
+  most `maxCameras` (2). The player falls back to the motion-analysis boxes when the overlay is
+  refused, busy or keeps failing (`subscribeCameraOverlay`). Env: `OVERLAY_DETECTOR=off`,
+  `OVERLAY_FPS` (3), `OVERLAY_THREADS` (2). The model is `models/yolo11n.onnx` (Ultralytics YOLO11n,
+  AGPL-3.0, exported at 640). `onnxruntime-node` is loaded lazily, and `.npmrc` skips its CUDA
+  download. The Dockerfile drops its darwin/win32 binaries.
+- **Motion-detection false positives, as measured on live footage**, and their fixes: a fountain
+  (Slavija) and LED billboards (Gazela, Autokomanda) are covered by per-camera `ignoreZones` in
+  `belgrade.json` (normalized polygons that `BackgroundModel` never treats as foreground or roadway,
+  and that YOLO detections centred in are dropped from). Blobs that churn in place are filtered by
+  `VehicleTracker`'s `minTravel`: a track is reported or counted only once it has travelled 0.6x its
+  box size. The Železnička camera pans between presets, so `BackgroundModel` re-seeds when ≥60% of
+  the picture is foreground on 2 consecutive frames (`sceneChangeRatio`). Cars merging into one blob
+  in dense traffic is inherent to motion detection and is not fixed. Tooling to re-measure:
+  record with `ffmpeg -i <m3u8> -t 180 -c copy x.ts`, then run `MotionDetector` and `VehicleTracker`
+  offline over `-copyts ... showinfo` frames.
 
 ## Traffic statistics feature
 
