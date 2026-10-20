@@ -8,3 +8,6 @@ coverage
 npm-debug.log*
 docs
 README.md
+.github
+*.bat
+docker-compose.yml
