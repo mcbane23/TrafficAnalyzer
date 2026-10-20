@@ -12,6 +12,7 @@ import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
 import { TrafficStatsStore } from '../analysis/trafficStatsStore';
 import { TrafficStatsService } from '../analysis/trafficStatsService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
+import { AnalysisWorkerPool } from '../analysis/analysisWorkerPool';
 import { YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
 import { VehicleTracker } from '../analysis/vehicleTracker';
 
@@ -50,11 +51,20 @@ const ANALYSIS_FPS = Number(process.env.ANALYSIS_FPS) || undefined;
 const trafficStatsService = new TrafficStatsService(new TrafficStatsStore(TRAFFIC_STATS_DB_PATH), {
   timeZone: process.env.STATS_TIMEZONE || undefined,
 });
+// The fleet's motion analysis runs on ANALYSIS_THREADS worker threads
+// (default 2), keeping the main thread free for captures, the live overlay
+// and HTTP - see AnalysisWorkerPool. ANALYSIS_THREADS=0 runs it on the main
+// thread as before.
+const analysisThreads = process.env.ANALYSIS_THREADS === undefined ? 2 : Number(process.env.ANALYSIS_THREADS) || 0;
+const analysisWorkers = analysisThreads > 0 ? new AnalysisWorkerPool({ size: analysisThreads }) : null;
 const trafficAnalysisService = new TrafficAnalysisService(
   store,
   new FrameGrabber({ streamFps: ANALYSIS_FPS }),
   new TrafficHistoryStore(TRAFFIC_HISTORY_DB_PATH),
-  { onResult: (result) => trafficStatsService.handleResult(result) },
+  {
+    onResult: (result) => trafficStatsService.handleResult(result),
+    ...(analysisWorkers ? { createAnalyzer: (cameraId, camera) => analysisWorkers.createAnalyzer(cameraId, camera) } : {}),
+  },
 );
 // Boxes over the camera someone is watching come from an appearance model
 // (YOLO), run only while that camera has viewers - see LiveOverlayService.

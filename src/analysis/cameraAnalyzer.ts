@@ -167,15 +167,7 @@ export class CameraAnalyzer {
 
   /** The result for a tick that never produced a usable frame - shaped identically to a real one so subscribers need no special case. */
   errorResult(timestamp: string, error: string): CameraAnalysisResult {
-    return {
-      cameraId: this.cameraId,
-      timestamp,
-      totalCount: 0,
-      trafficLevel: 'light',
-      detections: [],
-      finishedTracks: [],
-      error,
-    };
+    return errorAnalysisResult(this.cameraId, timestamp, error);
   }
 
   /**
@@ -218,4 +210,17 @@ export class CameraAnalyzer {
     if (totalCount >= this.moderateThreshold) return 'moderate';
     return 'light';
   }
+}
+
+/** A camera's result for a tick that produced nothing usable: no vehicles, a `light` badge, and why. */
+export function errorAnalysisResult(cameraId: string, timestamp: string, error: string): CameraAnalysisResult {
+  return {
+    cameraId,
+    timestamp,
+    totalCount: 0,
+    trafficLevel: 'light',
+    detections: [],
+    finishedTracks: [],
+    error,
+  };
 }
