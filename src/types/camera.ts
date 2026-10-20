@@ -51,6 +51,12 @@ export interface CameraEntry {
    * mirroring `headers` for the primary url.
    */
   alternateHeaders?: Record<string, string>;
+  /**
+   * Optional display names for the two traffic directions the statistics
+   * learn per camera (see DirectionModel): `a` is movement down the frame,
+   * or left-to-right on a near-horizontal road; `b` the opposite.
+   */
+  directions?: { a?: string; b?: string };
 }
 
 /**
