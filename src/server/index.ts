@@ -61,9 +61,9 @@ const trafficAnalysisService = new TrafficAnalysisService(
 // against CPU.
 let overlaySession: Promise<YoloSession> | null = null;
 const lazyOverlaySession: YoloSession = {
-  run: async (input, size) => {
+  run: async (input, width, height) => {
     overlaySession ??= createOnnxYoloSession(undefined, Number(process.env.OVERLAY_THREADS) || 2);
-    return (await overlaySession).run(input, size);
+    return (await overlaySession).run(input, width, height);
   },
 };
 const liveOverlayService =
@@ -71,10 +71,23 @@ const liveOverlayService =
     ? null
     : new LiveOverlayService(
         store,
-        new FrameGrabber({ streamFps: Number(process.env.OVERLAY_FPS) || undefined, frameWidth: 640, frameHeight: 480 }),
+        // One queued frame: when the detector is slower than the capture (a
+        // busy host), it always takes the newest frame and skips the rest.
+        // Working through a backlog instead puts it further behind every
+        // second, until the player overtakes it and has no boxes to draw.
+        new FrameGrabber({
+          streamFps: Number(process.env.OVERLAY_FPS) || undefined,
+          frameWidth: 640,
+          frameHeight: 480,
+          maxQueuedFrames: 1,
+        }),
         (camera) => ({
           detector: new YoloDetector(lazyOverlaySession, { ignoreZones: camera.ignoreZones?.map((zone) => zone.points) }),
-          tracker: new VehicleTracker({ minHits: 2 }),
+          // Every vehicle the model sees is drawn, parked or queued ones
+          // included (no travel gate, no confirmation delay), and a car the
+          // model misses on one frame keeps its box for a second instead of
+          // blinking out.
+          tracker: new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 1000 }),
         }),
       );
 const app = createApp(

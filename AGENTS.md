@@ -270,8 +270,17 @@ precedent for Vue components.
   most `maxCameras` (2). The player falls back to the motion-analysis boxes when the overlay is
   refused, busy or keeps failing (`subscribeCameraOverlay`). Env: `OVERLAY_DETECTOR=off`,
   `OVERLAY_FPS` (3), `OVERLAY_THREADS` (2). The model is `models/yolo11n.onnx` (Ultralytics YOLO11n,
-  AGPL-3.0, exported at 640). `onnxruntime-node` is loaded lazily, and `.npmrc` skips its CUDA
+  AGPL-3.0, exported with a 640x480 input to match the capture - a square 640 input wasted a quarter
+  of each inference on padding). `onnxruntime-node` is loaded lazily, and `.npmrc` skips its CUDA
   download. The Dockerfile drops its darwin/win32 binaries.
+- **The overlay must never fall behind the player** (regression found on Bane's N150: boxes only
+  flickered on now and then). Its capture uses `maxQueuedFrames: 1`, so a detector slower than
+  `OVERLAY_FPS` skips frames instead of working through a growing backlog that the player soon
+  overtakes. Its tracker draws every YOLO vehicle (`minHits: 1`, `minTravel: 0` - the motion
+  pipeline's travel gate hid parked and queued cars) and keeps a missed car's box for
+  `reportCoastingMs` (1s). The player holds/interpolates across gaps up to 2s. Throughput is logged
+  once a minute as `[LiveOverlayService] <id>: X frames/s, detection N ms/frame, V vehicles/frame`;
+  on 3 sandbox cores it ran ~2.9 fps at ~155ms/frame with ~10 vehicles per frame on Slavija.
 - **Motion-detection false positives, as measured on live footage**, and their fixes: a fountain
   (Slavija) and LED billboards (Gazela, Autokomanda) are covered by per-camera `ignoreZones` in
   `belgrade.json` (normalized polygons that `BackgroundModel` never treats as foreground or roadway,

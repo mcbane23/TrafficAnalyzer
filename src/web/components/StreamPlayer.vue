@@ -88,10 +88,15 @@ interface SyncedResult {
 }
 /** Results by stream time, oldest first. */
 let synced: SyncedResult[] = [];
-/** How long one result is still drawn after its frame if the next one is missing (dropped frame) - beyond that, nothing is known about the picture. */
-const MAX_HOLD_SECONDS = 0.75;
+/**
+ * How long one result is still drawn after its frame when the next one is
+ * missing. A slow host drops frames when the detector can't keep up, so
+ * results can be a second or more apart; beyond this, nothing is known
+ * about the picture.
+ */
+const MAX_HOLD_SECONDS = 2;
 /** Two results further apart than this are not interpolated between. */
-const MAX_INTERPOLATION_GAP_SECONDS = 1.2;
+const MAX_INTERPOLATION_GAP_SECONDS = 2;
 /** Results older than this (behind the playhead) are dropped. */
 const KEEP_BEHIND_SECONDS = 10;
 const MAX_SYNCED_RESULTS = 600;

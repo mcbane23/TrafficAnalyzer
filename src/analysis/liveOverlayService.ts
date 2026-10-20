@@ -40,6 +40,8 @@ interface WatchedCamera {
   subscribers: Set<OverlaySubscriber>;
   recent: LiveOverlayResult[];
   stopHandle: unknown;
+  /** Frames analyzed and detection time spent since the last throughput log line. */
+  stats: { since: number; frames: number; detectMs: number; vehicles: number };
 }
 
 const DEFAULTS = {
@@ -47,6 +49,8 @@ const DEFAULTS = {
   idleStopMs: 15_000,
   recentResultsMs: 45_000,
 };
+
+const THROUGHPUT_LOG_MS = 60_000;
 
 const defaultScheduler: AnalysisScheduler = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -173,6 +177,7 @@ export class LiveOverlayService {
       subscribers: new Set(),
       recent: [],
       stopHandle: null,
+      stats: { since: Date.now(), frames: 0, detectMs: 0, vehicles: 0 },
     };
     this.watched.set(camera.id, entry);
     const loop = this.runLoop(entry)
@@ -207,8 +212,10 @@ export class LiveOverlayService {
         result = { cameraId: entry.camera.id, timestamp, detections: [], error: frame.error };
       } else {
         try {
+          const startedAt = Date.now();
           const detected = await entry.pipeline.detector.detect(frame.frame);
           const tracked = entry.pipeline.tracker.update(detected.detections, frame.capturedAt);
+          this.recordThroughput(entry, Date.now() - startedAt, tracked.tracks.length);
           result = {
             cameraId: entry.camera.id,
             timestamp,
@@ -221,6 +228,25 @@ export class LiveOverlayService {
       }
       this.publish(entry, result);
     }
+  }
+
+  /**
+   * Logs, once a minute per watched camera, how fast the detector actually
+   * runs on this host - the first thing to look at when boxes are sparse
+   * (a detector slower than the capture's fps means dropped frames).
+   */
+  private recordThroughput(entry: WatchedCamera, detectMs: number, vehicles: number): void {
+    const stats = entry.stats;
+    stats.frames += 1;
+    stats.detectMs += detectMs;
+    stats.vehicles += vehicles;
+    const elapsed = Date.now() - stats.since;
+    if (elapsed < THROUGHPUT_LOG_MS) return;
+    console.log(
+      `[LiveOverlayService] ${entry.camera.id}: ${((stats.frames * 1000) / elapsed).toFixed(1)} frames/s, ` +
+        `detection ${Math.round(stats.detectMs / stats.frames)} ms/frame, ${(stats.vehicles / stats.frames).toFixed(1)} vehicles/frame`,
+    );
+    entry.stats = { since: Date.now(), frames: 0, detectMs: 0, vehicles: 0 };
   }
 
   private publish(entry: WatchedCamera, result: LiveOverlayResult): void {
