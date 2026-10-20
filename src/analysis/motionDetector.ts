@@ -3,6 +3,17 @@ import { VehicleDetection } from '../types/analysis';
 
 export type { LumaExtractor };
 
+/** One frame's detections, plus whether the detector could actually look yet. */
+export interface DetectionResult {
+  detections: VehicleDetection[];
+  /**
+   * True while the background model is still being learned - `detections`
+   * is necessarily empty then, which says nothing about the road. Callers
+   * must not mistake it for "no traffic".
+   */
+  warmingUp: boolean;
+}
+
 export interface MotionDetectorOptions {
   /** Working width the frame is reduced to before analysis. Defaults to 240. */
   width?: number;
@@ -128,10 +139,10 @@ export class MotionDetector {
   }
 
   /** Folds one frame into the model and returns the moving objects found in it - empty while still warming up. */
-  async detect(frame: Buffer): Promise<VehicleDetection[]> {
+  async detect(frame: Buffer): Promise<DetectionResult> {
     const observation = await this.model.observe(frame);
     if (observation.warming) {
-      return [];
+      return { detections: [], warmingUp: true };
     }
 
     const { foreground, roadway, width, height } = observation;
@@ -186,7 +197,7 @@ export class MotionDetector {
       });
     }
 
-    return detections;
+    return { detections, warmingUp: false };
   }
 }
 

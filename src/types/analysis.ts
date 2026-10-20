@@ -48,6 +48,29 @@ export interface VehicleDetection {
   trackId?: number;
 }
 
+/**
+ * A confirmed vehicle track that has ended - the vehicle left the frame, or
+ * went undetected for longer than the tracker is willing to coast it. Emitted
+ * exactly once per track, on the tick the tracker gives up on it, so a
+ * consumer can turn each one into a single "vehicle passed" record without
+ * having to diff the live track list itself. Only tracks that were confirmed
+ * (seen on enough frames - see `VehicleTracker`'s `minHits`) are ever
+ * finished: a one-frame noise blob never becomes a passage.
+ */
+export interface FinishedTrack {
+  trackId: number;
+  /** Timestamp (ISO 8601) of the first frame this track was detected on. */
+  firstSeen: string;
+  /** Timestamp (ISO 8601) of the last frame this track was actually detected on (not merely predicted). */
+  lastSeen: string;
+  /** Box (normalized 0..1) on the first frame - compare against `lastBox` for net displacement / direction. */
+  firstBox: BoundingBox;
+  /** Box (normalized 0..1) on the last frame it was actually detected on. */
+  lastBox: BoundingBox;
+  /** Number of frames this track was matched to a detection on. */
+  hits: number;
+}
+
 /** Full per-tick analysis result for a single camera, delivered over its per-camera SSE stream. */
 export interface CameraAnalysisResult {
   cameraId: string;
@@ -62,6 +85,19 @@ export interface CameraAnalysisResult {
    * started camera, or when it cannot identify a roadway region.
    */
   occupancy?: number;
+  /**
+   * Confirmed tracks that ended on this tick (see `FinishedTrack`). Always
+   * present on a successful result (possibly empty); empty on error results.
+   */
+  finishedTracks: FinishedTrack[];
+  /**
+   * True while this camera's detector is still learning its background
+   * (the first few seconds of footage after a capture starts). A warming
+   * result reports zero detections because nothing can be detected yet, not
+   * because the road is empty, so - like an error result - it is published
+   * but never persisted.
+   */
+  warmingUp?: boolean;
   /** Present when frame capture or detection failed for this tick; other fields are zeroed/defaulted. */
   error?: string;
 }

@@ -121,6 +121,7 @@ function makeAnalyzer(cameraId = 'cam-1', detections: VehicleDetection[] = []): 
       totalCount: detections.length,
       trafficLevel: 'light' as const,
       detections,
+      finishedTracks: [],
     })),
     errorResult: jest.fn((timestamp: string, error: string) => ({
       cameraId,
@@ -128,6 +129,7 @@ function makeAnalyzer(cameraId = 'cam-1', detections: VehicleDetection[] = []): 
       totalCount: 0,
       trafficLevel: 'light' as const,
       detections: [],
+      finishedTracks: [],
       error,
     })),
     dispose: jest.fn(),

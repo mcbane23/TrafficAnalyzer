@@ -1,5 +1,6 @@
-import { CameraAnalyzer, OccupancyEstimatorLike, VehicleDetectorLike } from './cameraAnalyzer';
-import { VehicleDetection } from '../types/analysis';
+import { CameraAnalyzer, OccupancyEstimatorLike, VehicleDetectorLike, VehicleTrackerLike } from './cameraAnalyzer';
+import { VehicleTracker } from './vehicleTracker';
+import { FinishedTrack, VehicleDetection } from '../types/analysis';
 
 const TIMESTAMP = '2026-01-01T00:00:00.000Z';
 const FRAME = Buffer.from('frame');
@@ -8,8 +9,18 @@ function detection(overrides: Partial<VehicleDetection> = {}): VehicleDetection 
   return { class: 'vehicle', confidence: 0.9, box: { x: 0, y: 0, width: 0.1, height: 0.1 }, ...overrides };
 }
 
-function makeDetector(detections: VehicleDetection[] = []): VehicleDetectorLike {
-  return { detect: jest.fn(async () => detections) };
+function makeDetector(detections: VehicleDetection[] = [], warmingUp = false): VehicleDetectorLike {
+  return { detect: jest.fn(async () => ({ detections, warmingUp })) };
+}
+
+/** A tracker that confirms everything immediately, so counts can be asserted from a single frame. */
+function makePassThroughTracker(finished: FinishedTrack[] = []): VehicleTrackerLike & { update: jest.Mock } {
+  return {
+    update: jest.fn((detections: VehicleDetection[]) => ({
+      tracks: detections.map((d, i) => ({ ...d, trackId: i + 1 })),
+      finished,
+    })),
+  };
 }
 
 /** An estimator that reports a fixed occupancy, standing in for a warmed-up camera. */
@@ -22,10 +33,12 @@ function makeAnalyzer(options: {
   detections?: VehicleDetection[];
   occupancy?: number | null;
   detector?: VehicleDetectorLike;
+  tracker?: VehicleTrackerLike;
   occupancyEstimator?: OccupancyEstimatorLike | null;
 } = {}) {
   return new CameraAnalyzer('cam-1', {
     detector: options.detector ?? makeDetector(options.detections ?? []),
+    tracker: options.tracker ?? makePassThroughTracker(),
     occupancyEstimator:
       options.occupancyEstimator !== undefined
         ? options.occupancyEstimator
@@ -45,16 +58,44 @@ describe('CameraAnalyzer', () => {
     expect(result.error).toBeUndefined();
   });
 
-  it('assigns stable track ids by running detections through the tracker', async () => {
+  it('assigns stable track ids by running detections through the tracker, reporting only confirmed tracks', async () => {
     const box = { x: 0.2, y: 0.2, width: 0.1, height: 0.1 };
-    const analyzer = makeAnalyzer({ detections: [detection({ box })] });
+    const analyzer = makeAnalyzer({ detections: [detection({ box })], tracker: new VehicleTracker({ minHits: 2 }) });
+    const t0 = Date.parse(TIMESTAMP);
 
-    const first = await analyzer.analyze(FRAME, TIMESTAMP);
-    const second = await analyzer.analyze(FRAME, TIMESTAMP);
+    const first = await analyzer.analyze(FRAME, new Date(t0).toISOString());
+    const second = await analyzer.analyze(FRAME, new Date(t0 + 200).toISOString());
+    const third = await analyzer.analyze(FRAME, new Date(t0 + 400).toISOString());
 
-    // Same vehicle, same place, two consecutive ticks - one id, not two.
-    expect(first.detections[0].trackId).toBe(1);
+    // Not yet confirmed on the first frame, so not counted.
+    expect(first.totalCount).toBe(0);
+    // Same vehicle, same place, consecutive frames - one id, not two.
     expect(second.detections[0].trackId).toBe(1);
+    expect(third.detections[0].trackId).toBe(1);
+  });
+
+  it('passes the frame timestamp to the tracker in epoch ms', async () => {
+    const tracker = makePassThroughTracker();
+    await makeAnalyzer({ tracker }).analyze(FRAME, TIMESTAMP);
+
+    expect(tracker.update).toHaveBeenCalledWith([], Date.parse(TIMESTAMP));
+  });
+
+  it("surfaces the tracker's finished tracks on the result", async () => {
+    const finished: FinishedTrack[] = [
+      { trackId: 7, firstSeen: TIMESTAMP, lastSeen: TIMESTAMP, firstBox: detection().box, lastBox: detection().box, hits: 5 },
+    ];
+    const result = await makeAnalyzer({ tracker: makePassThroughTracker(finished) }).analyze(FRAME, TIMESTAMP);
+
+    expect(result.finishedTracks).toEqual(finished);
+  });
+
+  it('flags a result produced while the detector is still warming up', async () => {
+    const warming = await makeAnalyzer({ detector: makeDetector([], true) }).analyze(FRAME, TIMESTAMP);
+    const warm = await makeAnalyzer({ detector: makeDetector([], false) }).analyze(FRAME, TIMESTAMP);
+
+    expect(warming.warmingUp).toBe(true);
+    expect(warm.warmingUp).toBeUndefined();
   });
 
   it('hands the same frame to both the detector and the occupancy estimator', async () => {
@@ -142,7 +183,7 @@ describe('CameraAnalyzer', () => {
       const detections = Array.from({ length: 20 }, (_, i) =>
         detection({ box: { x: (i % 10) * 0.09, y: Math.floor(i / 10) * 0.3, width: 0.02, height: 0.02 } }),
       );
-      const analyzer = new CameraAnalyzer('cam-1', { detector: makeDetector(detections), occupancyEstimator: null });
+      const analyzer = new CameraAnalyzer('cam-1', { detector: makeDetector(detections), tracker: makePassThroughTracker(), occupancyEstimator: null });
 
       const result = await analyzer.analyze(FRAME, TIMESTAMP);
 
@@ -170,6 +211,7 @@ describe('CameraAnalyzer', () => {
       totalCount: 0,
       trafficLevel: 'light',
       detections: [],
+      finishedTracks: [],
       error: 'luma decode failed',
     });
   });
@@ -183,6 +225,7 @@ describe('CameraAnalyzer', () => {
       totalCount: 0,
       trafficLevel: 'light',
       detections: [],
+      finishedTracks: [],
       error: 'stream unreachable',
     });
   });
