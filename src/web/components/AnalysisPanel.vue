@@ -33,7 +33,9 @@ const streamDisconnected = ref(false);
 let unsubscribe: (() => void) | null = null;
 
 const hasResultError = computed(() => Boolean(result.value?.error));
-const isWarmingUp = computed(() => isActive.value && !result.value);
+// No result yet, or the server's background model is still learning the scene
+// (its zero count then says nothing about the road).
+const isWarmingUp = computed(() => isActive.value && (!result.value || Boolean(result.value.warmingUp)));
 
 /** Occupancy as a whole percentage, or null while the server's estimator is still learning the scene. */
 const occupancyPct = computed(() => {
@@ -138,11 +140,11 @@ onBeforeUnmount(() => unsubscribe?.());
       <p class="mt-1 text-xs text-slate-500">No traffic analysis is available while this camera is inactive.</p>
     </div>
 
-    <!-- Warming up: subscribed, but the first tick hasn't landed yet. -->
+    <!-- Warming up: no result yet, or the detector is still learning this camera's background. -->
     <div v-else-if="isWarmingUp" class="mt-6 flex flex-1 flex-col items-center justify-center text-center">
       <span class="h-5 w-5 animate-spin rounded-full border-2 border-slate-700 border-t-slate-300"></span>
       <p class="mt-3 text-sm font-medium text-slate-400">Analyzing traffic…</p>
-      <p class="mt-1 text-xs text-slate-500">The first result usually takes a few seconds.</p>
+      <p class="mt-1 text-xs text-slate-500">Learning the scene usually takes a few seconds after the stream connects.</p>
     </div>
 
     <!-- Frame capture / detection failed for the latest tick. -->

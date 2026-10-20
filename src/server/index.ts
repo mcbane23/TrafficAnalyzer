@@ -33,9 +33,12 @@ const hlsProxyService = new HlsProxyService(store);
 // One CameraAnalyzer per camera is built internally - it owns that camera's
 // detector, tracker and occupancy model, all of which describe a single fixed
 // viewpoint (see CameraAnalyzer's docstring).
+// Every active camera is analyzed continuously at ANALYSIS_FPS (default 3);
+// lower it if the host can't keep up with the whole fleet.
+const ANALYSIS_FPS = Number(process.env.ANALYSIS_FPS) || undefined;
 const trafficAnalysisService = new TrafficAnalysisService(
   store,
-  new FrameGrabber(),
+  new FrameGrabber({ streamFps: ANALYSIS_FPS }),
   new TrafficHistoryStore(TRAFFIC_HISTORY_DB_PATH),
 );
 const app = createApp(cameraService, revalidationService, hlsProxyService, trafficAnalysisService, STATIC_DIR);

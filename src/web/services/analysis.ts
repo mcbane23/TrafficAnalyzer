@@ -46,10 +46,10 @@ export function subscribeOverview(onMessage: (overview: CameraAnalysisOverview) 
 }
 
 /**
- * Subscribes to a single camera's full-detail analysis SSE stream. Opening
- * this connection is what boosts that camera's sampling rate server-side;
- * closing it (calling the returned unsubscribe function) reverts it back to
- * the background rate - always call it on unmount / camera change.
+ * Subscribes to a single camera's full-detail analysis SSE stream. Every
+ * active camera is analyzed continuously server-side, so this only listens -
+ * still call the returned unsubscribe function on unmount / camera change so
+ * the connection is closed.
  */
 export function subscribeCameraAnalysis(
   cameraId: string,

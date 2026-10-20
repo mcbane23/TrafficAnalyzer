@@ -14,7 +14,7 @@ const usingAlternate = ref(false);
 let hls: Hls | null = null;
 
 // Bounding-box overlay: sourced from the per-camera analysis SSE stream
-// (opening it is also what boosts that camera's sampling rate server-side).
+// (every active camera is analyzed continuously server-side; this only listens).
 // It's expected to lag the live video somewhat (frame-grab + inference time,
 // plus hls.js's own live-edge buffering below) - an accepted tradeoff, not a
 // bug. What is fixed here is that boxes used to only ever *snap* to each new

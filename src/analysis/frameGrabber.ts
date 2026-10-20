@@ -12,9 +12,10 @@ export interface FrameGrabberOptions {
   ffmpegPath?: string;
   /**
    * Target frames-per-second decoded by a continuous capture. Defaults to
-   * 6, comfortably ahead of `TrafficAnalysisService`'s default boosted
-   * polling cadence (200ms, i.e. 5fps) so a caller only rarely has to wait
-   * on the next decode instead of dequeuing an already-ready frame.
+   * 3: every active camera is analyzed continuously, so this is multiplied
+   * by the whole fleet. Three frames a second is enough for the tracker to
+   * follow a vehicle across a typical view (it crosses in several seconds)
+   * while keeping ~20 cameras within a couple of CPU cores.
    */
   streamFps?: number;
   /**
@@ -23,12 +24,44 @@ export interface FrameGrabberOptions {
    * `FfmpegFrameCapture.frameQueue` for why this needs to be more than 1.
    */
   maxQueuedFrames?: number;
+  /**
+   * Pace a continuous capture's input at the stream's native frame rate
+   * (ffmpeg `-re`). Defaults to true. Without it, ffmpeg decodes each
+   * fetched HLS segment as fast as it can - many seconds of footage landing
+   * within ~100ms, then silence until the next segment - so the frames a
+   * consumer pulls are unevenly spaced in time and the queue cap throws most
+   * of each burst away. Pacing turns that into an even, real-time trickle,
+   * which is what lets `capturedAt` stand in for the frame's real time and
+   * lets the tracker see every frame instead of a few per segment.
+   */
+  realtime?: boolean;
+  /**
+   * A running capture that has produced no frame for this long (ms) is
+   * treated as stalled - an HLS playlist that stopped advancing, a TCP
+   * connection silently black-holed - and its ffmpeg process is killed and
+   * restarted. Defaults to 20000. Without this, a stalled ffmpeg neither
+   * exits nor produces data, and the capture stays dead until its holder
+   * happens to close it.
+   */
+  stallTimeoutMs?: number;
+  /** Delay (ms) before restarting a capture whose ffmpeg exited after producing frames. Defaults to 1000. */
+  restartDelayMs?: number;
+  /**
+   * Ceiling (ms) on the restart delay. A capture whose ffmpeg keeps exiting
+   * without producing a single frame - a camera that's down, a URL that
+   * 404s - backs off exponentially from `restartDelayMs` up to this, rather
+   * than respawning ffmpeg in a tight loop against a dead upstream.
+   * Defaults to 60000.
+   */
+  maxRestartDelayMs?: number;
 }
 
 export interface GrabFrameSuccess {
   ok: true;
   /** A single decoded JPEG video frame. */
   buffer: Buffer;
+  /** When the frame was decoded (epoch ms) - its timestamp for tracking purposes. */
+  capturedAt: number;
 }
 
 export interface GrabFrameFailure {
@@ -39,7 +72,9 @@ export interface GrabFrameFailure {
 export type GrabFrameResult = GrabFrameSuccess | GrabFrameFailure;
 
 /**
- * An open, continuously-decoding capture of one camera's stream.
+ * An open, continuously-decoding capture of one camera's stream, which
+ * keeps itself connected: a stalled or exited ffmpeg is restarted (with
+ * backoff) for as long as the capture is open.
  *
  * This is the object form of what used to be a `{ streaming: true }` flag
  * on `grabFrame` plus a `stopStreaming(cameraId)` call the caller had to
@@ -59,8 +94,13 @@ export interface FrameCapture {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const DEFAULT_STREAM_FPS = 6;
+const DEFAULT_STREAM_FPS = 3;
 const DEFAULT_MAX_QUEUED_FRAMES = 12;
+const DEFAULT_STALL_TIMEOUT_MS = 20_000;
+const DEFAULT_RESTART_DELAY_MS = 1_000;
+const DEFAULT_MAX_RESTART_DELAY_MS = 60_000;
+/** Read/write timeout for HTTP(S)-delivered streams, in microseconds (ffmpeg's unit) - a hung segment fetch fails instead of blocking forever. */
+const HTTP_RW_TIMEOUT_US = 15_000_000;
 const JPEG_SOI = Buffer.from([0xff, 0xd8]);
 const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 /**
@@ -100,6 +140,8 @@ export class FrameGrabber {
   private readonly timeoutMs: number;
   private readonly streamFps: number;
   private readonly maxQueuedFrames: number;
+  private readonly realtime: boolean;
+  private readonly supervision: CaptureSupervision;
   private readonly ffmpegRunner: FfmpegRunner;
   private readonly ffmpegStreamRunner: FfmpegStreamRunner;
 
@@ -107,6 +149,12 @@ export class FrameGrabber {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.streamFps = options.streamFps ?? DEFAULT_STREAM_FPS;
     this.maxQueuedFrames = options.maxQueuedFrames ?? DEFAULT_MAX_QUEUED_FRAMES;
+    this.realtime = options.realtime ?? true;
+    this.supervision = {
+      stallTimeoutMs: options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
+      restartDelayMs: options.restartDelayMs ?? DEFAULT_RESTART_DELAY_MS,
+      maxRestartDelayMs: options.maxRestartDelayMs ?? DEFAULT_MAX_RESTART_DELAY_MS,
+    };
     this.ffmpegRunner = options.ffmpegRunner ?? createFfmpegRunner(options.ffmpegPath);
     this.ffmpegStreamRunner = options.ffmpegStreamRunner ?? createFfmpegStreamRunner(options.ffmpegPath);
   }
@@ -133,7 +181,7 @@ export class FrameGrabber {
       return { ok: false, error: 'ffmpeg produced no frame data' };
     }
 
-    return { ok: true, buffer: outcome.stdout };
+    return { ok: true, buffer: outcome.stdout, capturedAt: Date.now() };
   }
 
   /**
@@ -143,24 +191,40 @@ export class FrameGrabber {
    */
   openCapture(camera: CameraEntry): FrameCapture {
     return new FfmpegFrameCapture(
-      () => this.ffmpegStreamRunner(buildStreamArgs(camera, this.streamFps)),
+      () => this.ffmpegStreamRunner(buildStreamArgs(camera, this.streamFps, this.realtime)),
       this.timeoutMs,
       this.maxQueuedFrames,
+      this.supervision,
     );
   }
 }
 
+interface CaptureSupervision {
+  stallTimeoutMs: number;
+  restartDelayMs: number;
+  maxRestartDelayMs: number;
+}
+
 /**
  * One camera's long-running ffmpeg capture: spawns the process, splits its
- * MJPEG stdout back into discrete frames, and hands them out one per
- * `next()`.
+ * MJPEG stdout back into discrete frames, hands them out one per `next()`,
+ * and keeps the process alive.
  *
- * The process is (re)spawned lazily on the first `next()` that finds none
- * running. That covers the initial start and, equally, an ffmpeg that dies
- * mid-capture on a network blip: the following `next()` transparently
- * starts a fresh one instead of the capture staying permanently broken
- * until its holder happens to reopen it. Respawning is naturally
- * rate-limited by how often the caller asks for frames.
+ * The process is first spawned lazily, on the first `next()`. From then on
+ * the capture supervises it until `close()`:
+ *
+ * - If ffmpeg exits (a network blip, an upstream restart, a 404), a restart
+ *   is scheduled. A process that produced frames before dying is restarted
+ *   after `restartDelayMs`; one that keeps dying without producing any
+ *   backs off exponentially up to `maxRestartDelayMs`, so a camera that is
+ *   down costs one ffmpeg spawn a minute, not one per tick.
+ * - If ffmpeg stays running but produces nothing for `stallTimeoutMs`, it is
+ *   killed and restarted the same way. This is the failure mode that used
+ *   to leave a capture permanently dead: a live HLS playlist that stops
+ *   advancing doesn't make ffmpeg exit, it makes it wait forever.
+ *
+ * A `next()` placed while the process is down or restarting simply waits
+ * (up to the capture timeout) for the first frame after reconnection.
  */
 class FfmpegFrameCapture implements FrameCapture {
   private handle: FfmpegStreamHandle | null = null;
@@ -173,43 +237,49 @@ class FfmpegFrameCapture implements FrameCapture {
   /**
    * Decoded frames not yet handed to a caller, oldest first.
    *
-   * This exists because these HLS relays deliver video in bursts, not a
-   * trickle: ffmpeg fetches one segment at a time, and a segment's entire
-   * span of frames - measured at 80-110 frames, i.e. many seconds of
-   * footage at this capture's fps - decodes and lands on stdout within
-   * under 100ms of the segment arriving, followed by total silence (no
-   * bytes at all) for several more seconds until the next segment is
-   * fetched. A single "latest frame" slot means every call placed during
-   * that silent gap instantly re-resolves with whatever the previous
-   * burst last left behind - the same stale image, over and over, with no
-   * indication anything is stale. Queueing means a call placed during the
-   * gap instead waits for the next genuinely new frame, and a burst's
-   * arrival is spread across the next several calls instead of collapsing
-   * to only its last frame.
+   * With real-time pacing (see `FrameGrabberOptions.realtime`) frames
+   * arrive evenly and this rarely holds more than one or two. It still
+   * matters when pacing is off, or when ffmpeg catches up after a slow
+   * segment fetch: a burst of frames is spread across the next several
+   * calls instead of collapsing to only its last frame, and a call placed
+   * while nothing is queued waits for the next genuinely new frame instead
+   * of re-serving a stale one.
    */
-  private readonly frameQueue: Buffer[] = [];
+  private readonly frameQueue: GrabFrameSuccess[] = [];
   private lastError: string | null = null;
   private waiters: Array<(result: GrabFrameResult) => void> = [];
   private closed = false;
+  /** Whether `next()` has ever been called - before that, nothing is spawned. */
+  private started = false;
+  /** Consecutive process runs that ended without producing a single frame. */
+  private failedRuns = 0;
+  private framesThisRun = 0;
+  private lastFrameAt = 0;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private stallTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly spawn: () => FfmpegStreamHandle,
     private readonly timeoutMs: number,
     private readonly maxQueuedFrames: number,
+    private readonly supervision: CaptureSupervision,
   ) {}
 
   next(): Promise<GrabFrameResult> {
     if (this.closed) {
       return Promise.resolve({ ok: false, error: 'capture closed' });
     }
-    this.ensureProcess();
+    if (!this.started) {
+      this.started = true;
+      this.startProcess();
+    }
 
-    // Consume-once: a call landing between bursts (see `frameQueue`) waits
-    // for the next genuinely new frame instead of instantly re-resolving
-    // with one already handed to an earlier caller.
+    // Consume-once: a call landing while nothing new has been decoded waits
+    // for the next genuinely new frame instead of re-resolving with one
+    // already handed to an earlier caller.
     const queued = this.frameQueue.shift();
     if (queued) {
-      return Promise.resolve({ ok: true, buffer: queued });
+      return Promise.resolve(queued);
     }
 
     return new Promise((resolve) => {
@@ -218,6 +288,7 @@ class FfmpegFrameCapture implements FrameCapture {
         if (idx >= 0) this.waiters.splice(idx, 1);
         resolve({ ok: false, error: this.lastError ?? 'frame capture timed out' });
       }, this.timeoutMs);
+      timer.unref?.();
 
       const settle = (result: GrabFrameResult) => {
         clearTimeout(timer);
@@ -230,28 +301,83 @@ class FfmpegFrameCapture implements FrameCapture {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.clearTimers();
     this.handle?.kill();
     this.handle = null;
     this.failWaiters('capture closed');
   }
 
-  private ensureProcess(): void {
-    if (this.handle) return;
+  private startProcess(): void {
+    this.restartTimer = null;
+    if (this.closed || this.handle) return;
+
+    this.buffer = Buffer.alloc(0);
+    this.frameStart = -1;
+    this.scanned = 0;
+    this.framesThisRun = 0;
+    this.lastFrameAt = Date.now();
 
     const handle = this.spawn();
     this.handle = handle;
 
-    handle.stdout.on('data', (chunk: Buffer) => this.onData(chunk));
+    handle.stdout.on('data', (chunk: Buffer) => {
+      if (this.handle === handle) this.onData(chunk);
+    });
     handle.stderr.on('data', (chunk: Buffer) => {
       const line = firstNonEmptyLine(chunk.toString('utf8'));
       if (line) this.lastError = line;
     });
     handle.onExit((reason) => {
-      // The process died (or never started) - drop it so the next `next()`
-      // transparently starts a fresh one, and unblock anyone waiting.
-      if (this.handle === handle) this.handle = null;
-      this.failWaiters(reason);
+      // Ignore a process this capture already gave up on (killed as stalled).
+      if (this.handle !== handle) return;
+      this.handle = null;
+      this.onProcessEnded(this.lastError ?? reason);
     });
+    this.armStallTimer();
+  }
+
+  /** Re-arms the stall watchdog against the most recent frame. */
+  private armStallTimer(): void {
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    const elapsed = Date.now() - this.lastFrameAt;
+    const wait = Math.max(0, this.supervision.stallTimeoutMs - elapsed);
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = null;
+      const handle = this.handle;
+      if (!handle || this.closed) return;
+      if (Date.now() - this.lastFrameAt >= this.supervision.stallTimeoutMs) {
+        const reason = `stream stalled: no frames for ${Math.round(this.supervision.stallTimeoutMs / 1000)}s`;
+        this.handle = null;
+        handle.kill();
+        this.lastError = reason;
+        this.onProcessEnded(reason);
+      } else {
+        this.armStallTimer();
+      }
+    }, wait);
+  }
+
+  private onProcessEnded(reason: string): void {
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer);
+      this.stallTimer = null;
+    }
+    this.failWaiters(reason);
+    if (this.closed) return;
+
+    this.failedRuns = this.framesThisRun > 0 ? 0 : this.failedRuns + 1;
+    const delay = Math.min(
+      this.supervision.maxRestartDelayMs,
+      this.supervision.restartDelayMs * 2 ** Math.max(0, this.failedRuns - 1),
+    );
+    this.restartTimer = setTimeout(() => this.startProcess(), delay);
+  }
+
+  private clearTimers(): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.restartTimer = null;
+    this.stallTimer = null;
   }
 
   /**
@@ -263,10 +389,8 @@ class FfmpegFrameCapture implements FrameCapture {
    * completable frame are dropped instead of accumulating.
    *
    * Every frame found is collected, not just the last one - a single
-   * stdout chunk routinely contains several complete frames at once (a
-   * fetched HLS segment decodes in a burst; see `frameQueue`), and
-   * discarding all but the final one here would defeat the queue before it
-   * even gets a chance to retain them.
+   * stdout chunk can contain several complete frames at once (see
+   * `frameQueue`).
    */
   private onData(chunk: Buffer): void {
     this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
@@ -309,22 +433,27 @@ class FfmpegFrameCapture implements FrameCapture {
 
     if (found.length === 0) return;
 
+    const capturedAt = Date.now();
+    this.framesThisRun += found.length;
+    this.lastFrameAt = capturedAt;
+    this.lastError = null;
+
     // Waiters get first claim on newly-decoded frames (FIFO pairing: the
     // longest-waiting call gets the oldest new frame), then whatever's left
     // joins the queue for the next call to pick up immediately.
-    for (const frame of found) {
+    for (const buffer of found) {
+      const frame: GrabFrameSuccess = { ok: true, buffer, capturedAt };
       const waiter = this.waiters.shift();
       if (waiter) {
-        waiter({ ok: true, buffer: frame });
+        waiter(frame);
       } else {
         this.frameQueue.push(frame);
       }
     }
-    // Bounded to the newest `maxQueuedFrames`: a burst can be 80-100+ frames
-    // (see `frameQueue`), and detection cannot remotely keep pace with that
-    // within one burst's arrival window, so unconsumed frames from early in a
-    // burst are dropped in favor of keeping the tail - the samples closest to
-    // live - once the cap is exceeded.
+    // Bounded to the newest `maxQueuedFrames`: if the consumer falls behind,
+    // the frames closest to live are the ones worth keeping. The tracker
+    // works off each frame's own timestamp, so a dropped frame shows up as a
+    // longer gap, not as a vehicle jumping.
     const overflow = this.frameQueue.length - this.maxQueuedFrames;
     if (overflow > 0) this.frameQueue.splice(0, overflow);
   }
@@ -344,8 +473,8 @@ function buildArgs(camera: CameraEntry): string[] {
   return args;
 }
 
-function buildStreamArgs(camera: CameraEntry, streamFps: number): string[] {
-  const args = buildCommonArgs(camera);
+function buildStreamArgs(camera: CameraEntry, streamFps: number, realtime: boolean): string[] {
+  const args = buildCommonArgs(camera, realtime);
   // Continuously decode at a low fixed fps and emit each frame as a JPEG on
   // stdout - the process is left running until the capture is closed, rather
   // than exiting after one frame.
@@ -353,8 +482,10 @@ function buildStreamArgs(camera: CameraEntry, streamFps: number): string[] {
   return args;
 }
 
-function buildCommonArgs(camera: CameraEntry): string[] {
-  const args: string[] = [];
+function buildCommonArgs(camera: CameraEntry, realtime = false): string[] {
+  // Errors only on stderr, so the first stderr line is a reason worth
+  // surfacing rather than ffmpeg's version banner.
+  const args: string[] = ['-hide_banner', '-nostats', '-loglevel', 'error'];
 
   if (camera.headers && Object.keys(camera.headers).length > 0) {
     const headerLines = Object.entries(camera.headers)
@@ -365,6 +496,15 @@ function buildCommonArgs(camera: CameraEntry): string[] {
   if (camera.protocol === 'RTSP') {
     // Prefer TCP for RTSP: more likely to traverse firewalls/NATs than the UDP default.
     args.push('-rtsp_transport', 'tcp');
+  }
+  if (/^https?:/i.test(camera.url)) {
+    // Fail a hung request instead of blocking forever, and let ffmpeg's HTTP
+    // layer retry a dropped connection itself before the whole process has
+    // to be restarted.
+    args.push('-rw_timeout', String(HTTP_RW_TIMEOUT_US), '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
+  }
+  if (realtime) {
+    args.push('-re');
   }
 
   args.push('-i', camera.url);
