@@ -1,4 +1,5 @@
 import { BackgroundModel, LumaExtractor } from './backgroundModel';
+import { VideoFrame } from './videoFrame';
 import { VehicleDetection } from '../types/analysis';
 
 export type { LumaExtractor };
@@ -139,8 +140,8 @@ export class MotionDetector {
   }
 
   /** Folds one frame into the model and returns the moving objects found in it - empty while still warming up. */
-  async detect(frame: Buffer): Promise<DetectionResult> {
-    const observation = await this.model.observe(frame);
+  async detect(frame: VideoFrame): Promise<DetectionResult> {
+    const observation = this.model.observe(frame);
     if (observation.warming) {
       return { detections: [], warmingUp: true };
     }

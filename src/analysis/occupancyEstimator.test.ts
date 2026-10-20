@@ -1,4 +1,5 @@
 import { LumaExtractor, OccupancyEstimator } from './occupancyEstimator';
+import { VideoFrame } from './videoFrame';
 
 const W = 20;
 const H = 10;
@@ -8,7 +9,7 @@ const N = W * H;
 function makeExtractor(): { extractor: LumaExtractor; setFrame: (pixels: Uint8Array) => void } {
   let current: Uint8Array = new Uint8Array(N).fill(100);
   return {
-    extractor: async () => current,
+    extractor: () => current,
     setFrame: (pixels: Uint8Array) => {
       current = pixels;
     },
@@ -38,7 +39,8 @@ function makeEstimator(extractor: LumaExtractor, overrides = {}) {
   });
 }
 
-const FRAME = Buffer.from('unused - the extractor is injected');
+// Never read - the extractor is injected.
+const FRAME: VideoFrame = { width: 0, height: 0, data: new Uint8Array(0) };
 
 describe('OccupancyEstimator', () => {
   it('reports no estimate until it has warmed up', async () => {
@@ -128,7 +130,7 @@ describe('OccupancyEstimator', () => {
   });
 
   it('rejects a luma plane smaller than the configured working size', async () => {
-    const est = makeEstimator(async () => new Uint8Array(4));
+    const est = makeEstimator(() => new Uint8Array(4));
 
     await expect(est.update(FRAME)).rejects.toThrow(/luma samples/);
   });

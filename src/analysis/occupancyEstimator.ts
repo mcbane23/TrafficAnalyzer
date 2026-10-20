@@ -1,4 +1,5 @@
 import { BackgroundModel, LumaExtractor } from './backgroundModel';
+import { VideoFrame } from './videoFrame';
 
 export type { LumaExtractor };
 
@@ -75,8 +76,8 @@ export class OccupancyEstimator {
   }
 
   /** Folds one frame into the model and reports the current occupancy. */
-  async update(frame: Buffer): Promise<OccupancyResult> {
-    const observation = await this.model.observe(frame);
+  async update(frame: VideoFrame): Promise<OccupancyResult> {
+    const observation = this.model.observe(frame);
     if (observation.warming) {
       return { occupancy: null, samples: observation.samples, activePixels: 0 };
     }

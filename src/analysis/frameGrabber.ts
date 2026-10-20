@@ -1,8 +1,17 @@
 import { CameraEntry } from '../types/camera';
 import { FfmpegRunner, FfmpegStreamHandle, FfmpegStreamRunner, createFfmpegRunner, createFfmpegStreamRunner } from './ffmpegRunner';
+import { VideoFrame, yuv420pFrameSize } from './videoFrame';
 
 export interface FrameGrabberOptions {
-  /** Per-camera capture timeout, in milliseconds. Defaults to 10000. */
+  /**
+   * How long a `next()` (or a one-off `grabFrame`) waits for a frame, in
+   * milliseconds. Defaults to 30000 - deliberately longer than
+   * `stallTimeoutMs`, so a capture that has genuinely stopped is reported
+   * by the watchdog with its real reason, while one that is merely slow to
+   * open (probing a live HLS playlist means downloading whole 10 s
+   * segments, slower still on a loaded host) is given time to get its first
+   * frame out instead of being reported as broken.
+   */
   timeoutMs?: number;
   /** Injectable ffmpeg runner, primarily used for testing. */
   ffmpegRunner?: FfmpegRunner;
@@ -10,6 +19,17 @@ export interface FrameGrabberOptions {
   ffmpegStreamRunner?: FfmpegStreamRunner;
   /** Path to the ffmpeg executable, if not on PATH. Ignored if `ffmpegRunner`/`ffmpegStreamRunner` are supplied. */
   ffmpegPath?: string;
+  /**
+   * Size ffmpeg scales every frame to before handing it over, as raw
+   * `yuv420p`. Defaults to 320x240 - comfortably above the working
+   * resolution of every background model (the largest is 240x180), and
+   * large enough for a dashboard thumbnail. Scaling inside ffmpeg, right
+   * after decode, is what keeps the per-frame cost down: no JPEG is
+   * encoded, piped or decoded anywhere on the analysis path.
+   */
+  frameWidth?: number;
+  /** See `frameWidth`. Defaults to 240. */
+  frameHeight?: number;
   /**
    * Target frames-per-second decoded by a continuous capture. Defaults to
    * 3: every active camera is analyzed continuously, so this is multiplied
@@ -58,8 +78,8 @@ export interface FrameGrabberOptions {
 
 export interface GrabFrameSuccess {
   ok: true;
-  /** A single decoded JPEG video frame. */
-  buffer: Buffer;
+  /** A single decoded video frame, scaled to the grabber's frame size. */
+  frame: VideoFrame;
   /** When the frame was decoded (epoch ms) - its timestamp for tracking purposes. */
   capturedAt: number;
 }
@@ -93,7 +113,9 @@ export interface FrameCapture {
   close(): void;
 }
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_FRAME_WIDTH = 320;
+const DEFAULT_FRAME_HEIGHT = 240;
 const DEFAULT_STREAM_FPS = 3;
 const DEFAULT_MAX_QUEUED_FRAMES = 12;
 const DEFAULT_STALL_TIMEOUT_MS = 20_000;
@@ -101,20 +123,11 @@ const DEFAULT_RESTART_DELAY_MS = 1_000;
 const DEFAULT_MAX_RESTART_DELAY_MS = 60_000;
 /** Read/write timeout for HTTP(S)-delivered streams, in microseconds (ffmpeg's unit) - a hung segment fetch fails instead of blocking forever. */
 const HTTP_RW_TIMEOUT_US = 15_000_000;
-const JPEG_SOI = Buffer.from([0xff, 0xd8]);
-const JPEG_EOI = Buffer.from([0xff, 0xd9]);
-/**
- * Ceiling on the bytes held for a single not-yet-complete frame. A `-q:v 4`
- * MJPEG frame is a few hundred KB even at 1080p, so anything past this is a
- * stream that will never produce a closing marker; the buffer is resynced
- * rather than grown until the process runs out of memory.
- */
-const MAX_PENDING_FRAME_BYTES = 16 * 1024 * 1024;
 
 /**
  * FrameGrabber invokes ffmpeg against a camera's live stream URL and
- * returns decoded frames as JPEG image buffers, for a `CameraAnalyzer` to
- * run detection against.
+ * returns decoded frames as small raw `yuv420p` images (see `VideoFrame`),
+ * for a `CameraAnalyzer` to run detection against.
  *
  * It reuses the same header-forwarding approach as `CameraValidator`
  * (which does the equivalent for ffprobe) for cameras that require
@@ -141,6 +154,7 @@ export class FrameGrabber {
   private readonly streamFps: number;
   private readonly maxQueuedFrames: number;
   private readonly realtime: boolean;
+  private readonly frameSize: FrameSize;
   private readonly supervision: CaptureSupervision;
   private readonly ffmpegRunner: FfmpegRunner;
   private readonly ffmpegStreamRunner: FfmpegStreamRunner;
@@ -150,6 +164,10 @@ export class FrameGrabber {
     this.streamFps = options.streamFps ?? DEFAULT_STREAM_FPS;
     this.maxQueuedFrames = options.maxQueuedFrames ?? DEFAULT_MAX_QUEUED_FRAMES;
     this.realtime = options.realtime ?? true;
+    this.frameSize = {
+      width: options.frameWidth ?? DEFAULT_FRAME_WIDTH,
+      height: options.frameHeight ?? DEFAULT_FRAME_HEIGHT,
+    };
     this.supervision = {
       stallTimeoutMs: options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
       restartDelayMs: options.restartDelayMs ?? DEFAULT_RESTART_DELAY_MS,
@@ -163,7 +181,7 @@ export class FrameGrabber {
   async grabFrame(camera: CameraEntry): Promise<GrabFrameResult> {
     let outcome;
     try {
-      outcome = await this.ffmpegRunner(buildArgs(camera), this.timeoutMs);
+      outcome = await this.ffmpegRunner(buildArgs(camera, this.frameSize), this.timeoutMs);
     } catch (err) {
       return { ok: false, error: `ffmpeg failed to run: ${err instanceof Error ? err.message : String(err)}` };
     }
@@ -177,11 +195,13 @@ export class FrameGrabber {
       return { ok: false, error: reason };
     }
 
-    if (outcome.stdout.length === 0) {
+    const bytes = yuv420pFrameSize(this.frameSize.width, this.frameSize.height);
+    if (outcome.stdout.length < bytes) {
       return { ok: false, error: 'ffmpeg produced no frame data' };
     }
 
-    return { ok: true, buffer: outcome.stdout, capturedAt: Date.now() };
+    const frame: VideoFrame = { ...this.frameSize, data: new Uint8Array(outcome.stdout.subarray(0, bytes)) };
+    return { ok: true, frame, capturedAt: Date.now() };
   }
 
   /**
@@ -191,12 +211,18 @@ export class FrameGrabber {
    */
   openCapture(camera: CameraEntry): FrameCapture {
     return new FfmpegFrameCapture(
-      () => this.ffmpegStreamRunner(buildStreamArgs(camera, this.streamFps, this.realtime)),
+      () => this.ffmpegStreamRunner(buildStreamArgs(camera, this.frameSize, this.streamFps, this.realtime)),
+      this.frameSize,
       this.timeoutMs,
       this.maxQueuedFrames,
       this.supervision,
     );
   }
+}
+
+interface FrameSize {
+  width: number;
+  height: number;
 }
 
 interface CaptureSupervision {
@@ -207,7 +233,7 @@ interface CaptureSupervision {
 
 /**
  * One camera's long-running ffmpeg capture: spawns the process, splits its
- * MJPEG stdout back into discrete frames, hands them out one per `next()`,
+ * raw-video stdout back into discrete fixed-size frames, hands them out one per `next()`,
  * and keeps the process alive.
  *
  * The process is first spawned lazily, on the first `next()`. From then on
@@ -228,12 +254,10 @@ interface CaptureSupervision {
  */
 class FfmpegFrameCapture implements FrameCapture {
   private handle: FfmpegStreamHandle | null = null;
-  /** Bytes received but not yet resolved into a complete frame. */
-  private buffer: Buffer = Buffer.alloc(0);
-  /** Offset in `buffer` of the in-progress frame's start marker, or -1 while still looking for one. */
-  private frameStart = -1;
-  /** How much of `buffer` has already been scanned for whichever marker is being looked for, so chunks aren't re-scanned. */
-  private scanned = 0;
+  /** The frame currently being filled from stdout, and how many of its bytes have arrived. */
+  private pending: Uint8Array;
+  private pendingBytes = 0;
+  private readonly frameBytes: number;
   /**
    * Decoded frames not yet handed to a caller, oldest first.
    *
@@ -260,10 +284,14 @@ class FfmpegFrameCapture implements FrameCapture {
 
   constructor(
     private readonly spawn: () => FfmpegStreamHandle,
+    private readonly frameSize: FrameSize,
     private readonly timeoutMs: number,
     private readonly maxQueuedFrames: number,
     private readonly supervision: CaptureSupervision,
-  ) {}
+  ) {
+    this.frameBytes = yuv420pFrameSize(frameSize.width, frameSize.height);
+    this.pending = new Uint8Array(this.frameBytes);
+  }
 
   next(): Promise<GrabFrameResult> {
     if (this.closed) {
@@ -311,9 +339,9 @@ class FfmpegFrameCapture implements FrameCapture {
     this.restartTimer = null;
     if (this.closed || this.handle) return;
 
-    this.buffer = Buffer.alloc(0);
-    this.frameStart = -1;
-    this.scanned = 0;
+    // A new process starts at a frame boundary; a partial frame left by the
+    // previous one must not be glued onto its first bytes.
+    this.pendingBytes = 0;
     this.framesThisRun = 0;
     this.lastFrameAt = Date.now();
 
@@ -381,54 +409,25 @@ class FfmpegFrameCapture implements FrameCapture {
   }
 
   /**
-   * Extracts every complete JPEG frame from the raw ffmpeg stdout stream.
-   *
-   * Scanning resumes from `scanned` rather than restarting at the head of
-   * the buffer, so a frame arriving over many chunks is scanned once
-   * overall instead of once per chunk, and bytes that cannot be part of a
-   * completable frame are dropped instead of accumulating.
-   *
-   * Every frame found is collected, not just the last one - a single
-   * stdout chunk can contain several complete frames at once (see
-   * `frameQueue`).
+   * Cuts the raw ffmpeg stdout stream into frames. Raw video has no markers
+   * to search for: every frame is exactly `frameBytes` long, so chunks are
+   * copied into the frame being filled and a frame is complete when it is
+   * full. Every frame completed by a chunk is collected, not just the last
+   * one - a single stdout chunk can contain several (see `frameQueue`).
    */
   private onData(chunk: Buffer): void {
-    this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
-
-    const found: Buffer[] = [];
-    for (;;) {
-      if (this.frameStart < 0) {
-        const soi = this.buffer.indexOf(JPEG_SOI, this.scanned);
-        if (soi === -1) {
-          // Nothing here starts a frame. Keep only the trailing bytes a start
-          // marker could straddle into the next chunk; discard the rest.
-          const keepFrom = Math.max(0, this.buffer.length - (JPEG_SOI.length - 1));
-          this.buffer = this.buffer.subarray(keepFrom);
-          this.scanned = 0;
-          break;
-        }
-        this.frameStart = soi;
-        this.scanned = soi + JPEG_SOI.length;
+    const found: Uint8Array[] = [];
+    let offset = 0;
+    while (offset < chunk.length) {
+      const take = Math.min(this.frameBytes - this.pendingBytes, chunk.length - offset);
+      this.pending.set(chunk.subarray(offset, offset + take), this.pendingBytes);
+      this.pendingBytes += take;
+      offset += take;
+      if (this.pendingBytes === this.frameBytes) {
+        found.push(this.pending);
+        this.pending = new Uint8Array(this.frameBytes);
+        this.pendingBytes = 0;
       }
-
-      const eoi = this.buffer.indexOf(JPEG_EOI, this.scanned);
-      if (eoi === -1) {
-        if (this.buffer.length - this.frameStart > MAX_PENDING_FRAME_BYTES) {
-          // Implausibly long "frame" - treat the start marker as spurious and resync past it.
-          this.buffer = this.buffer.subarray(this.frameStart + JPEG_SOI.length);
-          this.frameStart = -1;
-          this.scanned = 0;
-          continue;
-        }
-        this.scanned = Math.max(this.frameStart + JPEG_SOI.length, this.buffer.length - (JPEG_EOI.length - 1));
-        break;
-      }
-
-      const frameEnd = eoi + JPEG_EOI.length;
-      found.push(Buffer.from(this.buffer.subarray(this.frameStart, frameEnd)));
-      this.buffer = this.buffer.subarray(frameEnd);
-      this.frameStart = -1;
-      this.scanned = 0;
     }
 
     if (found.length === 0) return;
@@ -441,13 +440,13 @@ class FfmpegFrameCapture implements FrameCapture {
     // Waiters get first claim on newly-decoded frames (FIFO pairing: the
     // longest-waiting call gets the oldest new frame), then whatever's left
     // joins the queue for the next call to pick up immediately.
-    for (const buffer of found) {
-      const frame: GrabFrameSuccess = { ok: true, buffer, capturedAt };
+    for (const data of found) {
+      const result: GrabFrameSuccess = { ok: true, frame: { ...this.frameSize, data }, capturedAt };
       const waiter = this.waiters.shift();
       if (waiter) {
-        waiter(frame);
+        waiter(result);
       } else {
-        this.frameQueue.push(frame);
+        this.frameQueue.push(result);
       }
     }
     // Bounded to the newest `maxQueuedFrames`: if the consumer falls behind,
@@ -466,26 +465,40 @@ class FfmpegFrameCapture implements FrameCapture {
   }
 }
 
-function buildArgs(camera: CameraEntry): string[] {
+function buildArgs(camera: CameraEntry, size: FrameSize): string[] {
   const args = buildCommonArgs(camera);
-  // Grab exactly one frame and emit it as a JPEG on stdout.
-  args.push('-frames:v', '1', '-q:v', '4', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1');
+  // Grab exactly one frame and emit it as raw video on stdout.
+  args.push('-frames:v', '1', '-vf', scaleFilter(size), ...rawVideoOutput());
   return args;
 }
 
-function buildStreamArgs(camera: CameraEntry, streamFps: number, realtime: boolean): string[] {
+function buildStreamArgs(camera: CameraEntry, size: FrameSize, streamFps: number, realtime: boolean): string[] {
   const args = buildCommonArgs(camera, realtime);
-  // Continuously decode at a low fixed fps and emit each frame as a JPEG on
-  // stdout - the process is left running until the capture is closed, rather
-  // than exiting after one frame.
-  args.push('-vf', `fps=${streamFps}`, '-q:v', '4', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1');
+  // Continuously decode, keep `streamFps` frames a second, scale those down
+  // and emit them as raw video on stdout - the process is left running until
+  // the capture is closed, rather than exiting after one frame. `fps` comes
+  // first so only the kept frames are ever scaled.
+  args.push('-vf', `fps=${streamFps},${scaleFilter(size)}`, ...rawVideoOutput());
   return args;
+}
+
+function scaleFilter(size: FrameSize): string {
+  return `scale=${size.width}:${size.height},format=yuv420p`;
+}
+
+function rawVideoOutput(): string[] {
+  return ['-f', 'rawvideo', '-pix_fmt', 'yuv420p', 'pipe:1'];
 }
 
 function buildCommonArgs(camera: CameraEntry, realtime = false): string[] {
   // Errors only on stderr, so the first stderr line is a reason worth
   // surfacing rather than ffmpeg's version banner.
   const args: string[] = ['-hide_banner', '-nostats', '-loglevel', 'error'];
+  // One decoding thread per process. Every active camera has its own
+  // ffmpeg, so there is already one process per stream to spread across
+  // cores; ffmpeg's default of a thread per core on top of that only adds
+  // ~20 cameras' worth of contention and per-thread overhead.
+  args.push('-threads', '1');
 
   if (camera.headers && Object.keys(camera.headers).length > 0) {
     const headerLines = Object.entries(camera.headers)

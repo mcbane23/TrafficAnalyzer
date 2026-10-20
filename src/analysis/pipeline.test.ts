@@ -1,14 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { BUNDLED_FFMPEG_PATH } from './ffmpegRunner';
 import { CameraAnalyzer } from './cameraAnalyzer';
 import { FrameGrabber, GrabFrameSuccess } from './frameGrabber';
+import { VideoFrame, yuv420pFrameSize } from './videoFrame';
 import { CameraAnalysisResult, FinishedTrack } from '../types/analysis';
 import { SCENE, SYNTHETIC_CLIP_PATH, crossingSeconds } from './__fixtures__/syntheticFootage';
 
 const FPS = 3;
+const W = 320;
+const H = 240;
 const T0 = Date.parse('2026-01-01T00:00:00.000Z');
 
 /**
@@ -24,24 +24,25 @@ describe('vehicle analysis pipeline on synthetic footage', () => {
   let finished: FinishedTrack[];
 
   beforeAll(async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'synthetic-frames-'));
-    try {
-      execFileSync(BUNDLED_FFMPEG_PATH, [
+    // Decoded exactly as a live capture would be: scaled to FrameGrabber's
+    // default frame size, as raw yuv420p.
+    const raw = execFileSync(
+      BUNDLED_FFMPEG_PATH,
+      [
         '-hide_banner', '-loglevel', 'error', '-i', SYNTHETIC_CLIP_PATH,
-        '-vf', `fps=${FPS}`, '-q:v', '4', path.join(dir, 'f%04d.jpg'),
-      ]);
-      const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jpg')).sort();
+        '-vf', `fps=${FPS},scale=${W}:${H},format=yuv420p`, '-f', 'rawvideo', 'pipe:1',
+      ],
+      { maxBuffer: 256 * 1024 * 1024 },
+    );
+    const frameBytes = yuv420pFrameSize(W, H);
 
-      const analyzer = new CameraAnalyzer('synthetic');
-      results = [];
-      for (let i = 0; i < files.length; i++) {
-        const frame = fs.readFileSync(path.join(dir, files[i]));
-        results.push(await analyzer.analyze(frame, new Date(T0 + (i * 1000) / FPS).toISOString()));
-      }
-      finished = results.flatMap((r) => r.finishedTracks);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+    const analyzer = new CameraAnalyzer('synthetic');
+    results = [];
+    for (let i = 0; (i + 1) * frameBytes <= raw.length; i++) {
+      const frame: VideoFrame = { width: W, height: H, data: new Uint8Array(raw.subarray(i * frameBytes, (i + 1) * frameBytes)) };
+      results.push(await analyzer.analyze(frame, new Date(T0 + (i * 1000) / FPS).toISOString()));
     }
+    finished = results.flatMap((r) => r.finishedTracks);
   }, 60_000);
 
   it('produces no errors and stops warming up within the first ~8 seconds', () => {

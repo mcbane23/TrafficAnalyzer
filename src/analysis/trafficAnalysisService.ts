@@ -3,6 +3,7 @@ import { CameraSource } from '../server/cameraService';
 import { CameraAnalysisOverview, CameraAnalysisResult, StoredAnalysisResult } from '../types/analysis';
 import { FrameCapture, GrabFrameResult } from './frameGrabber';
 import { CameraAnalyzer } from './cameraAnalyzer';
+import { VideoFrame, encodeJpeg } from './videoFrame';
 
 /** Narrow seam over FrameGrabber so tests can inject a fake without spawning ffmpeg. */
 export interface FrameGrabberLike {
@@ -15,7 +16,7 @@ export interface FrameGrabberLike {
  * frame into one result, including all of that camera's learned state.
  */
 export interface CameraAnalyzerLike {
-  analyze(frame: Buffer, timestamp: string): Promise<CameraAnalysisResult>;
+  analyze(frame: VideoFrame, timestamp: string): Promise<CameraAnalysisResult>;
   /** The result for a frame that never arrived - the analyzer owns this camera's result shape either way. */
   errorResult(timestamp: string, error: string): CameraAnalysisResult;
   dispose(): void;
@@ -80,6 +81,16 @@ export interface TrafficAnalysisServiceOptions {
    * history, e.g. persisting vehicle passages.
    */
   onResult?: (result: CameraAnalysisResult) => void;
+  /**
+   * Minimum spacing (ms, by capture time) between refreshes of a camera's
+   * JPEG thumbnail (`getLatestFrame`). Defaults to 2000. Frames arrive as
+   * raw video, so a thumbnail costs a JPEG encode; doing that for every
+   * analyzed frame would put back much of the per-frame cost raw capture
+   * removed, for an image nobody looks at more than every few seconds.
+   */
+  thumbnailIntervalMs?: number;
+  /** Encodes a thumbnail. Defaults to `encodeJpeg`. */
+  encodeThumbnail?: (frame: VideoFrame) => Promise<Buffer>;
   now?: () => Date;
   scheduler?: AnalysisScheduler;
 }
@@ -103,14 +114,17 @@ interface CameraState {
   /** Counts accumulated since the last history row. */
   historyWindow: { startedAt: number; counts: number[]; lastResult: CameraAnalysisResult | null };
   lastOverviewAt: number;
-  /** Most recent successfully decoded frame - served as the camera's still thumbnail. */
+  /** Most recently encoded thumbnail (JPEG) - served as the camera's still image. */
   latestFrame: { buffer: Buffer; capturedAt: string } | null;
+  /** Capture time (ms) of the frame the latest thumbnail encode was started from. */
+  thumbnailStartedAt: number;
 }
 
 const DEFAULTS = {
   maxConcurrency: 6,
   historyIntervalMs: 10_000,
   overviewIntervalMs: 2_000,
+  thumbnailIntervalMs: 2_000,
 };
 
 /**
@@ -161,6 +175,8 @@ export class TrafficAnalysisService {
     overviewIntervalMs: number;
     createAnalyzer: (cameraId: string) => CameraAnalyzerLike;
     onResult: ((result: CameraAnalysisResult) => void) | null;
+    thumbnailIntervalMs: number;
+    encodeThumbnail: (frame: VideoFrame) => Promise<Buffer>;
     now: () => Date;
     scheduler: AnalysisScheduler;
   };
@@ -187,6 +203,8 @@ export class TrafficAnalysisService {
       overviewIntervalMs: options.overviewIntervalMs ?? DEFAULTS.overviewIntervalMs,
       createAnalyzer: options.createAnalyzer ?? ((cameraId) => new CameraAnalyzer(cameraId)),
       onResult: options.onResult ?? null,
+      thumbnailIntervalMs: options.thumbnailIntervalMs ?? DEFAULTS.thumbnailIntervalMs,
+      encodeThumbnail: options.encodeThumbnail ?? ((frame) => encodeJpeg(frame)),
       now: options.now ?? (() => new Date()),
       scheduler: options.scheduler ?? defaultScheduler,
     };
@@ -218,6 +236,7 @@ export class TrafficAnalysisService {
         historyWindow: { startedAt: this.options.now().getTime(), counts: [], lastResult: null },
         lastOverviewAt: -Infinity,
         latestFrame: null,
+        thumbnailStartedAt: -Infinity,
       };
       this.cameraStates.set(camera.id, state);
       state.startHandle = this.options.scheduler.setTimeout(() => this.startCamera(state), activeIndex * STARTUP_STAGGER_STEP_MS);
@@ -250,9 +269,10 @@ export class TrafficAnalysisService {
   }
 
   /**
-   * The most recent frame decoded for this camera (JPEG), or null if none
-   * yet / not an active camera. Comes from the capture already running for
-   * analysis, so a thumbnail costs no extra ffmpeg process.
+   * A recent frame from this camera as a JPEG (at most
+   * `thumbnailIntervalMs` older than the newest analyzed frame), or null if
+   * none yet / not an active camera. Comes from the capture already running
+   * for analysis, so a thumbnail costs no extra ffmpeg process.
    */
   getLatestFrame(cameraId: string): { buffer: Buffer; capturedAt: string } | null {
     return this.cameraStates.get(cameraId)?.latestFrame ?? null;
@@ -343,9 +363,9 @@ export class TrafficAnalysisService {
     // A frame's own capture time is its timestamp - not when analysis got
     // round to it - since that's what the tracker's motion model runs on.
     const timestamp = frame.ok ? new Date(frame.capturedAt).toISOString() : this.options.now().toISOString();
-    if (frame.ok) state.latestFrame = { buffer: frame.buffer, capturedAt: timestamp };
+    if (frame.ok) this.refreshThumbnail(state, frame.frame, frame.capturedAt);
     const result = frame.ok
-      ? await state.analyzer.analyze(frame.buffer, timestamp)
+      ? await state.analyzer.analyze(frame.frame, timestamp)
       : state.analyzer.errorResult(timestamp, frame.error);
 
     const usable = !result.error && !result.warmingUp;
@@ -354,6 +374,25 @@ export class TrafficAnalysisService {
       if (this.options.onResult) notify(this.options.onResult, result);
     }
     this.publish(state, result, usable);
+  }
+
+  /**
+   * Starts encoding this frame as the camera's thumbnail if the current one
+   * is older than `thumbnailIntervalMs`. Not awaited: the analysis loop must
+   * not wait on an image only a dashboard will look at, and a failed encode
+   * just leaves the previous thumbnail in place.
+   */
+  private refreshThumbnail(state: CameraState, frame: VideoFrame, capturedAt: number): void {
+    if (capturedAt - state.thumbnailStartedAt < this.options.thumbnailIntervalMs) return;
+    state.thumbnailStartedAt = capturedAt;
+    this.options
+      .encodeThumbnail(frame)
+      .then((buffer) => {
+        // Encodes can finish out of order; never replace a newer thumbnail.
+        const current = state.latestFrame ? Date.parse(state.latestFrame.capturedAt) : -Infinity;
+        if (capturedAt >= current) state.latestFrame = { buffer, capturedAt: new Date(capturedAt).toISOString() };
+      })
+      .catch((err) => console.error(`[TrafficAnalysisService] thumbnail for camera "${state.camera.id}" failed:`, err));
   }
 
   /**

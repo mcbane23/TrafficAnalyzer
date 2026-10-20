@@ -1,16 +1,18 @@
 import { BackgroundModel, LumaExtractor } from './backgroundModel';
+import { VideoFrame } from './videoFrame';
 
 const W = 20;
 const H = 10;
 const N = W * H;
 const WARMUP = 5;
-const FRAME = Buffer.from('unused - the extractor is injected');
+// Never read - the extractor is injected.
+const FRAME: VideoFrame = { width: 0, height: 0, data: new Uint8Array(0) };
 
 /** A synthetic scene generator: pixels are driven directly, no image decoding involved. */
 function makeExtractor(): { extractor: LumaExtractor; setFrame: (pixels: Uint8Array) => void } {
   let current: Uint8Array = new Uint8Array(N).fill(100);
   return {
-    extractor: async () => current,
+    extractor: () => current,
     setFrame: (pixels: Uint8Array) => {
       current = pixels;
     },
@@ -140,9 +142,9 @@ describe('BackgroundModel', () => {
     expect(observation.foreground.subarray(0, 30).every((v) => v === 1)).toBe(true);
   });
 
-  it('rejects a frame that yields fewer luma samples than the working resolution', async () => {
-    const model = makeModel(async () => new Uint8Array(N - 1));
+  it('rejects a frame that yields fewer luma samples than the working resolution', () => {
+    const model = makeModel(() => new Uint8Array(N - 1));
 
-    await expect(model.observe(FRAME)).rejects.toThrow(`Expected at least ${N} luma samples, got ${N - 1}`);
+    expect(() => model.observe(FRAME)).toThrow(`Expected at least ${N} luma samples, got ${N - 1}`);
   });
 });

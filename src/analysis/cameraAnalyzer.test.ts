@@ -1,9 +1,10 @@
 import { CameraAnalyzer, OccupancyEstimatorLike, VehicleDetectorLike, VehicleTrackerLike } from './cameraAnalyzer';
+import { VideoFrame } from './videoFrame';
 import { VehicleTracker } from './vehicleTracker';
 import { FinishedTrack, VehicleDetection } from '../types/analysis';
 
 const TIMESTAMP = '2026-01-01T00:00:00.000Z';
-const FRAME = Buffer.from('frame');
+const FRAME: VideoFrame = { width: 1, height: 1, data: new Uint8Array(1) };
 
 function detection(overrides: Partial<VehicleDetection> = {}): VehicleDetection {
   return { class: 'vehicle', confidence: 0.9, box: { x: 0, y: 0, width: 0.1, height: 0.1 }, ...overrides };
