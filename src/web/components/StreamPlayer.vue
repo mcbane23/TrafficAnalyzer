@@ -33,7 +33,13 @@ let hls: Hls | null = null;
 // Bounding-box overlay. Boxes come from the appearance-model overlay stream
 // (YOLO, run server-side only while this camera is watched - see
 // LiveOverlayService), falling back to the fleet-wide motion analysis when
-// that is unavailable.
+// that is unavailable. The motion boxes are also drawn while the overlay is
+// starting: it only begins when the camera is opened, and its first results
+// are for a moment ~10s ahead of the picture (plus ffmpeg's start-up), which
+// left the video without boxes for up to half a minute. Motion analysis runs
+// all the time and the server keeps its last 45s, so it covers the picture
+// at once; the player hands over to the overlay as soon as the overlay has a
+// result for the frame on screen.
 //
 // Boxes are drawn *in sync with the picture*, not when they arrive. Every
 // result carries `streamTime`, the source stream's own presentation time of
@@ -99,8 +105,10 @@ interface SyncedResult {
   streamTime: number;
   detections: VehicleDetection[];
 }
-/** Results by stream time, oldest first. */
+/** Overlay (YOLO) results by stream time, oldest first. */
 let synced: SyncedResult[] = [];
+/** Motion-analysis results by stream time, drawn until the overlay covers the picture (or instead of it, when it's unavailable). */
+let motionSynced: SyncedResult[] = [];
 /**
  * How long one result is still drawn after its frame when the next one is
  * missing. A slow host drops frames when the detector can't keep up, so
@@ -126,7 +134,26 @@ function currentStreamTime(video: HTMLVideoElement): number | null {
   return video.currentTime + offset;
 }
 
-function ingest(result: { streamTime?: number; detections: VehicleDetection[]; error?: string }) {
+type AnalysisMessage = { streamTime?: number; detections: VehicleDetection[]; error?: string };
+
+/**
+ * An overlay (YOLO) result. Its errors (e.g. the capture still opening) are
+ * dropped while the motion stand-in is drawing, so they don't blank it.
+ * Without a stream clock, the first real result ends the stand-in, since
+ * arrival-time boxes can't be matched to the picture.
+ */
+function ingestOverlay(result: AnalysisMessage) {
+  if (result.error && unsubscribeMotion) return;
+  if (result.streamTime === undefined || !hls) stopMotion();
+  ingestInto(synced, result);
+}
+
+/** A motion-analysis result, kept until the overlay takes over. */
+function ingestMotion(result: AnalysisMessage) {
+  ingestInto(motionSynced, result);
+}
+
+function ingestInto(buffer: SyncedResult[], result: AnalysisMessage) {
   if (result.streamTime === undefined || !hls) {
     // No stream clock on this result, or none for the picture (native
     // player): arrival-time drawing (see the note at the top).
@@ -135,28 +162,32 @@ function ingest(result: { streamTime?: number; detections: VehicleDetection[]; e
   }
   const entry: SyncedResult = { streamTime: result.streamTime, detections: result.error ? [] : result.detections };
   // Usually appended in order; a replayed batch may overlap what's already here.
-  let i = synced.length;
-  while (i > 0 && streamDiff(synced[i - 1].streamTime, entry.streamTime) > 0) i -= 1;
-  if (i > 0 && Math.abs(streamDiff(synced[i - 1].streamTime, entry.streamTime)) < 1e-3) synced[i - 1] = entry;
-  else synced.splice(i, 0, entry);
-  if (synced.length > MAX_SYNCED_RESULTS) synced.splice(0, synced.length - MAX_SYNCED_RESULTS);
+  let i = buffer.length;
+  while (i > 0 && streamDiff(buffer[i - 1].streamTime, entry.streamTime) > 0) i -= 1;
+  if (i > 0 && Math.abs(streamDiff(buffer[i - 1].streamTime, entry.streamTime)) < 1e-3) buffer[i - 1] = entry;
+  else buffer.splice(i, 0, entry);
+  if (buffer.length > MAX_SYNCED_RESULTS) buffer.splice(0, buffer.length - MAX_SYNCED_RESULTS);
 }
 
 /** Drops results the playhead has long passed. */
-function trimSynced(now: number) {
+function trimSynced(buffer: SyncedResult[], now: number) {
   let stale = 0;
-  while (stale < synced.length - 1 && streamDiff(now, synced[stale].streamTime) > KEEP_BEHIND_SECONDS) stale += 1;
-  if (stale > 0) synced.splice(0, stale);
+  while (stale < buffer.length - 1 && streamDiff(now, buffer[stale].streamTime) > KEEP_BEHIND_SECONDS) stale += 1;
+  if (stale > 0) buffer.splice(0, stale);
 }
 
-/** The boxes for the picture at stream time `t`: interpolated between the results either side of it. */
-function boxesAt(t: number): Array<{ detection: VehicleDetection; box: BoundingBox }> {
-  let i = synced.length - 1;
-  while (i >= 0 && streamDiff(synced[i].streamTime, t) > 0) i -= 1;
-  if (i < 0) return [];
-  const before = synced[i];
-  if (streamDiff(t, before.streamTime) > MAX_HOLD_SECONDS) return [];
-  const after = synced[i + 1];
+/**
+ * The boxes for the picture at stream time `t`: interpolated between the
+ * results either side of it. Null when no result covers `t` at all, as
+ * opposed to a result with no vehicles in it.
+ */
+function boxesAt(buffer: SyncedResult[], t: number): Array<{ detection: VehicleDetection; box: BoundingBox }> | null {
+  let i = buffer.length - 1;
+  while (i >= 0 && streamDiff(buffer[i].streamTime, t) > 0) i -= 1;
+  if (i < 0) return null;
+  const before = buffer[i];
+  if (streamDiff(t, before.streamTime) > MAX_HOLD_SECONDS) return null;
+  const after = buffer[i + 1];
   const gap = after ? streamDiff(after.streamTime, before.streamTime) : Infinity;
   const fraction = gap > 0 && gap <= MAX_INTERPOLATION_GAP_SECONDS ? streamDiff(t, before.streamTime) / gap : null;
 
@@ -178,9 +209,9 @@ function boxesAt(t: number): Array<{ detection: VehicleDetection; box: BoundingB
 }
 
 /** Box centres of one track over the last few seconds up to `t`, for the trail overlay. */
-function trailAt(trackId: number, t: number): Array<{ x: number; y: number }> {
+function trailAt(buffer: SyncedResult[], trackId: number, t: number): Array<{ x: number; y: number }> {
   const points: Array<{ x: number; y: number }> = [];
-  for (const entry of synced) {
+  for (const entry of buffer) {
     const age = streamDiff(t, entry.streamTime);
     if (age < 0 || age > 8) continue;
     const d = entry.detections.find((x) => x.trackId === trackId);
@@ -188,7 +219,8 @@ function trailAt(trackId: number, t: number): Array<{ x: number; y: number }> {
   }
   return points;
 }
-let unsubscribeAnalysis: (() => void) | null = null;
+let unsubscribeOverlay: (() => void) | null = null;
+let unsubscribeMotion: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let animationFrameHandle: number | null = null;
 
@@ -481,15 +513,24 @@ function drawOverlay() {
   const content = getVideoContentRect(video, canvas.width, canvas.height);
   const now = performance.now();
 
-  const streamTime = synced.length > 0 ? currentStreamTime(video) : null;
+  const streamTime = synced.length > 0 || motionSynced.length > 0 ? currentStreamTime(video) : null;
   if (streamTime !== null) {
-    trimSynced(streamTime);
-    const boxes = boxesAt(streamTime);
+    trimSynced(synced, streamTime);
+    trimSynced(motionSynced, streamTime);
+    let source = synced;
+    let boxes = boxesAt(synced, streamTime);
+    if (boxes !== null) {
+      // The overlay covers the picture from here on: the motion stand-in is done.
+      if (unsubscribeMotion && unsubscribeOverlay) stopMotion();
+    } else {
+      source = motionSynced;
+      boxes = boxesAt(motionSynced, streamTime) ?? [];
+    }
     reportInView(boxes.length);
     if (props.showTrails) {
       for (const { detection } of boxes) {
         if (detection.trackId == null) continue;
-        drawTrail(ctx, trailAt(detection.trackId, streamTime), content, colorForDetection(detection));
+        drawTrail(ctx, trailAt(source, detection.trackId, streamTime), content, colorForDetection(detection));
       }
     }
     if (!props.showBoxes) return;
@@ -545,13 +586,14 @@ function animationLoop() {
 }
 
 /**
- * Subscribes to the camera's overlay boxes: the appearance-model stream
- * first, the motion-analysis stream if that's unavailable. No-op for
- * inactive cameras.
+ * Subscribes to the camera's overlay boxes: the appearance-model stream,
+ * with the motion-analysis stream standing in until it covers the picture,
+ * or for good if it's unavailable. No-op for inactive cameras.
  */
 function attachOverlay() {
-  unsubscribeAnalysis?.();
-  unsubscribeAnalysis = null;
+  unsubscribeOverlay?.();
+  unsubscribeOverlay = null;
+  stopMotion();
   trackedBoxes.clear();
   trails.clear();
   untrackedBoxes = [];
@@ -562,19 +604,34 @@ function attachOverlay() {
   if (props.camera.status !== 'active') return;
 
   const cameraId = props.camera.id;
-  unsubscribeAnalysis = subscribeCameraOverlay(cameraId, ingest, () => {
-    if (props.camera.id !== cameraId) return;
+  const unsubscribe = subscribeCameraOverlay(cameraId, ingestOverlay, () => {
+    if (unsubscribeOverlay !== unsubscribe) return;
+    unsubscribeOverlay = null;
     synced = [];
-    const unsubscribeMotion = subscribeCameraAnalysis(cameraId, ingest);
-    unsubscribeAnalysis = unsubscribeMotion;
-    // The picture on screen is older than the frame the server is analyzing
-    // now - fetch the results already produced for it.
-    fetchRecentAnalysis(cameraId)
-      .then((recent) => {
-        if (unsubscribeAnalysis === unsubscribeMotion) recent.forEach(ingest);
-      })
-      .catch(() => undefined);
+    if (!unsubscribeMotion) startMotion(cameraId);
   });
+  unsubscribeOverlay = unsubscribe;
+  startMotion(cameraId);
+}
+
+/** Starts drawing the fleet-wide motion analysis' boxes for this camera. */
+function startMotion(cameraId: string) {
+  motionSynced = [];
+  const unsubscribe = subscribeCameraAnalysis(cameraId, ingestMotion);
+  unsubscribeMotion = unsubscribe;
+  // The picture on screen is older than the frame the server is analyzing
+  // now - fetch the results already produced for it.
+  fetchRecentAnalysis(cameraId)
+    .then((recent) => {
+      if (unsubscribeMotion === unsubscribe) recent.forEach(ingestMotion);
+    })
+    .catch(() => undefined);
+}
+
+function stopMotion() {
+  unsubscribeMotion?.();
+  unsubscribeMotion = null;
+  motionSynced = [];
 }
 
 /** Fullscreens the video together with its overlay (the native video control would leave the canvas behind). */
@@ -597,7 +654,8 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   destroy();
-  unsubscribeAnalysis?.();
+  unsubscribeOverlay?.();
+  stopMotion();
   resizeObserver?.disconnect();
   if (animationFrameHandle !== null) cancelAnimationFrame(animationFrameHandle);
 });

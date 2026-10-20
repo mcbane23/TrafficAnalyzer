@@ -286,7 +286,9 @@ precedent for Vue components.
   starts a 640x480 capture plus `YoloDetector` and its own `VehicleTracker` per camera on its first
   viewer (`GET /api/cameras/:id/overlay/stream`, SSE), lingers 15s after the last one, and serves at
   most `maxCameras` (2). The player falls back to the motion-analysis boxes when the overlay is
-  refused, busy or keeps failing (`subscribeCameraOverlay`). Env: `OVERLAY_DETECTOR=off`,
+  refused, busy or keeps failing (`subscribeCameraOverlay`). The player also draws the motion boxes while the overlay
+  starts (up to ~30s: it starts on the first viewer and its first results are ~10s ahead of the
+  picture), handing over once an overlay result covers the frame on screen. Env: `OVERLAY_DETECTOR=off`,
   `OVERLAY_FPS` (3), `OVERLAY_THREADS` (2). The model is `models/yolo11n.onnx` (Ultralytics YOLO11n,
   AGPL-3.0, exported with a 640x480 input to match the capture - a square 640 input wasted a quarter
   of each inference on padding). `onnxruntime-node` is loaded lazily, and `.npmrc` skips its CUDA
