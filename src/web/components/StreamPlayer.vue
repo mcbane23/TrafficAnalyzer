@@ -5,8 +5,12 @@ import type { CameraEntry } from '../../types/camera';
 import type { BoundingBox, VehicleDetection } from '../../types/analysis';
 import { subscribeCameraAnalysis } from '../services/analysis';
 
-const props = defineProps<{ camera: CameraEntry }>();
+const props = withDefaults(defineProps<{ camera: CameraEntry; showBoxes?: boolean; showTrails?: boolean }>(), {
+  showBoxes: true,
+  showTrails: false,
+});
 
+const containerRef = ref<HTMLDivElement | null>(null);
 const videoRef = ref<HTMLVideoElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const error = ref<string | null>(null);
@@ -72,6 +76,9 @@ interface AnimatedBox {
 
 /** Boxes with a stable `trackId`, animated smoothly between updates. */
 const trackedBoxes = new Map<number, AnimatedBox>();
+/** Recent box centres per track (normalized), for the optional motion-trail overlay. */
+const trails = new Map<number, Array<{ x: number; y: number }>>();
+const MAX_TRAIL_POINTS = 24;
 /** Detections without a `trackId` (only possible from a non-tracking test fake), drawn as-is. */
 let untrackedBoxes: VehicleDetection[] = [];
 
@@ -143,10 +150,17 @@ function applyDetections(detections: VehicleDetection[]) {
     // before heading to the new target.
     const from = existing ? interpolatedBox(existing, now) : detection.box;
     trackedBoxes.set(detection.trackId, { color, label, from, to: detection.box, startedAt: now, durationMs });
+    const trail = trails.get(detection.trackId) ?? [];
+    trail.push({ x: detection.box.x + detection.box.width / 2, y: detection.box.y + detection.box.height / 2 });
+    if (trail.length > MAX_TRAIL_POINTS) trail.shift();
+    trails.set(detection.trackId, trail);
   }
 
   for (const trackId of Array.from(trackedBoxes.keys())) {
-    if (!seenTrackIds.has(trackId)) trackedBoxes.delete(trackId);
+    if (!seenTrackIds.has(trackId)) {
+      trackedBoxes.delete(trackId);
+      trails.delete(trackId);
+    }
   }
 }
 
@@ -320,6 +334,25 @@ function drawOverlay() {
   const content = getVideoContentRect(video, canvas.width, canvas.height);
   const now = performance.now();
 
+  if (props.showTrails) {
+    for (const [trackId, trail] of trails) {
+      const entry = trackedBoxes.get(trackId);
+      if (!entry || trail.length < 2) continue;
+      ctx.strokeStyle = entry.color;
+      ctx.globalAlpha = 0.8;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      trail.forEach((point, i) => {
+        const px = content.x + point.x * content.width;
+        const py = content.y + point.y * content.height;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+  if (!props.showBoxes) return;
   for (const entry of trackedBoxes.values()) {
     drawBox(ctx, interpolatedBox(entry, now), content, entry.color, entry.label);
   }
@@ -348,6 +381,7 @@ function attachOverlay() {
   unsubscribeAnalysis?.();
   unsubscribeAnalysis = null;
   trackedBoxes.clear();
+  trails.clear();
   untrackedBoxes = [];
   lastDetectionsAt = null;
 
@@ -357,6 +391,14 @@ function attachOverlay() {
     applyDetections(result.error ? [] : result.detections);
   });
 }
+
+/** Fullscreens the video together with its overlay (the native video control would leave the canvas behind). */
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => undefined);
+  else containerRef.value?.requestFullscreen().catch(() => undefined);
+}
+
+defineExpose({ toggleFullscreen });
 
 onMounted(() => {
   attach();
@@ -385,8 +427,8 @@ watch(
 
 <template>
   <div class="overflow-hidden rounded-xl bg-black">
-    <div class="relative">
-      <video v-show="!error" ref="videoRef" class="aspect-video w-full" controls muted playsinline></video>
+    <div ref="containerRef" class="relative bg-black">
+      <video v-show="!error" ref="videoRef" class="aspect-video h-full w-full" muted autoplay playsinline></video>
       <canvas v-show="!error" ref="canvasRef" class="pointer-events-none absolute inset-0 h-full w-full"></canvas>
     </div>
     <div

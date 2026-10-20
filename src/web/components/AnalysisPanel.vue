@@ -1,36 +1,29 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { CameraEntry } from '../../types/camera';
-import type { CameraAnalysisResult, StoredAnalysisResult, TrafficLevel } from '../../types/analysis';
-import { fetchCameraHistory, subscribeCameraAnalysis } from '../services/analysis';
+import type { CameraAnalysisResult } from '../../types/analysis';
+import type { LiveCounts, PassageCounts } from '../../types/stats';
+import { subscribeCameraAnalysis } from '../services/analysis';
+import { fetchLiveCounts } from '../services/stats';
+import { DIRECTION_COLORS, TRAFFIC_BADGE_STYLES, TRAFFIC_BAR_STYLES, TRAFFIC_LABELS, formatCount } from '../composables/trafficUi';
 
-const props = defineProps<{ camera: CameraEntry }>();
+/**
+ * The "Now" panel on a camera's page: what the camera sees this instant
+ * (from the per-frame SSE stream) and how many vehicles have passed
+ * recently (polled from the stats API - passages land once per vehicle, so
+ * a few seconds' delay is invisible next to a 5-minute window).
+ */
+const props = defineProps<{ camera: CameraEntry; directionLabels: { a: string; b: string } }>();
 
-const TRAFFIC_BADGE_STYLES: Record<TrafficLevel, string> = {
-  light: 'bg-emerald-500/15 text-emerald-400',
-  moderate: 'bg-amber-500/15 text-amber-400',
-  heavy: 'bg-red-500/15 text-red-400',
-};
-
-const TRAFFIC_LABELS: Record<TrafficLevel, string> = {
-  light: 'Light',
-  moderate: 'Moderate',
-  heavy: 'Heavy',
-};
-
-const OCCUPANCY_BAR_STYLES: Record<TrafficLevel, string> = {
-  light: 'bg-emerald-500',
-  moderate: 'bg-amber-500',
-  heavy: 'bg-red-500',
-};
+const LIVE_POLL_MS = 5000;
 
 const isActive = computed(() => props.camera.status === 'active');
 const result = ref<CameraAnalysisResult | null>(null);
-const history = ref<StoredAnalysisResult[]>([]);
-const historyError = ref<string | null>(null);
 const streamDisconnected = ref(false);
+const live = ref<LiveCounts | null>(null);
 
 let unsubscribe: (() => void) | null = null;
+let pollHandle: ReturnType<typeof setInterval> | null = null;
 
 const hasResultError = computed(() => Boolean(result.value?.error));
 // No result yet, or the server's background model is still learning the scene
@@ -43,58 +36,40 @@ const occupancyPct = computed(() => {
   return value === undefined ? null : Math.round(value * 100);
 });
 
-const colorChips = computed(() => {
-  if (!result.value) return [];
-  return result.value.detections
-    .map((detection, index) => ({ key: index, color: detection.color }))
-    .filter((chip): chip is { key: number; color: string } => Boolean(chip.color));
-});
+const counters = computed<Array<{ label: string; counts: PassageCounts }>>(() =>
+  live.value
+    ? [
+        { label: 'Last 5 min', counts: live.value.last5m },
+        { label: 'Last hour', counts: live.value.last1h },
+        { label: 'Today', counts: live.value.today },
+      ]
+    : [],
+);
 
-/** Bars for the mini trend chart, scaled relative to the highest count currently in the window. */
-const trendBars = computed(() => {
-  if (history.value.length === 0) return [];
-  const max = Math.max(1, ...history.value.map((entry) => entry.totalCount));
-  return history.value.map((entry) => ({
-    timestamp: entry.timestamp,
-    count: entry.totalCount,
-    heightPct: Math.max(6, Math.round((entry.totalCount / max) * 100)),
-  }));
-});
+function share(part: number, total: number): string {
+  return total > 0 ? `${(part / total) * 100}%` : '0%';
+}
 
-const trendDirection = computed<'up' | 'down' | 'flat' | null>(() => {
-  if (history.value.length < 2) return null;
-  const delta = history.value[history.value.length - 1].totalCount - history.value[0].totalCount;
-  if (delta > 0) return 'up';
-  if (delta < 0) return 'down';
-  return 'flat';
-});
-
-async function loadHistory(cameraId: string) {
-  historyError.value = null;
+async function refreshLive(cameraId: string) {
   try {
-    history.value = await fetchCameraHistory(cameraId, 20);
-  } catch (err) {
-    historyError.value = err instanceof Error ? err.message : 'Failed to load traffic history.';
+    live.value = await fetchLiveCounts(cameraId);
+  } catch {
+    // Keep the last counts; the next poll retries.
   }
 }
 
-function appendToTrend(latest: CameraAnalysisResult) {
-  if (latest.error) return;
-  const entry: StoredAnalysisResult = {
-    cameraId: latest.cameraId,
-    timestamp: latest.timestamp,
-    totalCount: latest.totalCount,
-    trafficLevel: latest.trafficLevel,
-  };
-  history.value = [...history.value, entry].slice(-20);
-}
-
-function connect(cameraId: string) {
+function stop() {
   unsubscribe?.();
   unsubscribe = null;
-  result.value = null;
-  streamDisconnected.value = false;
+  if (pollHandle !== null) clearInterval(pollHandle);
+  pollHandle = null;
+}
 
+function setup(cameraId: string) {
+  stop();
+  result.value = null;
+  live.value = null;
+  streamDisconnected.value = false;
   if (!isActive.value) return;
 
   unsubscribe = subscribeCameraAnalysis(
@@ -102,35 +77,30 @@ function connect(cameraId: string) {
     (incoming) => {
       result.value = incoming;
       streamDisconnected.value = false;
-      appendToTrend(incoming);
     },
     () => {
       streamDisconnected.value = true;
     },
   );
-}
-
-function setup(cameraId: string) {
-  history.value = [];
-  connect(cameraId);
-  loadHistory(cameraId);
+  refreshLive(cameraId);
+  pollHandle = setInterval(() => refreshLive(cameraId), LIVE_POLL_MS);
 }
 
 onMounted(() => setup(props.camera.id));
 watch(() => props.camera.id, (id) => setup(id));
-onBeforeUnmount(() => unsubscribe?.());
+onBeforeUnmount(stop);
 </script>
 
 <template>
-  <div class="flex h-full flex-col rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-sm">
+  <div class="flex h-full flex-col rounded-xl border border-slate-800 bg-slate-900 p-5">
     <div class="flex items-center justify-between gap-2">
-      <h2 class="text-sm font-semibold text-slate-100">Traffic analysis</h2>
+      <h2 class="text-sm font-semibold text-slate-100">Now</h2>
       <span
-        v-if="result && !hasResultError"
+        v-if="result && !hasResultError && !isWarmingUp"
         class="shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium"
         :class="TRAFFIC_BADGE_STYLES[result.trafficLevel]"
       >
-        {{ TRAFFIC_LABELS[result.trafficLevel] }}
+        {{ TRAFFIC_LABELS[result.trafficLevel] }} traffic
       </span>
     </div>
 
@@ -140,86 +110,66 @@ onBeforeUnmount(() => unsubscribe?.());
       <p class="mt-1 text-xs text-slate-500">No traffic analysis is available while this camera is inactive.</p>
     </div>
 
-    <!-- Warming up: no result yet, or the detector is still learning this camera's background. -->
-    <div v-else-if="isWarmingUp" class="mt-6 flex flex-1 flex-col items-center justify-center text-center">
-      <span class="h-5 w-5 animate-spin rounded-full border-2 border-slate-700 border-t-slate-300"></span>
-      <p class="mt-3 text-sm font-medium text-slate-400">Analyzing traffic…</p>
-      <p class="mt-1 text-xs text-slate-500">Learning the scene usually takes a few seconds after the stream connects.</p>
-    </div>
-
-    <!-- Frame capture / detection failed for the latest tick. -->
-    <div v-else-if="hasResultError" class="mt-6 flex flex-1 flex-col items-center justify-center text-center">
-      <p class="text-sm font-medium text-red-400">Analysis unavailable</p>
-      <p class="mt-1 text-xs text-slate-500">{{ result?.error }}</p>
-    </div>
-
-    <template v-else-if="result">
-      <div class="mt-4 flex items-baseline gap-2">
-        <span class="text-3xl font-bold text-slate-100">{{ result.totalCount }}</span>
-        <span class="text-sm text-slate-400">vehicle{{ result.totalCount === 1 ? '' : 's' }} detected</span>
+    <template v-else>
+      <div v-if="isWarmingUp" class="mt-4 flex items-center gap-3">
+        <span class="h-4 w-4 animate-spin rounded-full border-2 border-slate-700 border-t-slate-300"></span>
+        <p class="text-xs text-slate-400">Learning the scene - usually a few seconds after the stream connects.</p>
       </div>
 
-      <!--
-        Occupancy is what the traffic badge above is actually derived from, so
-        it's shown next to the count rather than hidden: the two can legitimately
-        disagree - a road can read as busy while few individual vehicles are
-        resolved at distance - and that looks like a bug unless the measurement
-        driving the badge is visible.
-      -->
-      <div v-if="occupancyPct !== null" class="mt-3">
-        <div class="flex items-baseline justify-between">
-          <span class="text-xs font-medium text-slate-500">Road occupancy</span>
-          <span class="text-xs font-medium text-slate-300">{{ occupancyPct }}%</span>
-        </div>
-        <div class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
-          <div class="h-full rounded-full" :class="OCCUPANCY_BAR_STYLES[result.trafficLevel]" :style="{ width: `${occupancyPct}%` }"></div>
-        </div>
+      <div v-else-if="hasResultError" class="mt-4 rounded-lg bg-red-500/10 p-3">
+        <p class="text-sm font-medium text-red-400">Analysis unavailable</p>
+        <p class="mt-0.5 text-xs text-slate-400">{{ result?.error }}</p>
       </div>
 
-      <div v-if="colorChips.length > 0" class="mt-4">
-        <p class="text-xs font-medium text-slate-500">Detected colors</p>
-        <div class="mt-1.5 flex flex-wrap gap-1.5">
-          <span
-            v-for="chip in colorChips"
-            :key="chip.key"
-            class="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300"
-          >
-            <span class="h-2.5 w-2.5 rounded-full border border-white/10" :style="{ backgroundColor: chip.color }"></span>
-            {{ chip.color }}
-          </span>
+      <template v-else-if="result">
+        <div class="mt-4 grid grid-cols-2 gap-3">
+          <div>
+            <p class="text-xs text-slate-500">In view</p>
+            <p class="text-3xl font-bold tabular-nums text-slate-100">{{ result.totalCount }}</p>
+          </div>
+          <div>
+            <p class="text-xs text-slate-500">Road occupancy</p>
+            <p class="text-3xl font-bold tabular-nums text-slate-100">{{ occupancyPct === null ? '–' : `${occupancyPct}%` }}</p>
+          </div>
         </div>
-      </div>
+        <!--
+          Occupancy is what the traffic badge is derived from, so it's shown
+          next to the count: the two can legitimately disagree (a busy road with
+          few vehicles resolved at distance), which looks like a bug unless the
+          measurement driving the badge is visible.
+        -->
+        <div v-if="occupancyPct !== null" class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+          <div class="h-full rounded-full" :class="TRAFFIC_BAR_STYLES[result.trafficLevel]" :style="{ width: `${occupancyPct}%` }"></div>
+        </div>
+      </template>
 
-      <div class="mt-5 flex-1">
-        <div class="flex items-center justify-between">
-          <p class="text-xs font-medium text-slate-500">Recent trend</p>
-          <span
-            v-if="trendDirection"
-            class="text-xs font-medium"
-            :class="{
-              'text-red-400': trendDirection === 'up',
-              'text-emerald-400': trendDirection === 'down',
-              'text-slate-500': trendDirection === 'flat',
-            }"
-          >
-            {{ trendDirection === 'up' ? '▲ increasing' : trendDirection === 'down' ? '▼ decreasing' : '— steady' }}
-          </span>
-        </div>
-        <p v-if="historyError" class="mt-2 text-xs text-red-400">{{ historyError }}</p>
-        <div v-else-if="trendBars.length > 0" class="mt-2 flex h-16 items-end gap-0.5">
-          <div
-            v-for="(bar, index) in trendBars"
-            :key="`${bar.timestamp}-${index}`"
-            class="flex-1 rounded-sm bg-slate-600"
-            :style="{ height: `${bar.heightPct}%` }"
-            :title="`${bar.count} vehicle(s) at ${new Date(bar.timestamp).toLocaleTimeString()}`"
-          ></div>
-        </div>
-        <p v-else class="mt-2 text-xs text-slate-500">Not enough history yet.</p>
+      <div class="mt-6 border-t border-slate-800 pt-4">
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Vehicles passed</p>
+        <p v-if="!live" class="mt-2 text-xs text-slate-500">Loading counts…</p>
+        <ul v-else class="mt-3 space-y-4">
+          <li v-for="counter in counters" :key="counter.label">
+            <div class="flex items-baseline justify-between">
+              <span class="text-sm text-slate-400">{{ counter.label }}</span>
+              <span class="text-2xl font-semibold tabular-nums text-slate-100">{{ formatCount(counter.counts.total) }}</span>
+            </div>
+            <div class="mt-1.5 flex h-1.5 w-full overflow-hidden rounded-full bg-slate-800" :title="`${directionLabels.a}: ${counter.counts.a}, ${directionLabels.b}: ${counter.counts.b}, unclear: ${counter.counts.unknown}`">
+              <div :style="{ width: share(counter.counts.a, counter.counts.total), backgroundColor: DIRECTION_COLORS.a }"></div>
+              <div :style="{ width: share(counter.counts.b, counter.counts.total), backgroundColor: DIRECTION_COLORS.b }"></div>
+              <div :style="{ width: share(counter.counts.unknown, counter.counts.total), backgroundColor: DIRECTION_COLORS.unknown }"></div>
+            </div>
+            <div class="mt-1 flex flex-wrap justify-between gap-x-3 text-[11px] text-slate-500">
+              <span><span :style="{ color: DIRECTION_COLORS.a }">●</span> {{ directionLabels.a }} {{ counter.counts.a }}</span>
+              <span><span :style="{ color: DIRECTION_COLORS.b }">●</span> {{ directionLabels.b }} {{ counter.counts.b }}</span>
+              <span title="Approximate, from vehicle size">{{ counter.counts.large }} large*</span>
+            </div>
+          </li>
+        </ul>
+        <p class="mt-4 text-[11px] leading-snug text-slate-500">
+          * Bus/truck-sized, estimated from box size - approximate. Directions are learned from how traffic moves on this camera.
+        </p>
       </div>
 
       <p v-if="streamDisconnected" class="mt-3 text-xs text-amber-400">Live updates disconnected - showing the last known result.</p>
     </template>
   </div>
 </template>
-
