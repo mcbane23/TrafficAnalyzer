@@ -214,12 +214,28 @@ describe('VehicleTracker', () => {
   it('keeps reporting a confirmed track at its predicted position for reportCoastingMs after a miss, then stops', () => {
     const tracker = new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 500 });
     const car = { ...det({ x: 0.3, y: 0.5 }), class: 'car' as const };
-    run(tracker, [[car], [car]]);
+    run(tracker, [[car], [car], [car]]);
 
-    const missed = tracker.update([], T0 + 400);
+    const missed = tracker.update([], T0 + 600);
     expect(missed.tracks).toHaveLength(1);
     expect(missed.tracks[0]).toMatchObject({ trackId: 1, class: 'car' });
-    expect(tracker.update([], T0 + 800).tracks).toEqual([]);
+    expect(tracker.update([], T0 + 1000).tracks).toEqual([]);
+  });
+
+  it('does not draw a barely-seen track coasting - its velocity is still a guess', () => {
+    const tracker = new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 1000 });
+    run(tracker, [[det({ x: 0.3, y: 0.5 })]]);
+    expect(tracker.update([], T0 + 200).tracks).toEqual([]);
+  });
+
+  it('with maxSpeed, a missed car does not take over another car across the frame', () => {
+    // One frame a second, as on a slow host. Car A is seen once, then only car B, far away.
+    const frames = (tracker: VehicleTracker) => {
+      tracker.update([det({ x: 0.2, y: 0.5 })], T0);
+      return tracker.update([det({ x: 0.8, y: 0.5 })], T0 + 1000).tracks;
+    };
+    expect(frames(new VehicleTracker({ minHits: 1, minTravel: 0 }))[0].trackId).toBe(1);
+    expect(frames(new VehicleTracker({ minHits: 1, minTravel: 0, maxSpeed: 2 }))[0].trackId).toBe(2);
   });
 
   it('reports only tracks matched on this frame by default', () => {

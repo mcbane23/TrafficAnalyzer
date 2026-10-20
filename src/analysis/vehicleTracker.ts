@@ -58,6 +58,20 @@ export interface VehicleTrackerOptions {
    * reads as the detector failing.
    */
   reportCoastingMs?: number;
+  /**
+   * Fastest a vehicle is assumed to move, in its own box diagonals per
+   * second - a unit that follows perspective, so a distant small car is
+   * allowed less on-screen movement than a near one. It caps how far from
+   * its prediction a track may look for its next detection. Defaults to no
+   * cap, so the gate is set by the filter's uncertainty alone.
+   *
+   * That uncertainty is huge for a track only seen once or twice, because
+   * its velocity is still unknown. With `minHits: 1` and frames a second
+   * apart (the overlay on a slow host), the gate covered the whole picture:
+   * a car the model missed on one frame took over some other car's
+   * detection, and its box slid across the screen to it.
+   */
+  maxSpeed?: number;
 }
 
 const DEFAULTS = {
@@ -70,7 +84,11 @@ const DEFAULTS = {
   sizeSmoothing: 0.4,
   minTravel: 0.6,
   reportCoastingMs: 0,
+  maxSpeed: Infinity,
 };
+
+/** Matches a track needs before its velocity is trusted enough to draw it coasting (`reportCoastingMs`). */
+const MIN_HITS_TO_COAST = 3;
 
 /** Initial velocity variance for a brand new track, in (frame-widths per second)^2 - a new vehicle could be moving any which way. */
 const INITIAL_VELOCITY_VARIANCE = 0.25;
@@ -201,6 +219,9 @@ export class VehicleTracker {
   private readonly sizeSmoothing: number;
   private readonly minTravel: number;
   private readonly reportCoastingMs: number;
+  private readonly maxSpeed: number;
+  /** Seconds since the previous frame, for the `maxSpeed` gate. */
+  private frameDt = 0;
   private tracks: Track[] = [];
   private nextId = 1;
   private lastFrameMs: number | null = null;
@@ -215,6 +236,7 @@ export class VehicleTracker {
     this.sizeSmoothing = options.sizeSmoothing ?? DEFAULTS.sizeSmoothing;
     this.minTravel = options.minTravel ?? DEFAULTS.minTravel;
     this.reportCoastingMs = options.reportCoastingMs ?? DEFAULTS.reportCoastingMs;
+    this.maxSpeed = options.maxSpeed ?? DEFAULTS.maxSpeed;
   }
 
   /** Feeds one frame's detections, taken at `timestampMs` (epoch ms), through the tracker. */
@@ -227,6 +249,7 @@ export class VehicleTracker {
     }
     const dt = this.lastFrameMs === null ? 0 : Math.max(0, (timestampMs - this.lastFrameMs) / 1000);
     this.lastFrameMs = timestampMs;
+    this.frameDt = dt;
 
     for (const track of this.tracks) {
       track.x.predict(dt, this.accelerationNoise);
@@ -274,7 +297,8 @@ export class VehicleTracker {
         (t) =>
           t.confirmed &&
           t.travelled &&
-          (t.matchedIndex >= 0 || (this.reportCoastingMs > 0 && timestampMs - t.lastSeenMs <= this.reportCoastingMs)),
+          (t.matchedIndex >= 0 ||
+            (this.reportCoastingMs > 0 && t.hits >= MIN_HITS_TO_COAST && timestampMs - t.lastSeenMs <= this.reportCoastingMs)),
       )
       .sort((a, b) => (a.matchedIndex < 0 ? Infinity : a.matchedIndex) - (b.matchedIndex < 0 ? Infinity : b.matchedIndex))
       .map((t): TrackedVehicleDetection => ({ ...t.lastDetection, trackId: t.id, box: currentBox(t) }));
@@ -344,7 +368,7 @@ export class VehicleTracker {
     const distance = Math.hypot(dx, dy);
     const size = Math.max(Math.hypot(predicted.width, predicted.height), Math.hypot(box.width, box.height));
     const uncertainty = 3 * Math.hypot(track.x.positionStd, track.y.positionStd);
-    const gate = Math.max(size, uncertainty);
+    const gate = Math.max(size, Math.min(uncertainty, this.maxSpeed * size * this.frameDt));
     if (distance >= gate) return 0;
 
     return 0.5 * iou(predicted, box) + 0.5 * (1 - distance / gate);

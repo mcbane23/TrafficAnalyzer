@@ -278,7 +278,9 @@ precedent for Vue components.
   `OVERLAY_FPS` skips frames instead of working through a growing backlog that the player soon
   overtakes. Its tracker draws every YOLO vehicle (`minHits: 1`, `minTravel: 0` - the motion
   pipeline's travel gate hid parked and queued cars) and keeps a missed car's box for
-  `reportCoastingMs` (1s). The player holds/interpolates across gaps up to 2s. Throughput is logged
+  `reportCoastingMs` (1s, only once a track has 3 matches and a trustworthy velocity). `maxSpeed: 2`
+  (box diagonals per second) caps the association gate: with `minHits: 1` and ~1 fps on the N150,
+  a young track's Kalman gate spanned the whole picture and its box slid across to another car. The player holds/interpolates across gaps up to 2s. Throughput is logged
   once a minute as `[LiveOverlayService] <id>: X frames/s, detection N ms/frame, V vehicles/frame`;
   on 3 sandbox cores it ran ~2.9 fps at ~155ms/frame with ~10 vehicles per frame on Slavija.
 - **Motion-detection false positives, as measured on live footage**, and their fixes: a fountain
