@@ -1,0 +1,86 @@
+name: CI
+
+# Every branch and PR: install, test, build, and build the Docker image as a
+# check - nothing is uploaded, pushed or cached on GitHub.
+# Push to main (i.e. a merged PR): same, then the image is pushed to GHCR as
+# ghcr.io/mcbane23/trafficanalyzer:latest and :<commit sha>.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/mcbane23/trafficanalyzer
+  # docker/build-push-action uploads a build record as a workflow artifact by
+  # default - turn that off so no build keeps artifacts on GitHub.
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+  DOCKER_BUILD_SUMMARY: 'false'
+
+jobs:
+  test:
+    name: Test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # No `cache: npm` here on purpose: it would save an Actions cache entry
+      # from every branch build.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  docker:
+    name: Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long,prefix=
+
+      # Branches only read the layer cache that main builds write, so they
+      # don't add cache entries of their own.
+      - name: Build (and push on main)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ env.PUBLISH == 'true' }}
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: ${{ env.PUBLISH == 'true' && 'type=gha,mode=max' || '' }}

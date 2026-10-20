@@ -95,9 +95,18 @@ precedent for Vue components.
   it fails with `TypeError: fetch failed` / `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`. This is why
   `dev:server`/`start` set `NODE_OPTIONS=--use-system-ca` (Node ≥22.9): it makes `fetch` trust the
   OS store too, matching `ffprobe`. Don't add this flag to a script also used to launch an older
-  pinned Node runtime (e.g. the Dockerfile's `node:20` image) — an unsupported `NODE_OPTIONS` flag
-  makes Node refuse to boot. The Dockerfile's `CMD` runs `node dist/server/index.js` directly
-  (bypassing `npm start`), so this doesn't affect the container.
+  pinned Node runtime — an unsupported `NODE_OPTIONS` flag makes Node refuse to boot. The
+  Dockerfile's `CMD` runs `node dist/server/index.js` directly (bypassing `npm start`), so this
+  doesn't affect the container.
+- Docker: the build stage uses the full `node:22-bookworm` image because `better-sqlite3` compiles
+  from source on install (node-gyp needs Python + a C++ toolchain); the runtime stage is
+  `node:22-bookworm-slim` (glibc, not alpine — the bundled ffmpeg/ffprobe binaries need glibc) and
+  copies the already-pruned `node_modules` from the build stage rather than running `npm ci` again.
+- CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): every branch/PR runs `npm ci`, `npm test`,
+  `npm run build` and a Docker build, and keeps **nothing** on GitHub — no uploaded artifacts, no
+  build records (`DOCKER_BUILD_RECORD_UPLOAD=false`), no npm cache, no Docker layer cache writes.
+  Only a push to `main` pushes `ghcr.io/mcbane23/trafficanalyzer:latest` and `:<full commit sha>`
+  (and writes the layer cache branches read from). Keep it that way when editing the workflow.
 - Some upstream camera streams require a request header (e.g. `Referer`) the browser itself can't
   forge for a third-party origin (hotlink protection). Such cameras get an optional
   `headers: Record<string, string>` field in `belgrade.json`/`camera.ts` — `CameraValidator` passes
