@@ -96,8 +96,13 @@ precedent for Vue components.
   `ajv/dist/2020`, not the default `Ajv` (draft-07 only). `ajv-formats` is registered for `format`
   keywords like `date-time`.
 - Pin `typescript` to `^5.x` — `ts-jest` requires `typescript@>=4.3 <7`; newer majors break it.
-- `ffprobe` is bundled via `@ffprobe-installer/ffprobe` (a regular dependency) — no system ffmpeg
-  install needed. `CameraValidator` accepts an optional `ffprobePath` override.
+- `ffprobe`/`ffmpeg` are bundled via `@ffprobe-installer/ffprobe` / `@ffmpeg-installer/ffmpeg`
+  (regular dependencies), but `FFPROBE_PATH` / `FFMPEG_PATH` env vars override them, and **on Linux
+  they must**: the bundled Linux binaries are static-glibc builds that cannot resolve hostnames and
+  segfault (exit 139) on any `https://` camera URL. The Docker image installs Debian's ffmpeg and
+  sets both vars. The bundled binaries are still fine for local files (tests) and on Windows/macOS.
+  Sandboxes behind an HTTP proxy hide this (ffmpeg then only connects to the proxy's IP) — test
+  without the proxy. `CameraValidator` accepts an optional `ffprobePath` override.
 - Failed camera validation sets `status: "inactive"` and records `lastError`; entries are never
   deleted from the registry.
 - On networks with a TLS-inspecting corporate proxy, `ffprobe`/curl trust the intercepting root CA
