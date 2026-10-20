@@ -110,8 +110,8 @@ export function createApp(
     unsubscribe = trafficAnalysisService.subscribeOverview((overview) => channel.send(overview));
   });
 
-  // Per-camera SSE stream: full detection results (count, occupancy, boxes). Opening this connection is what
-  // boosts that camera's sampling rate - see TrafficAnalysisService.subscribeCameraDetail.
+  // Per-camera SSE stream: every analyzed frame's full result (count, occupancy, tracked boxes). Every active
+  // camera is analyzed continuously regardless - this only listens (see TrafficAnalysisService).
   app.get('/api/cameras/:id/analysis/stream', (req, res) => {
     let unsubscribe = () => undefined as void;
     const channel = SseChannel.open(req, res, () => unsubscribe());

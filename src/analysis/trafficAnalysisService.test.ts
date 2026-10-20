@@ -3,20 +3,15 @@ import {
   CameraAnalyzerLike,
   FrameGrabberLike,
   TrafficAnalysisService,
+  TrafficAnalysisServiceOptions,
   TrafficHistoryStoreLike,
 } from './trafficAnalysisService';
 import { CameraSource } from '../server/cameraService';
 import { CameraEntry } from '../types/camera';
-import { CameraAnalysisOverview, CameraAnalysisResult, StoredAnalysisResult, VehicleDetection } from '../types/analysis';
-import { GrabFrameResult } from './frameGrabber';
+import { CameraAnalysisOverview, CameraAnalysisResult, StoredAnalysisResult } from '../types/analysis';
+import { FrameCapture, GrabFrameResult } from './frameGrabber';
 
-function okFrame(buffer: Buffer): GrabFrameResult {
-  return { ok: true, buffer };
-}
-
-function errFrame(error: string): GrabFrameResult {
-  return { ok: false, error };
-}
+const T0 = Date.parse('2026-01-01T00:00:00.000Z');
 
 function makeCamera(overrides: Partial<CameraEntry> = {}): CameraEntry {
   return {
@@ -38,16 +33,10 @@ function makeSource(entries: CameraEntry[]): CameraSource {
   return { load: jest.fn(async () => entries) };
 }
 
-/** A fake scheduler that records scheduled (fn, ms) pairs instead of using real timers, so tests can advance ticks deterministically. */
+/** A fake scheduler that records scheduled (fn, ms) pairs instead of using real timers. */
 function makeFakeScheduler() {
-  interface Scheduled {
-    id: number;
-    fn: () => void;
-    ms: number;
-  }
-  const scheduled: Scheduled[] = [];
+  const scheduled: Array<{ id: number; fn: () => void; ms: number }> = [];
   let nextId = 1;
-
   const scheduler: AnalysisScheduler = {
     setTimeout: (fn, ms) => {
       const id = nextId++;
@@ -59,68 +48,73 @@ function makeFakeScheduler() {
       if (idx >= 0) scheduled.splice(idx, 1);
     },
   };
+  /** Fires every scheduled callback (camera starts), in order. */
+  const fireAll = () => scheduled.splice(0).forEach((s) => s.fn());
+  return { scheduler, scheduled, fireAll };
+}
 
-  /** Runs the given scheduled entry (by insertion index) and waits for its (possibly async) callback to settle. */
-  async function fire(index: number): Promise<void> {
-    const entry = scheduled[index];
-    await (entry.fn() as unknown as Promise<void> | void);
+/** A capture whose frames are pushed by the test. */
+class FakeCapture implements FrameCapture {
+  private readonly pending: GrabFrameResult[] = [];
+  private waiter: ((r: GrabFrameResult) => void) | null = null;
+  closed = false;
+
+  constructor(readonly cameraId: string) {}
+
+  next(): Promise<GrabFrameResult> {
+    if (this.closed) return Promise.resolve({ ok: false, error: 'capture closed' });
+    const queued = this.pending.shift();
+    if (queued) return Promise.resolve(queued);
+    return new Promise((resolve) => (this.waiter = resolve));
   }
 
-  return { scheduler, scheduled, fire };
+  close(): void {
+    this.closed = true;
+    this.deliver({ ok: false, error: 'capture closed' });
+  }
+
+  /** Delivers a frame captured at `T0 + atMs`. */
+  frame(atMs: number): void {
+    this.deliver({ ok: true, buffer: Buffer.from(`frame@${atMs}`), capturedAt: T0 + atMs });
+  }
+
+  fail(error: string): void {
+    this.deliver({ ok: false, error });
+  }
+
+  private deliver(result: GrabFrameResult): void {
+    const waiter = this.waiter;
+    this.waiter = null;
+    if (waiter) waiter(result);
+    else if (!this.closed) this.pending.push(result);
+  }
 }
 
-type FakeFrameGrabber = FrameGrabberLike & {
-  grabFrame: jest.Mock;
-  openCapture: jest.Mock;
-  /** Every capture handed out, in the order they were opened. */
-  captures: Array<{ cameraId: string; next: jest.Mock; close: jest.Mock }>;
-};
-
-/**
- * A fake grabber serving the same frames from both modes.
- *
- * Both `grabFrame` and `openCapture` are required by the seam - there is no
- * optional teardown a lazy fake can skip, which is the point: the close
- * path is exercised by every test that uses a capture.
- */
-function makeFrameGrabber(impl: FrameGrabberLike['grabFrame'] = jest.fn(async () => errFrame('not configured'))): FakeFrameGrabber {
-  const grabFrame = jest.fn(impl);
-  const captures: FakeFrameGrabber['captures'] = [];
-  const openCapture = jest.fn((camera: CameraEntry) => {
-    const capture = {
-      cameraId: camera.id,
-      next: jest.fn(() => grabFrame(camera)),
-      close: jest.fn(),
-    };
-    captures.push(capture);
-    return capture;
-  });
-  return { grabFrame, openCapture, captures } as FakeFrameGrabber;
+function makeFrameGrabber() {
+  const captures = new Map<string, FakeCapture>();
+  const grabber: FrameGrabberLike & { openCapture: jest.Mock } = {
+    openCapture: jest.fn((camera: CameraEntry) => {
+      const capture = new FakeCapture(camera.id);
+      captures.set(camera.id, capture);
+      return capture;
+    }),
+  };
+  return { grabber, captures };
 }
 
-type FakeAnalyzer = CameraAnalyzerLike & {
-  analyze: jest.Mock;
-  errorResult: jest.Mock;
-  dispose: jest.Mock;
-};
+type AnalyzeImpl = (frame: Buffer, timestamp: string) => Partial<CameraAnalysisResult>;
 
-/**
- * A fake analyzer: canned detections in, a correctly-shaped result out.
- *
- * This service never looks inside an analyzer - it hands over a frame and
- * publishes what comes back - so nothing here needs real detection,
- * tracking, occupancy or traffic-level derivation. Those are asserted
- * directly against the interface in cameraAnalyzer.test.ts, without a
- * scheduler, a frame grabber or a history store in sight.
- */
-function makeAnalyzer(cameraId = 'cam-1', detections: VehicleDetection[] = []): FakeAnalyzer {
-  return {
-    analyze: jest.fn(async (_frame: Buffer, timestamp: string) => ({
+/** A fake analyzer: whatever `impl` says, shaped into a full result. */
+function makeAnalyzer(cameraId: string, impl: AnalyzeImpl = () => ({})) {
+  const analyzer: CameraAnalyzerLike & { analyze: jest.Mock; errorResult: jest.Mock; dispose: jest.Mock } = {
+    analyze: jest.fn(async (frame: Buffer, timestamp: string) => ({
       cameraId,
       timestamp,
-      totalCount: detections.length,
+      totalCount: 0,
       trafficLevel: 'light' as const,
-      detections,
+      detections: [],
+      finishedTracks: [],
+      ...impl(frame, timestamp),
     })),
     errorResult: jest.fn((timestamp: string, error: string) => ({
       cameraId,
@@ -128,475 +122,339 @@ function makeAnalyzer(cameraId = 'cam-1', detections: VehicleDetection[] = []): 
       totalCount: 0,
       trafficLevel: 'light' as const,
       detections: [],
+      finishedTracks: [],
       error,
     })),
     dispose: jest.fn(),
   };
+  return analyzer;
 }
 
-/** Builds a per-camera analyzer factory that hands every camera its own fake, and records what it built. */
-function makeAnalyzerFactory(detections: VehicleDetection[] = []) {
-  const created = new Map<string, FakeAnalyzer>();
-  const createAnalyzer = jest.fn((cameraId: string) => {
-    const analyzer = makeAnalyzer(cameraId, detections);
-    created.set(cameraId, analyzer);
-    return analyzer;
-  });
-  return { createAnalyzer, created };
-}
-
-function makeHistoryStore(): TrafficHistoryStoreLike & { records: StoredAnalysisResult[] } {
+function makeHistoryStore(seed: StoredAnalysisResult[] = []) {
   const records: StoredAnalysisResult[] = [];
-  return {
+  const store: TrafficHistoryStoreLike & { records: StoredAnalysisResult[] } = {
     records,
-    record: jest.fn((result: StoredAnalysisResult) => {
-      records.push(result);
+    record: jest.fn((r: StoredAnalysisResult) => {
+      records.push(r);
     }),
-    getLatestForAllCameras: jest.fn(() => []),
+    getLatestForAllCameras: jest.fn(() => seed),
     getHistory: jest.fn(() => []),
+  };
+  return store;
+}
+
+/** Lets pending promise chains (frame -> analyze -> publish -> next) settle. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+}
+
+function setup(cameras: CameraEntry[] = [makeCamera()], options: TrafficAnalysisServiceOptions & { impl?: AnalyzeImpl } = {}) {
+  const { grabber, captures } = makeFrameGrabber();
+  const history = makeHistoryStore();
+  const { scheduler, scheduled, fireAll } = makeFakeScheduler();
+  const analyzers = new Map<string, ReturnType<typeof makeAnalyzer>>();
+  let nowMs = T0;
+  const service = new TrafficAnalysisService(makeSource(cameras), grabber, history, {
+    scheduler,
+    now: () => new Date(nowMs),
+    createAnalyzer: (id) => {
+      const a = makeAnalyzer(id, options.impl);
+      analyzers.set(id, a);
+      return a;
+    },
+    ...options,
+  });
+  return {
+    service,
+    grabber,
+    captures,
+    history,
+    scheduled,
+    fireAll,
+    analyzers,
+    setNow: (ms: number) => (nowMs = T0 + ms),
   };
 }
 
-const FIXED_NOW = new Date('2026-01-01T00:00:00.000Z');
-
 describe('TrafficAnalysisService', () => {
-  it('schedules a tick for each active camera and skips inactive ones', async () => {
-    const source = makeSource([makeCamera({ id: 'active-1', status: 'active' }), makeCamera({ id: 'inactive-1', status: 'inactive' })]);
-    const { scheduler, scheduled } = makeFakeScheduler();
-    const service = new TrafficAnalysisService(source, makeFrameGrabber(), makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
-    });
+  it('starts one capture per active camera, staggered, and skips inactive cameras', async () => {
+    const ctx = setup([makeCamera({ id: 'a' }), makeCamera({ id: 'b', status: 'inactive' }), makeCamera({ id: 'c' })]);
+    await ctx.service.start();
 
-    await service.start();
-
-    expect(scheduled).toHaveLength(1);
+    expect(ctx.scheduled.map((s) => s.ms)).toEqual([0, 400]);
+    ctx.fireAll();
+    expect(ctx.grabber.openCapture.mock.calls.map(([c]) => c.id)).toEqual(['a', 'c']);
+    ctx.service.stop();
   });
 
-  it('staggers each active camera\'s first tick instead of firing them all at once', async () => {
-    const source = makeSource(
-      Array.from({ length: 5 }, (_, i) => makeCamera({ id: `cam-${i}` })),
-    );
-    const { scheduler, scheduled } = makeFakeScheduler();
-    const service = new TrafficAnalysisService(source, makeFrameGrabber(), makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      backgroundIntervalMs: 10_000,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
-    });
+  it('analyzes every frame continuously, stamped with the frame capture time', async () => {
+    const ctx = setup();
+    await ctx.service.start();
+    ctx.fireAll();
+    const capture = ctx.captures.get('cam-1')!;
 
-    await service.start();
-
-    const delays = scheduled.map((s) => s.ms);
-    expect(delays).toHaveLength(5);
-    // Strictly increasing (no two cameras start at the same instant), and
-    // never delayed past the normal background cadence.
-    expect(new Set(delays).size).toBe(5);
-    for (const ms of delays) {
-      expect(ms).toBeGreaterThanOrEqual(0);
-      expect(ms).toBeLessThanOrEqual(10_000);
+    for (let i = 0; i < 5; i++) {
+      capture.frame(i * 333);
+      await settle();
     }
+
+    const analyzer = ctx.analyzers.get('cam-1')!;
+    expect(analyzer.analyze).toHaveBeenCalledTimes(5);
+    expect(analyzer.analyze.mock.calls[2][1]).toBe(new Date(T0 + 666).toISOString());
+    ctx.service.stop();
   });
 
-  it('runs the one-time initial analysis pass, persists the result, and then goes idle (no repeating tick)', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, scheduled, fire } = makeFakeScheduler();
-    const detection: VehicleDetection = { class: 'vehicle', confidence: 0.9, box: { x: 0, y: 0, width: 0.1, height: 0.1 } };
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const historyStore = makeHistoryStore();
-    const service = new TrafficAnalysisService(source, frameGrabber, historyStore, {
-      scheduler,
-      now: () => FIXED_NOW,
-      backgroundIntervalMs: 10_000,
-      boostedIntervalMs: 500,
-      createAnalyzer: makeAnalyzerFactory([detection]).createAnalyzer,
-    });
+  it('delivers every frame result to detail subscribers', async () => {
+    const ctx = setup([makeCamera()], { impl: () => ({ totalCount: 2 }) });
+    const received: CameraAnalysisResult[] = [];
+    ctx.service.subscribeCameraDetail('cam-1', (r) => received.push(r));
+    await ctx.service.start();
+    ctx.fireAll();
 
-    await service.start();
-    await fire(0);
+    ctx.captures.get('cam-1')!.frame(0);
+    await settle();
+    ctx.captures.get('cam-1')!.frame(200);
+    await settle();
 
-    expect(frameGrabber.grabFrame).toHaveBeenCalledTimes(1);
-    expect(historyStore.records).toEqual([
-      {
-        cameraId: 'cam-1',
-        timestamp: FIXED_NOW.toISOString(),
-        totalCount: 1,
-        trafficLevel: 'light',
-      },
-    ]);
-    // No detail-page subscriber ever showed up, so nothing further gets
-    // scheduled - an unwatched camera is analyzed exactly once, not
-    // resampled on a timer (see the class docstring).
-    expect(scheduled).toHaveLength(1);
+    expect(received.map((r) => r.totalCount)).toEqual([2, 2]);
+    ctx.service.stop();
   });
 
-  it('publishes a result with an error and does not persist it when frame capture fails', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, fire } = makeFakeScheduler();
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => errFrame('stream unreachable')));
-    const historyStore = makeHistoryStore();
-    const { createAnalyzer, created } = makeAnalyzerFactory();
-    const overviewUpdates: CameraAnalysisOverview[] = [];
-    const service = new TrafficAnalysisService(source, frameGrabber, historyStore, {
-      scheduler,
-      now: () => FIXED_NOW,
-      createAnalyzer,
-    });
-    service.subscribeOverview((overview) => overviewUpdates.push(overview));
+  it('publishes capture failures to live viewers, keeps looping, and never persists them', async () => {
+    const ctx = setup([makeCamera()], { historyIntervalMs: 0 });
+    const received: CameraAnalysisResult[] = [];
+    ctx.service.subscribeCameraDetail('cam-1', (r) => received.push(r));
+    await ctx.service.start();
+    ctx.fireAll();
+    const capture = ctx.captures.get('cam-1')!;
 
-    await service.start();
-    await fire(0);
+    capture.fail('stream stalled');
+    await settle();
+    capture.frame(1000);
+    await settle();
 
-    // The analyzer never saw a frame - the failure went through its own
-    // error-result shape instead, so subscribers get one consistent shape.
-    expect(created.get('cam-1')!.analyze).not.toHaveBeenCalled();
-    expect(created.get('cam-1')!.errorResult).toHaveBeenCalledWith(FIXED_NOW.toISOString(), 'stream unreachable');
-    expect(historyStore.records).toHaveLength(0);
-    expect(overviewUpdates).toEqual([
-      { cameraId: 'cam-1', timestamp: FIXED_NOW.toISOString(), totalCount: 0, trafficLevel: 'light', error: 'stream unreachable' },
-    ]);
+    expect(received.map((r) => r.error)).toEqual(['stream stalled', undefined]);
+    expect(ctx.history.records).toHaveLength(1);
+    expect(ctx.history.records[0].timestamp).toBe(new Date(T0 + 1000).toISOString());
+    ctx.service.stop();
   });
 
-  // Same rule when the failure happens inside the analyzer rather than at
-  // capture: a zeroed error result describes a broken feed, not an empty
-  // road, and persisting it would read as genuine quiet traffic later.
-  it('does not persist an error result produced by the analyzer itself', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, fire } = makeFakeScheduler();
-    const historyStore = makeHistoryStore();
-    const results: CameraAnalysisResult[] = [];
-    const service = new TrafficAnalysisService(source, makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame')))), historyStore, {
+  it('never persists a warm-up result, and does not overwrite the overview with one', async () => {
+    const seed = [{ cameraId: 'cam-1', timestamp: 'earlier', totalCount: 7, trafficLevel: 'moderate' as const }];
+    const { grabber, captures } = makeFrameGrabber();
+    const history = makeHistoryStore(seed);
+    const { scheduler, fireAll } = makeFakeScheduler();
+    const onResult = jest.fn();
+    const service = new TrafficAnalysisService(makeSource([makeCamera()]), grabber, history, {
       scheduler,
-      now: () => FIXED_NOW,
-      createAnalyzer: (cameraId) => {
-        const analyzer = makeAnalyzer(cameraId);
-        analyzer.analyze = jest.fn(async (_frame: Buffer, timestamp: string) =>
-          analyzer.errorResult(timestamp, 'detection failed'),
-        );
-        return analyzer;
-      },
+      historyIntervalMs: 0,
+      onResult,
+      createAnalyzer: (id) => makeAnalyzer(id, () => ({ warmingUp: true })),
     });
-    service.subscribeCameraDetail('cam-1', (result) => results.push(result));
-
     await service.start();
-    await fire(0);
+    fireAll();
 
-    expect(results[0].error).toBe('detection failed');
-    expect(historyStore.records).toHaveLength(0);
-  });
+    captures.get('cam-1')!.frame(0);
+    await settle();
 
-  it('notifies camera-detail subscribers with the full result, including detections', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, fire } = makeFakeScheduler();
-    const detection: VehicleDetection = { class: 'vehicle', confidence: 0.8, box: { x: 0, y: 0, width: 0.3, height: 0.3 }, trackId: 1 };
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      createAnalyzer: makeAnalyzerFactory([detection]).createAnalyzer,
-    });
-
-    const results: CameraAnalysisResult[] = [];
-    service.subscribeCameraDetail('cam-1', (result) => results.push(result));
-
-    await service.start();
-    await fire(0);
-
-    expect(results).toHaveLength(1);
-    expect(results[0].detections).toEqual([detection]);
-  });
-
-  it('boosts the sampling rate while a camera has a detail subscriber, and reverts once unsubscribed', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, scheduled, fire } = makeFakeScheduler();
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      backgroundIntervalMs: 10_000,
-      boostedIntervalMs: 500,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
-    });
-
-    await service.start();
-
-    const unsubscribe = service.subscribeCameraDetail('cam-1', () => undefined);
-    await fire(0);
-    expect(scheduled[1].ms).toBe(500);
-
-    unsubscribe();
-    await fire(1);
-    // Once the last subscriber disconnects, the camera goes idle rather
-    // than reverting to a repeating background sample - no further tick is
-    // scheduled (see the class docstring).
-    expect(scheduled).toHaveLength(2);
-  });
-
-  it('opens a continuous capture for boosted ticks, and closes it once the last subscriber unsubscribes', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, fire } = makeFakeScheduler();
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      backgroundIntervalMs: 10_000,
-      boostedIntervalMs: 500,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
-    });
-
-    await service.start();
-
-    const unsubscribe = service.subscribeCameraDetail('cam-1', () => undefined);
-    await fire(0);
-    expect(frameGrabber.captures).toHaveLength(1);
-    expect(frameGrabber.captures[0].cameraId).toBe('cam-1');
-    expect(frameGrabber.captures[0].next).toHaveBeenCalledTimes(1);
-    expect(frameGrabber.captures[0].close).not.toHaveBeenCalled();
-
-    unsubscribe();
-    expect(frameGrabber.captures[0].close).toHaveBeenCalledTimes(1);
-  });
-
-  // The capture is opened once and reused for the whole boost - reopening
-  // per tick would reintroduce exactly the HLS reconnect cost it exists to
-  // avoid.
-  it('reuses one capture across a camera\'s boosted ticks', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, fire } = makeFakeScheduler();
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      boostedIntervalMs: 500,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
-    });
-
-    await service.start();
-    service.subscribeCameraDetail('cam-1', () => undefined);
-    await fire(0);
-    await fire(1);
-
-    expect(frameGrabber.openCapture).toHaveBeenCalledTimes(1);
-    expect(frameGrabber.captures[0].next).toHaveBeenCalledTimes(2);
-  });
-
-  // An unwatched camera's single pass must not hold an ffmpeg process open.
-  it('uses a one-off grab, not a capture, for an unwatched camera\'s background tick', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, fire } = makeFakeScheduler();
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
-    });
-
-    await service.start();
-    await fire(0);
-
-    expect(frameGrabber.grabFrame).toHaveBeenCalledWith(expect.objectContaining({ id: 'cam-1' }));
-    expect(frameGrabber.openCapture).not.toHaveBeenCalled();
-  });
-
-  it('stop() closes any open capture', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, fire } = makeFakeScheduler();
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      boostedIntervalMs: 500,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
-    });
-
-    await service.start();
-    service.subscribeCameraDetail('cam-1', () => undefined);
-    await fire(0);
-
+    expect(history.records).toEqual([]);
+    expect(onResult).not.toHaveBeenCalled();
+    expect(service.getLatestOverview()).toEqual([expect.objectContaining({ totalCount: 7 })]);
     service.stop();
-
-    expect(frameGrabber.captures[0].close).toHaveBeenCalledTimes(1);
   });
 
-  // Boosting changes how the frame is captured, never how it is analyzed.
-  // Degrading the boosted path to a cheaper single-pass detection is what made
-  // the live detail page the least accurate view in the system.
-  it('analyzes identically for boosted and background ticks', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, fire } = makeFakeScheduler();
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const { createAnalyzer, created } = makeAnalyzerFactory();
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      backgroundIntervalMs: 10_000,
-      boostedIntervalMs: 500,
-      createAnalyzer,
-    });
+  it('writes one history row per historyIntervalMs holding the mean count over the window', async () => {
+    let count = 0;
+    const ctx = setup([makeCamera()], { historyIntervalMs: 1000, impl: () => ({ totalCount: count }) });
+    await ctx.service.start();
+    ctx.fireAll();
+    const capture = ctx.captures.get('cam-1')!;
 
-    await service.start();
+    // Frames at 0..1000ms every 250ms with counts 1,2,3,4,5 -> one row at 1000ms, mean 3.
+    for (let i = 0; i <= 4; i++) {
+      count = i + 1;
+      capture.frame(i * 250);
+      await settle();
+    }
 
-    await fire(0);
-    expect(created.get('cam-1')!.analyze).toHaveBeenLastCalledWith(expect.any(Buffer), FIXED_NOW.toISOString());
-
-    service.subscribeCameraDetail('cam-1', () => undefined);
-    await fire(1);
-    expect(created.get('cam-1')!.analyze).toHaveBeenLastCalledWith(expect.any(Buffer), FIXED_NOW.toISOString());
-    expect(created.get('cam-1')!.analyze).toHaveBeenCalledTimes(2);
+    expect(ctx.history.records).toEqual([{ cameraId: 'cam-1', timestamp: new Date(T0 + 1000).toISOString(), totalCount: 3, trafficLevel: 'light' }]);
+    ctx.service.stop();
   });
 
-  it('skips analysis entirely for unwatched cameras while a different camera is being watched, and resumes once watching stops', async () => {
-    const cameras = [makeCamera({ id: 'cam-1' }), makeCamera({ id: 'cam-2' })];
-    const source = makeSource(cameras);
-    const { scheduler, scheduled, fire } = makeFakeScheduler();
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      backgroundIntervalMs: 10_000,
-      boostedIntervalMs: 500,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
-    });
+  it('calls onResult for every usable frame, including its finished tracks', async () => {
+    const finished = [{ trackId: 3, firstSeen: 'a', lastSeen: 'b', firstBox: { x: 0, y: 0, width: 0.1, height: 0.1 }, lastBox: { x: 0.5, y: 0, width: 0.1, height: 0.1 }, hits: 9 }];
+    const onResult = jest.fn();
+    const ctx = setup([makeCamera()], { onResult, impl: () => ({ finishedTracks: finished }) });
+    await ctx.service.start();
+    ctx.fireAll();
 
-    await service.start();
-    // scheduled[0] = cam-1 initial tick, scheduled[1] = cam-2 initial tick.
+    ctx.captures.get('cam-1')!.frame(0);
+    await settle();
+    ctx.captures.get('cam-1')!.fail('boom');
+    await settle();
 
-    const unsubscribe = service.subscribeCameraDetail('cam-1', () => undefined);
-    // Subscribing cancels cam-1's pending initial tick and schedules an
-    // immediate boosted one in its place (see subscribeCameraDetail), so
-    // cam-2's still-pending initial tick is now scheduled[0].
-
-    // cam-2's tick fires while cam-1 is being watched - should be skipped entirely.
-    await fire(0);
-    expect(frameGrabber.grabFrame).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'cam-2' }));
-    expect(scheduled[2].ms).toBe(10_000);
-
-    unsubscribe();
-
-    // cam-2's next tick fires after watching stopped - should analyze normally.
-    await fire(2);
-    expect(frameGrabber.grabFrame).toHaveBeenCalledWith(expect.objectContaining({ id: 'cam-2' }));
+    expect(onResult).toHaveBeenCalledTimes(1);
+    expect(onResult.mock.calls[0][0].finishedTracks).toEqual(finished);
+    ctx.service.stop();
   });
 
-  it('caps concurrent analysis jobs at maxConcurrency and runs queued jobs once a slot frees up', async () => {
-    const cameras = [makeCamera({ id: 'cam-1' }), makeCamera({ id: 'cam-2' }), makeCamera({ id: 'cam-3' }), makeCamera({ id: 'cam-4' })];
-    const source = makeSource(cameras);
-    const { scheduler, scheduled } = makeFakeScheduler();
+  it('throttles unchanged overview updates but sends a changed traffic level immediately', async () => {
+    let level: CameraAnalysisResult['trafficLevel'] = 'light';
+    const ctx = setup([makeCamera()], { overviewIntervalMs: 2000, impl: () => ({ trafficLevel: level }) });
+    const overviews: CameraAnalysisOverview[] = [];
+    ctx.service.subscribeOverview((o) => overviews.push(o));
+    await ctx.service.start();
+    ctx.fireAll();
+    const capture = ctx.captures.get('cam-1')!;
 
-    let concurrent = 0;
-    let maxObserved = 0;
-    const frameGrabber = makeFrameGrabber(
-      jest.fn(async () => {
-        concurrent++;
-        maxObserved = Math.max(maxObserved, concurrent);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        concurrent--;
-        return errFrame('unused');
-      }),
-    );
+    const frameAt = async (ms: number) => {
+      ctx.setNow(ms);
+      capture.frame(ms);
+      await settle();
+    };
+    await frameAt(0); // first -> sent
+    await frameAt(500); // unchanged, throttled
+    await frameAt(1000); // unchanged, throttled
+    level = 'heavy';
+    await frameAt(1200); // changed -> sent
+    await frameAt(3300); // unchanged but interval elapsed -> sent
 
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
+    expect(overviews.map((o) => o.trafficLevel)).toEqual(['light', 'heavy', 'heavy']);
+    expect(ctx.service.getLatestOverview()[0].timestamp).toBe(new Date(T0 + 3300).toISOString());
+    ctx.service.stop();
+  });
+
+  it('caps concurrent analysis at maxConcurrency across cameras', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const releases: Array<() => void> = [];
+    const cameras = [makeCamera({ id: 'a' }), makeCamera({ id: 'b' }), makeCamera({ id: 'c' })];
+    const { grabber, captures } = makeFrameGrabber();
+    const { scheduler, fireAll } = makeFakeScheduler();
+    const service = new TrafficAnalysisService(makeSource(cameras), grabber, makeHistoryStore(), {
       scheduler,
-      now: () => FIXED_NOW,
       maxConcurrency: 2,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
+      createAnalyzer: (id) => {
+        const a = makeAnalyzer(id);
+        a.analyze.mockImplementation(async (_f: Buffer, timestamp: string) => {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await new Promise<void>((r) => releases.push(r));
+          inFlight -= 1;
+          return { cameraId: id, timestamp, totalCount: 0, trafficLevel: 'light', detections: [], finishedTracks: [] };
+        });
+        return a;
+      },
     });
-
     await service.start();
-    expect(scheduled).toHaveLength(4);
+    fireAll();
 
-    await Promise.all(scheduled.slice(0, 4).map((entry) => entry.fn() as unknown as Promise<void>));
+    for (const id of ['a', 'b', 'c']) captures.get(id)!.frame(0);
+    await settle();
+    expect(inFlight).toBe(2);
+    releases.shift()!();
+    await settle();
+    expect(inFlight).toBe(2);
+    releases.splice(0).forEach((r) => r());
+    await settle();
 
-    expect(maxObserved).toBe(2);
-    expect(frameGrabber.grabFrame).toHaveBeenCalledTimes(4);
+    expect(peak).toBe(2);
+    service.stop();
   });
 
-  // An analyzer holds one camera's background model, tracks and learned
-  // roadway - all of which describe a single fixed viewpoint. Sharing one
-  // across cameras would corrupt it with frames from unrelated feeds, so the
-  // factory must be called once per camera and its result reused.
-  it('keeps one analyzer per camera rather than one shared across all of them', async () => {
-    const source = makeSource([makeCamera({ id: 'cam-1' }), makeCamera({ id: 'cam-2' })]);
-    const { scheduler, fire } = makeFakeScheduler();
-    const { createAnalyzer } = makeAnalyzerFactory();
-    const service = new TrafficAnalysisService(
-      source,
-      makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame')))),
-      makeHistoryStore(),
-      { scheduler, now: () => FIXED_NOW, createAnalyzer },
-    );
+  it('builds one analyzer per camera', async () => {
+    const ctx = setup([makeCamera({ id: 'a' }), makeCamera({ id: 'b' })]);
+    await ctx.service.start();
 
-    await service.start();
-    await fire(0);
-    await fire(1);
-    // Watching cam-1 triggers a second tick for it (its one-time initial
-    // pass doesn't repeat on its own - see the class docstring); that
-    // second tick must reuse its existing analyzer, not rebuild it.
-    service.subscribeCameraDetail('cam-1', () => undefined);
-    await fire(2);
-
-    expect(createAnalyzer.mock.calls.map(([cameraId]) => cameraId)).toEqual(['cam-1', 'cam-2']);
+    expect([...ctx.analyzers.keys()]).toEqual(['a', 'b']);
+    expect(ctx.analyzers.get('a')).not.toBe(ctx.analyzers.get('b'));
+    ctx.service.stop();
   });
 
-  it('getLatestOverview seeds from the history store on construction', () => {
-    const source = makeSource([makeCamera()]);
-    const historyStore = makeHistoryStore();
-    (historyStore.getLatestForAllCameras as jest.Mock).mockReturnValue([
-      { cameraId: 'cam-1', timestamp: FIXED_NOW.toISOString(), totalCount: 4, trafficLevel: 'light' },
-    ]);
-    const service = new TrafficAnalysisService(source, makeFrameGrabber(), historyStore);
+  it('stop() closes every capture, disposes every analyzer, cancels pending starts and ends the loops', async () => {
+    const ctx = setup([makeCamera({ id: 'a' }), makeCamera({ id: 'b' })]);
+    await ctx.service.start();
+    ctx.scheduled[0].fn(); // only "a" has started
 
-    expect(service.getLatestOverview()).toEqual([
-      { cameraId: 'cam-1', timestamp: FIXED_NOW.toISOString(), totalCount: 4, trafficLevel: 'light' },
-    ]);
+    ctx.service.stop();
+    await ctx.service.idle();
+
+    expect(ctx.captures.get('a')!.closed).toBe(true);
+    expect(ctx.scheduled.map((s) => s.ms)).toEqual([0]); // "a"'s already-fired entry; "b"'s was cancelled
+    expect(ctx.grabber.openCapture).toHaveBeenCalledTimes(1);
+    expect(ctx.analyzers.get('a')!.dispose).toHaveBeenCalled();
+    expect(ctx.analyzers.get('b')!.dispose).toHaveBeenCalled();
+    expect(ctx.analyzers.get('a')!.errorResult).not.toHaveBeenCalled();
+  });
+
+  it('a throwing subscriber does not stop others or the loop', async () => {
+    const ctx = setup();
+    const good = jest.fn();
+    ctx.service.subscribeCameraDetail('cam-1', () => {
+      throw new Error('dead socket');
+    });
+    ctx.service.subscribeCameraDetail('cam-1', good);
+    await ctx.service.start();
+    ctx.fireAll();
+
+    ctx.captures.get('cam-1')!.frame(0);
+    await settle();
+    ctx.captures.get('cam-1')!.frame(200);
+    await settle();
+
+    expect(good).toHaveBeenCalledTimes(2);
+    ctx.service.stop();
+  });
+
+  it('unsubscribing stops delivery', async () => {
+    const ctx = setup();
+    const cb = jest.fn();
+    const unsubscribe = ctx.service.subscribeCameraDetail('cam-1', cb);
+    await ctx.service.start();
+    ctx.fireAll();
+
+    ctx.captures.get('cam-1')!.frame(0);
+    await settle();
+    unsubscribe();
+    unsubscribe();
+    ctx.captures.get('cam-1')!.frame(200);
+    await settle();
+
+    expect(cb).toHaveBeenCalledTimes(1);
+    ctx.service.stop();
+  });
+
+  it('keeps the latest decoded frame per camera for thumbnails', async () => {
+    const ctx = setup();
+    await ctx.service.start();
+    expect(ctx.service.getLatestFrame('cam-1')).toBeNull();
+    ctx.fireAll();
+
+    ctx.captures.get('cam-1')!.frame(0);
+    await settle();
+    ctx.captures.get('cam-1')!.frame(500);
+    await settle();
+    ctx.captures.get('cam-1')!.fail('stalled');
+    await settle();
+
+    expect(ctx.service.getLatestFrame('cam-1')).toEqual({ buffer: Buffer.from('frame@500'), capturedAt: new Date(T0 + 500).toISOString() });
+    expect(ctx.service.getLatestFrame('unknown')).toBeNull();
+    ctx.service.stop();
+  });
+
+  it('seeds the latest overview from history on construction', () => {
+    const seed = [{ cameraId: 'cam-9', timestamp: 't', totalCount: 4, trafficLevel: 'heavy' as const }];
+    const service = new TrafficAnalysisService(makeSource([]), makeFrameGrabber().grabber, makeHistoryStore(seed));
+
+    expect(service.getLatestOverview()).toEqual(seed);
   });
 
   it('getHistory delegates to the history store', () => {
-    const source = makeSource([makeCamera()]);
-    const historyStore = makeHistoryStore();
-    const service = new TrafficAnalysisService(source, makeFrameGrabber(), historyStore);
+    const history = makeHistoryStore();
+    const service = new TrafficAnalysisService(makeSource([]), makeFrameGrabber().grabber, history);
 
     service.getHistory('cam-1', { limit: 5 });
 
-    expect(historyStore.getHistory).toHaveBeenCalledWith('cam-1', { limit: 5 });
-  });
-
-  it('stop() clears pending timers so no further ticks occur', async () => {
-    const source = makeSource([makeCamera()]);
-    const { scheduler, scheduled } = makeFakeScheduler();
-    const frameGrabber = makeFrameGrabber(jest.fn(async () => okFrame(Buffer.from('frame'))));
-    const service = new TrafficAnalysisService(source, frameGrabber, makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      createAnalyzer: makeAnalyzerFactory().createAnalyzer,
-    });
-
-    await service.start();
-    expect(scheduled).toHaveLength(1);
-
-    service.stop();
-
-    expect(scheduled).toHaveLength(0);
-  });
-
-  // A camera's learned state is worthless once sampling stops - a restarted
-  // service may be looking at a re-aimed camera - so stopping must release
-  // every analyzer, not just cancel the timers pointing at them.
-  it('stop() disposes every camera\'s analyzer', async () => {
-    const source = makeSource([makeCamera({ id: 'cam-1' }), makeCamera({ id: 'cam-2' })]);
-    const { scheduler } = makeFakeScheduler();
-    const { createAnalyzer, created } = makeAnalyzerFactory();
-    const service = new TrafficAnalysisService(source, makeFrameGrabber(), makeHistoryStore(), {
-      scheduler,
-      now: () => FIXED_NOW,
-      createAnalyzer,
-    });
-
-    await service.start();
-    service.stop();
-
-    expect(created.get('cam-1')!.dispose).toHaveBeenCalledTimes(1);
-    expect(created.get('cam-2')!.dispose).toHaveBeenCalledTimes(1);
+    expect(history.getHistory).toHaveBeenCalledWith('cam-1', { limit: 5 });
   });
 });

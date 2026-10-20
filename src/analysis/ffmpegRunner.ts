@@ -63,10 +63,10 @@ export function createFfmpegRunner(ffmpegPath: string = BUNDLED_FFMPEG_PATH): Ff
 /**
  * A long-lived ffmpeg invocation that keeps decoding and emitting frames
  * on `stdout` until `kill()` is called, rather than exiting after a
- * single outcome. Used for the boosted per-camera "live" tick rate, where
+ * single outcome. Used for each camera's continuous capture, where
  * re-spawning ffmpeg (and reconnecting/re-buffering the HLS stream from
- * scratch) on every tick is far too slow to hit multiple updates per
- * second - see `FrameGrabber`'s streaming mode.
+ * scratch) per frame is far too slow to hit multiple frames per second -
+ * see `FrameGrabber.openCapture`.
  */
 export interface FfmpegStreamHandle {
   stdout: NodeJS.ReadableStream;

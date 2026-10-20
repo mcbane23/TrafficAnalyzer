@@ -1,5 +1,14 @@
 # PRD: Real-Time Vehicle Traffic Analysis
 
+> **Revision (2026-10-20) - tracking reliability rework.** Three parts of this PRD are superseded:
+> (1) sampling is no longer "low background rate, boosted while watched": every active camera is
+> analyzed **continuously** (default 3 fps, `ANALYSIS_FPS`) through one self-reconnecting capture,
+> and opening a detail page only listens; (2) detection is background-subtraction motion detection,
+> not an object-detection model; (3) vehicle tracking is now **in scope**: a ByteTrack-style tracker
+> gives each vehicle one id for its whole crossing and emits each finished vehicle once
+> (`finishedTracks`), which is what vehicle counting builds on. History is one mean-count row per
+> camera per 10s rather than one row per result. See AGENTS.md for the current design.
+
 ## Problem Statement
 
 Today the dashboard and camera detail pages only let a user browse the camera registry and watch a live stream — the `AnalysisPanel` on the camera detail page is an empty "coming soon" placeholder. There is no way to actually see how much traffic is on a given camera's feed: no vehicle count, no breakdown by vehicle type, no indication of whether a road is quiet or congested, and no way to compare that at a glance across all cameras from the dashboard.

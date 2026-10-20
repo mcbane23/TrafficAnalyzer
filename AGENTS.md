@@ -35,12 +35,13 @@ colocated `*.test.ts`:
 | `FrameGrabber` | [src/analysis/frameGrabber.ts](src/analysis/frameGrabber.ts) | Yes — mocks the `FfmpegRunner`/`FfmpegStreamRunner` seams (see [ffmpegRunner.ts](src/analysis/ffmpegRunner.ts)) |
 | `BackgroundModel` | [src/analysis/backgroundModel.ts](src/analysis/backgroundModel.ts) | Yes — injects a fake `LumaExtractor` over synthetic pixel data, no real image decoding |
 | `MotionDetector` | [src/analysis/motionDetector.ts](src/analysis/motionDetector.ts) | Yes — same, through the `BackgroundModel` it wraps |
-| `VehicleTracker` | [src/analysis/vehicleTracker.ts](src/analysis/vehicleTracker.ts) | Yes — pure IoU-matching logic, no injectable seam needed |
+| `VehicleTracker` | [src/analysis/vehicleTracker.ts](src/analysis/vehicleTracker.ts) | Yes — pure ByteTrack-style logic (Kalman + Hungarian via [assignment.ts](src/analysis/assignment.ts)), timestamps passed in, no injectable seam needed |
 | `OccupancyEstimator` | [src/analysis/occupancyEstimator.ts](src/analysis/occupancyEstimator.ts) | Yes — same, through the `BackgroundModel` it wraps |
 | `CameraAnalyzer` | [src/analysis/cameraAnalyzer.ts](src/analysis/cameraAnalyzer.ts) | Yes — injects a fake detector/tracker/occupancy estimator; canned detections in, a result out |
 | `VehicleColorEstimator` | [src/analysis/vehicleColorEstimator.ts](src/analysis/vehicleColorEstimator.ts) | No — best-effort/cosmetic, low-risk (explicit PRD call-out). Currently unwired, see below |
 | `TrafficHistoryStore` | [src/analysis/trafficHistoryStore.ts](src/analysis/trafficHistoryStore.ts) | Yes — against a real in-memory (`:memory:`) SQLite DB, not mocked |
 | `TrafficAnalysisService` | [src/analysis/trafficAnalysisService.ts](src/analysis/trafficAnalysisService.ts) | Yes — mocks `FrameGrabberLike`/`CameraAnalyzerLike`/`TrafficHistoryStoreLike`/`AnalysisScheduler` |
+| Pipeline end-to-end | [src/analysis/pipeline.test.ts](src/analysis/pipeline.test.ts) | Yes — real ffmpeg + detector + tracker on committed synthetic footage with known ground truth ([__fixtures__/syntheticFootage.ts](src/analysis/__fixtures__/syntheticFootage.ts)) |
 | Express app / routes | [src/server/app.ts](src/server/app.ts) | No — thin wiring around `CameraService`/`RevalidationService`/`HlsProxyService`/`SseChannel`/`TrafficAnalysisService` |
 | Revalidate CLI | [src/cli/revalidate.ts](src/cli/revalidate.ts) | No — thin orchestrator |
 
@@ -56,13 +57,17 @@ default.** `SseChannel` exists for exactly this reason — heartbeat lifecycle, 
 disabling and write-after-close guarding all lived in `app.ts` under that exemption.
 
 `TrafficAnalysisService` is the largest example of the injectable-seam pattern: it takes three
-seams (frame grab, a per-camera `createAnalyzer` factory, history store) plus a
-`setTimeout`/`clearTimeout` `AnalysisScheduler`, so scheduling/boosting/concurrency-capping/fan-out
+seams (frame capture, a per-camera `createAnalyzer` factory, history store) plus a
+`setTimeout`/`clearTimeout` `AnalysisScheduler`, so loop/concurrency-capping/throttling/fan-out
 logic can be asserted deterministically without spawning ffmpeg, running real background
 subtraction, or waiting on real timers — see
 [src/analysis/trafficAnalysisService.test.ts](src/analysis/trafficAnalysisService.test.ts)'s
-`makeFakeScheduler()` (records `{fn, ms}` per `setTimeout` call, exposes `fire(index)` to await one
-tick to completion).
+`FakeCapture` (the test pushes frames with chosen capture times) and `makeFakeScheduler()`.
+
+Real camera streams can't be reached from CI, so end-to-end behaviour is tested on synthetic
+footage: `src/analysis/__fixtures__/synthetic-two-lanes.mp4` is rendered by
+`npx tsx src/analysis/__fixtures__/syntheticFootage.ts` from the `SCENE` ground truth in that file
+(regenerate the clip whenever `SCENE` changes - rendering takes ~30s, so the clip is committed).
 
 Data flow: `data/cameras/belgrade.json` (validated against `belgrade.schema.json`) is the single
 source of truth, loaded exclusively through `CameraRegistryStore` by both the CLI and
@@ -149,41 +154,56 @@ precedent for Vue components.
   much slower than `learningRate`) means a vehicle stopped at a light or in a jam keeps being
   reported for a while after it stops moving rather than disappearing the instant it's stationary —
   a genuinely parked vehicle still eventually fades out of the count, just slower.
-- `FrameGrabber` offers two capture modes against ffmpeg (`@ffmpeg-installer/ffmpeg`, the same
-  bundled-binary pattern as `@ffprobe-installer/ffprobe`), as **two methods, not one method with a
-  mode flag** — they differ in lifetime, not just behaviour. `grabFrame(camera)` spawns a process,
-  waits for exit and returns one frame (used for a camera's single background pass).
-  `openCapture(camera)` returns a `FrameCapture` (`next()` / `close()`) backed by a long-running
-  ffmpeg decoding at a fixed low fps (`streamFps`, default 6), used for boosted ticks — re-spawning
-  per tick (full HLS reconnect: playlist + segment fetch) was far too slow to hit multiple
-  bounding-box updates per second. `TrafficAnalysisService` holds the capture on that camera's tick
-  state and closes it when the last `subscribeCameraDetail` subscriber disconnects (and on
-  `stop()`), so idle cameras don't keep an ffmpeg process running. Holding the object is what makes
-  that impossible to forget: there is no stop-by-id call to remember, and no optional member on the
-  seam a test fake can skip. A capture respawns its process transparently if ffmpeg dies mid-stream,
-  but stays closed once `close()` is called. Both modes reuse the same header-forwarding logic
-  `CameraValidator`/`HlsProxyService` already use for cameras needing a special `Referer`.
-- `TrafficAnalysisService` is the orchestrator, and only that: scheduling, boosting, the concurrency
-  pool, persistence and subscriber fan-out. One background tick per `active` camera (inactive
-  cameras are skipped entirely), boosted while a camera has at least one `subscribeCameraDetail`
-  subscriber (i.e. its detail page is open), all work capped by a small concurrency pool
-  (`maxConcurrency`, default 6) with the rest queued. It does not know how a frame becomes a result
-  — that's `CameraAnalyzer`. Traffic-level (`light`/`moderate`/`heavy`) is derived primarily from
-  roadway occupancy (see `OccupancyEstimator`), falling back to a tunable total-count threshold
+- `FrameGrabber.openCapture(camera)` returns a `FrameCapture` (`next()` / `close()`) backed by a
+  long-running ffmpeg (`@ffmpeg-installer/ffmpeg`, the same bundled-binary pattern as
+  `@ffprobe-installer/ffprobe`) decoding at a fixed low fps (`streamFps`, default 3, `ANALYSIS_FPS`
+  env var in `src/server/index.ts`). Input is paced with `-re`: without it ffmpeg decodes each HLS
+  segment in a burst (many seconds of frames within ~100ms, then silence), which made frame spacing
+  meaningless to the tracker. Each frame carries `capturedAt` (decode time), which is the result's
+  timestamp. The capture **supervises its own ffmpeg**: a process that exits is restarted after
+  `restartDelayMs`, backing off exponentially to `maxRestartDelayMs` while it keeps dying without
+  producing frames; a process that stays up but produces nothing for `stallTimeoutMs` (a live
+  playlist that stopped advancing) is killed and restarted; HTTP(S) inputs get `-rw_timeout` and
+  ffmpeg's `-reconnect` flags. It stays closed once `close()` is called. `grabFrame(camera)` (one
+  frame from a one-off process) still exists but is not used by the analysis service. Both reuse
+  the same header-forwarding logic `CameraValidator`/`HlsProxyService` use for cameras needing a
+  special `Referer`.
+- `VehicleTracker` is ByteTrack-style: constant-velocity Kalman filter per track driven by real frame
+  timestamps (`update(detections, timestampMs)`), optimal (Hungarian) association on a blend of IoU
+  and uncertainty-gated centre distance (IoU alone fails for small fast vehicles, which have zero
+  overlap with themselves between frames), a second pass where low-confidence detections may only
+  keep confirmed tracks alive, `minHits` confirmation before a track is reported or counted, and
+  `maxLostMs` coasting. A confirmed track that ends is emitted exactly once as a `FinishedTrack`
+  (`CameraAnalysisResult.finishedTracks`) — the basis for counting vehicles rather than blobs. On
+  the synthetic fixture the previous IoU-only tracker produced 112 ids for 7 vehicles at 3 fps.
+- `TrafficAnalysisService` is the orchestrator, and only that: one continuous capture + analysis loop
+  per `active` camera for as long as the service runs (inactive cameras are skipped entirely;
+  startups are staggered), all analysis capped by a small concurrency pool (`maxConcurrency`,
+  default 6; each camera has at most one frame in flight, so a slow host just drops queued frames).
+  Detail subscribers get every frame's result; dashboard overview updates are throttled
+  (`overviewIntervalMs`, but a changed badge/error goes out immediately); history gets one row per
+  camera per `historyIntervalMs` (default 10s) with the mean count over that window; `onResult` is a
+  hook called with every usable frame (incl. `finishedTracks`). It does not know how a frame becomes
+  a result — that's `CameraAnalyzer`. Traffic-level (`light`/`moderate`/`heavy`) is derived primarily
+  from roadway occupancy (see `OccupancyEstimator`), falling back to a tunable total-count threshold
   while occupancy is still warming up — exact numbers are an internal implementation detail, not a
-  fixed spec.
+  fixed spec. Continuous analysis of every camera is a deliberate product choice so
+  statistics cover the whole fleet; the earlier design analyzed one frame per camera at startup,
+  which never got past the detector's 20-frame warm-up, so every dashboard count was a zero.
 - `VehicleColorEstimator` is currently **unwired** — nothing constructs or calls it. Per-detection
   crop+resize cost, compounding with detection count, slowed every tick down for a field nothing
   needed yet. It's kept on disk because re-enabling it is a one-line change inside
   `CameraAnalyzer.analyze` (map raw detections through `estimateColor`); it is deliberately not
   passed around as an injected-but-unused seam.
-- A failed tick (capture or detection) is **published but never persisted**: its zeroed count and
-  `light` badge describe a broken feed, not an empty road, and writing those to history would show
-  up in the trend view as genuine quiet traffic. Live subscribers still get it, because a viewer
-  needs to know the feed is broken.
+- A failed frame (capture or detection) or a warm-up frame (`warmingUp: true`, detector still
+  learning the background) is **published but never persisted**, and never passed to `onResult`:
+  its zeroed count and `light` badge describe the pipeline, not an empty road, and writing those to
+  history would show up in the trend view as genuine quiet traffic. Live subscribers still get it,
+  because a viewer needs to know the feed is broken or still settling. A warm-up frame also does
+  not replace the dashboard overview.
 - Results are pushed to the browser via Server-Sent Events, not polled: `GET /api/analysis/stream`
   (dashboard-wide overview) and `GET /api/cameras/:id/analysis/stream` (per-camera full detail —
-  opening this connection is literally what triggers the sampling-rate boost; closing it reverts).
+  every active camera is analyzed continuously, so this only listens).
   `GET /api/analysis/latest` and `GET /api/cameras/:id/analysis/history` back the initial
   bootstrap/trend-view REST calls. All four routes are thin wiring in `app.ts`: the two SSE routes
   open an `SseChannel` (which owns the headers, the disabled socket timeout, the keep-alive
@@ -202,4 +222,4 @@ precedent for Vue components.
   `subscribeOverview` connection for the whole dashboard and passes each camera's
   `CameraAnalysisOverview` down to `CameraCard.vue` as a prop — cards do not each open their own SSE
   connection. `StreamPlayer.vue`'s canvas overlay is expected to lag the live video slightly
-  (frame-grab + inference time); that's an accepted tradeoff, not a bug.
+  (`-re` pacing + HLS buffering + analysis time); that's an accepted tradeoff, not a bug.

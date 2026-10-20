@@ -1,197 +1,377 @@
-import { BoundingBox, VehicleDetection } from '../types/analysis';
+import { BoundingBox, FinishedTrack, VehicleDetection } from '../types/analysis';
+import { solveAssignment } from './assignment';
 
-/** A vehicle detection annotated with a stable id, unique to a single vehicle instance across consecutive ticks for one camera. */
+/** A vehicle detection annotated with a stable id, unique to a single vehicle instance across frames for one camera. */
 export interface TrackedVehicleDetection extends VehicleDetection {
   trackId: number;
 }
 
+export interface TrackerUpdate {
+  /** Confirmed tracks matched to a detection on this frame, with their filtered boxes. */
+  tracks: TrackedVehicleDetection[];
+  /** Confirmed tracks that ended on this frame - each track appears here exactly once in its lifetime. */
+  finished: FinishedTrack[];
+}
+
 export interface VehicleTrackerOptions {
-  /** Minimum IoU between a detection and a track's predicted box to be considered the same vehicle. Defaults to 0.3. */
-  iouThreshold?: number;
-  /** How many consecutive ticks a track may go unmatched before being forgotten. Defaults to 2. */
-  maxMissedTicks?: number;
   /**
-   * Weight (0-1) given to a tick's raw detection position versus the
-   * track's motion-predicted position when settling on the box reported to
-   * clients. Defaults to 0.6.
-   *
-   * `MotionDetector`'s per-frame blob is noisy - glare, compression
-   * artifacts and partial occlusion all nudge a real vehicle's silhouette a
-   * few pixels every frame even when its actual motion is smooth - and
-   * reporting that raw box straight through is what made boxes look like
-   * they were jumping around rather than following the vehicle. Blending
-   * it against the predicted position damps that per-frame noise. Kept
-   * below 1 (full trust in the raw detection) so genuine direction/speed
-   * changes still show up quickly rather than lagging behind, and above 0
-   * (full trust in the prediction, which would never correct itself).
+   * Detections at/above this confidence take part in the first association
+   * pass and may start new tracks; those below it are only used to keep
+   * already-confirmed tracks alive (ByteTrack's second pass). Defaults to 0.5.
    */
-  positionSmoothing?: number;
-  /** Weight (0-1) given to a tick's raw detected size versus the track's last reported size. Defaults to 0.5 - a vehicle's on-screen size changes slowly, so this can lean more conservative than `positionSmoothing` without adding perceptible lag. */
+  highConfidence?: number;
+  /** Frames a new track must be matched on before it is confirmed (reported, counted and eventually finished). Defaults to 3. */
+  minHits?: number;
+  /** How long (ms) a confirmed track may go undetected - coasting on its motion prediction - before it is finished. Defaults to 1500. */
+  maxLostMs?: number;
+  /**
+   * A gap between consecutive frames longer than this (ms) - a stream drop,
+   * a reconnect, a capture that was closed and later reopened - finishes
+   * every track rather than trying to match across it. Defaults to 5000.
+   */
+  maxFrameGapMs?: number;
+  /** Minimum association similarity (0-1, see `similarity`) for a detection to be matched to a track. Defaults to 0.25. */
+  minSimilarity?: number;
+  /** Kalman process noise: expected vehicle acceleration, in frame-widths per second squared. Defaults to 0.5. */
+  accelerationNoise?: number;
+  /** Weight (0-1) given to a frame's raw detected size versus the track's current size. Defaults to 0.4. */
   sizeSmoothing?: number;
-  /**
-   * Weight (0-1) given to a tick's newly observed velocity (this tick's
-   * smoothed position minus last tick's) versus the track's previously
-   * held velocity. Defaults to 0.5. This is what lets a track's motion
-   * prediction actually track acceleration/turns instead of assuming
-   * whatever direction the vehicle first appeared to be moving in forever.
-   */
-  velocitySmoothing?: number;
+}
+
+const DEFAULTS = {
+  highConfidence: 0.5,
+  minHits: 3,
+  maxLostMs: 1500,
+  maxFrameGapMs: 5000,
+  minSimilarity: 0.25,
+  accelerationNoise: 0.5,
+  sizeSmoothing: 0.4,
+};
+
+/** Initial velocity variance for a brand new track, in (frame-widths per second)^2 - a new vehicle could be moving any which way. */
+const INITIAL_VELOCITY_VARIANCE = 0.25;
+/** Measurement noise floor (frame widths), so a tiny box doesn't make the filter over-trust its center. */
+const MIN_MEASUREMENT_NOISE = 0.004;
+/** Measurement noise as a share of the box's own size - a blob's center wobbles by a fraction of its extent. */
+const RELATIVE_MEASUREMENT_NOISE = 0.15;
+/** Detections more than this many times larger/smaller in area than a track cannot be the same vehicle. */
+const MAX_AREA_RATIO = 4;
+
+/**
+ * One axis (x or y) of a constant-velocity Kalman filter over a track's box
+ * center. The two axes are independent, which keeps this a pair of 2x2
+ * filters instead of a general matrix library.
+ */
+class AxisFilter {
+  /** Position variance, position/velocity covariance, velocity variance. */
+  private pp: number;
+  private pv = 0;
+  private vv = INITIAL_VELOCITY_VARIANCE;
+  velocity = 0;
+
+  constructor(
+    public position: number,
+    measurementNoise: number,
+  ) {
+    this.pp = measurementNoise * measurementNoise;
+  }
+
+  predict(dt: number, accelerationNoise: number): void {
+    if (dt <= 0) return;
+    this.position += this.velocity * dt;
+    const q = accelerationNoise * accelerationNoise;
+    const pp = this.pp + 2 * dt * this.pv + dt * dt * this.vv + (q * dt ** 4) / 4;
+    const pv = this.pv + dt * this.vv + (q * dt ** 3) / 2;
+    const vv = this.vv + q * dt * dt;
+    this.pp = pp;
+    this.pv = pv;
+    this.vv = vv;
+  }
+
+  update(measurement: number, measurementNoise: number): void {
+    const s = this.pp + measurementNoise * measurementNoise;
+    const kp = this.pp / s;
+    const kv = this.pv / s;
+    const residual = measurement - this.position;
+    this.position += kp * residual;
+    this.velocity += kv * residual;
+    const pp = (1 - kp) * this.pp;
+    const pv = (1 - kp) * this.pv;
+    const vv = this.vv - kv * this.pv;
+    this.pp = pp;
+    this.pv = pv;
+    this.vv = vv;
+  }
+
+  /** Standard deviation of the predicted position. */
+  get positionStd(): number {
+    return Math.sqrt(Math.max(0, this.pp));
+  }
 }
 
 interface Track {
-  /** Last reported (already smoothed) box. */
-  box: BoundingBox;
-  /** Per-tick position velocity, in the same normalized units as `box`. */
-  velocity: { x: number; y: number };
-  missedTicks: number;
+  id: number;
+  x: AxisFilter;
+  y: AxisFilter;
+  width: number;
+  height: number;
+  hits: number;
+  confirmed: boolean;
+  firstSeenMs: number;
+  lastSeenMs: number;
+  firstBox: BoundingBox;
+  lastBox: BoundingBox;
+  /** Index of the detection this track was matched to on the current frame, or -1 - set during `update`. */
+  matchedIndex: number;
 }
 
-const DEFAULT_IOU_THRESHOLD = 0.3;
-const DEFAULT_MAX_MISSED_TICKS = 2;
-const DEFAULT_POSITION_SMOOTHING = 0.6;
-const DEFAULT_SIZE_SMOOTHING = 0.5;
-const DEFAULT_VELOCITY_SMOOTHING = 0.5;
-
 /**
- * VehicleTracker assigns a stable numeric id to each vehicle across
- * consecutive detection ticks for the same camera, by greedily matching
- * each tick's detections to where a previous tick's tracked vehicles are
- * now predicted to be (sufficient IoU overlap, highest-overlap match
- * wins). This lets the frontend render a consistent color per vehicle
- * instance - and follow individual vehicles across frames - rather than
- * every detection looking like a brand new, unrelated box each tick.
+ * VehicleTracker assigns a stable id to each vehicle across consecutive
+ * frames of one camera, ByteTrack-style:
  *
- * Two refinements beyond plain frame-to-frame IoU matching, both aimed at
- * the same problem: `MotionDetector`'s raw per-frame blob is a noisy
- * silhouette, not a stable object outline, so matching and reporting
- * straight off it makes tracked vehicles look like they're jittering
- * around rather than moving smoothly:
+ * - **Motion model.** Each track's box center runs through a
+ *   constant-velocity Kalman filter driven by real frame timestamps, not
+ *   tick counts. Frames from an HLS relay do not arrive evenly (see
+ *   `FrameGrabber`), so "one tick" can mean 150ms or 2s; predicting with
+ *   the actual elapsed time is what keeps a vehicle findable after an
+ *   uneven gap, and the filter's growing uncertainty widens the search
+ *   radius exactly as much as the gap warrants.
+ * - **Association.** Matching is a global optimal assignment (Hungarian)
+ *   over a similarity that blends box overlap with center distance inside
+ *   that uncertainty-scaled gate. Pure overlap fails on precisely the small
+ *   fast vehicles this fleet is full of - a 10px car that moved 12px between
+ *   frames has zero overlap with itself - and greedy matching lets one bad
+ *   early pairing cascade into swapped ids.
+ * - **Two passes.** Confident detections are matched first and may start
+ *   tracks; low-confidence detections (ragged, partly occluded blobs) are
+ *   then only used to keep already-confirmed tracks alive. A vehicle
+ *   briefly reduced to a scrappy blob keeps its id instead of being dropped
+ *   and re-created, and that scrappy blob can never start a phantom vehicle.
+ * - **Confirmation.** A new track is tentative until matched on `minHits`
+ *   frames; tentative tracks are never reported, and are discarded the
+ *   first frame they're missed. Noise blobs - compression artifacts, a
+ *   flicker of glare - do not live long enough to become vehicles.
+ * - **Coasting.** A confirmed track that goes undetected keeps predicting
+ *   forward for up to `maxLostMs` so a brief occlusion doesn't split it in
+ *   two, but - as before - it is never *reported* while undetected, so a
+ *   vehicle that has left the frame stops being drawn immediately.
  *
- * - Motion prediction: each track carries a velocity (its last observed
- *   per-tick position delta), and matching is done against *where the
- *   track should be now* (last box + velocity), not where it last was.
- *   This is what keeps a fast-moving vehicle's id stable tick to tick -
- *   without it, a vehicle that moved far enough between ticks would fall
- *   below the IoU threshold against its own stale last-known box and get
- *   treated as a brand new one. It also keeps an unmatched-but-not-yet-
- *   forgotten track advancing along its trajectory while missed, so it's
- *   still findable if it reappears a tick or two later.
- * - Smoothing: the box reported for a matched track blends the predicted
- *   position with the new raw detection (see `positionSmoothing`) rather
- *   than replacing it outright, damping frame-to-frame blob noise while
- *   still following genuine movement closely.
+ * When a confirmed track is given up on (lost too long, predicted out of
+ * frame, or a stream gap longer than `maxFrameGapMs`) it is returned once in
+ * `finished`, which is what downstream vehicle counting is built on.
  *
- * A track that isn't matched by any detection in a tick is aged (not
- * immediately discarded) so a vehicle briefly missed by the detector for
- * a frame or two keeps its id when it reappears. But - critically - an
- * unmatched track is NEVER included in `update()`'s return value: only
- * detections actually present in the current tick are emitted, so a
- * vehicle that has genuinely left the frame stops being drawn
- * immediately rather than leaving a stale bounding box stuck on-screen.
- * Once a track exceeds `maxMissedTicks` consecutive misses it's
- * forgotten entirely, so its id (and last-known position) isn't reused
- * for whatever unrelated vehicle happens to occupy a similar spot later.
- *
- * One instance should be created per camera - tracking is meaningless
- * across different cameras' independent frames.
+ * One instance per camera - tracking is meaningless across different
+ * cameras' frames.
  */
 export class VehicleTracker {
-  private readonly iouThreshold: number;
-  private readonly maxMissedTicks: number;
-  private readonly positionSmoothing: number;
+  private readonly highConfidence: number;
+  private readonly minHits: number;
+  private readonly maxLostMs: number;
+  private readonly maxFrameGapMs: number;
+  private readonly minSimilarity: number;
+  private readonly accelerationNoise: number;
   private readonly sizeSmoothing: number;
-  private readonly velocitySmoothing: number;
-  private readonly tracks = new Map<number, Track>();
+  private tracks: Track[] = [];
   private nextId = 1;
+  private lastFrameMs: number | null = null;
 
   constructor(options: VehicleTrackerOptions = {}) {
-    this.iouThreshold = options.iouThreshold ?? DEFAULT_IOU_THRESHOLD;
-    this.maxMissedTicks = options.maxMissedTicks ?? DEFAULT_MAX_MISSED_TICKS;
-    this.positionSmoothing = options.positionSmoothing ?? DEFAULT_POSITION_SMOOTHING;
-    this.sizeSmoothing = options.sizeSmoothing ?? DEFAULT_SIZE_SMOOTHING;
-    this.velocitySmoothing = options.velocitySmoothing ?? DEFAULT_VELOCITY_SMOOTHING;
+    this.highConfidence = options.highConfidence ?? DEFAULTS.highConfidence;
+    this.minHits = options.minHits ?? DEFAULTS.minHits;
+    this.maxLostMs = options.maxLostMs ?? DEFAULTS.maxLostMs;
+    this.maxFrameGapMs = options.maxFrameGapMs ?? DEFAULTS.maxFrameGapMs;
+    this.minSimilarity = options.minSimilarity ?? DEFAULTS.minSimilarity;
+    this.accelerationNoise = options.accelerationNoise ?? DEFAULTS.accelerationNoise;
+    this.sizeSmoothing = options.sizeSmoothing ?? DEFAULTS.sizeSmoothing;
   }
 
-  /** Matches this tick's detections against known tracks and returns them annotated with a stable `trackId`. */
-  update(detections: VehicleDetection[]): TrackedVehicleDetection[] {
-    // Predict each track's current position before matching, so a vehicle
-    // that moved between ticks is matched against where it's likely to be
-    // now, not where it was last seen.
-    const predictedBoxes = new Map<number, BoundingBox>();
-    for (const [trackId, track] of this.tracks) {
-      predictedBoxes.set(trackId, {
-        x: track.box.x + track.velocity.x,
-        y: track.box.y + track.velocity.y,
-        width: track.box.width,
-        height: track.box.height,
-      });
+  /** Feeds one frame's detections, taken at `timestampMs` (epoch ms), through the tracker. */
+  update(detections: VehicleDetection[], timestampMs: number): TrackerUpdate {
+    const finished: FinishedTrack[] = [];
+
+    if (this.lastFrameMs !== null && timestampMs - this.lastFrameMs > this.maxFrameGapMs) {
+      // Nothing seen before the gap can be meaningfully matched after it.
+      finished.push(...this.finishAll());
+    }
+    const dt = this.lastFrameMs === null ? 0 : Math.max(0, (timestampMs - this.lastFrameMs) / 1000);
+    this.lastFrameMs = timestampMs;
+
+    for (const track of this.tracks) {
+      track.x.predict(dt, this.accelerationNoise);
+      track.y.predict(dt, this.accelerationNoise);
+      track.matchedIndex = -1;
     }
 
-    const candidateMatches: Array<{ trackId: number; detectionIndex: number; iou: number }> = [];
-    for (const [trackId, predictedBox] of predictedBoxes) {
-      detections.forEach((detection, detectionIndex) => {
-        const overlap = iou(predictedBox, detection.box);
-        if (overlap >= this.iouThreshold) {
-          candidateMatches.push({ trackId, detectionIndex, iou: overlap });
-        }
-      });
-    }
-    // Highest-overlap matches win first, so the best pairing is claimed before weaker ones.
-    candidateMatches.sort((a, b) => b.iou - a.iou);
+    const high: number[] = [];
+    const low: number[] = [];
+    detections.forEach((d, i) => (d.confidence >= this.highConfidence ? high : low).push(i));
 
-    const matchedTrackIds = new Set<number>();
-    const detectionTrackIds = new Map<number, number>();
+    // Pass 1: confident detections against every live track.
+    const unmatchedHigh = this.associate(this.tracks, high, detections, timestampMs);
+    // Pass 2: leftover low-confidence detections may only keep a confirmed track alive.
+    this.associate(
+      this.tracks.filter((t) => t.matchedIndex < 0 && t.confirmed),
+      low,
+      detections,
+      timestampMs,
+    );
 
-    for (const match of candidateMatches) {
-      if (matchedTrackIds.has(match.trackId) || detectionTrackIds.has(match.detectionIndex)) continue;
-      matchedTrackIds.add(match.trackId);
-      detectionTrackIds.set(match.detectionIndex, match.trackId);
-    }
-
-    const results: TrackedVehicleDetection[] = detections.map((detection, detectionIndex) => {
-      const existingTrackId = detectionTrackIds.get(detectionIndex);
-      if (existingTrackId !== undefined) {
-        const existing = this.tracks.get(existingTrackId)!;
-        const predictedBox = predictedBoxes.get(existingTrackId)!;
-        const box: BoundingBox = {
-          x: lerp(predictedBox.x, detection.box.x, this.positionSmoothing),
-          y: lerp(predictedBox.y, detection.box.y, this.positionSmoothing),
-          width: lerp(existing.box.width, detection.box.width, this.sizeSmoothing),
-          height: lerp(existing.box.height, detection.box.height, this.sizeSmoothing),
-        };
-        const velocity = {
-          x: lerp(existing.velocity.x, box.x - existing.box.x, this.velocitySmoothing),
-          y: lerp(existing.velocity.y, box.y - existing.box.y, this.velocitySmoothing),
-        };
-        this.tracks.set(existingTrackId, { box, velocity, missedTicks: 0 });
-        matchedTrackIds.add(existingTrackId);
-        return { ...detection, trackId: existingTrackId, box };
+    const survivors: Track[] = [];
+    for (const track of this.tracks) {
+      if (track.matchedIndex >= 0) {
+        survivors.push(track);
+        continue;
       }
+      if (!track.confirmed) continue; // Tentative and missed: noise, drop silently.
+      const lostFor = timestampMs - track.lastSeenMs;
+      if (lostFor > this.maxLostMs || isOutOfFrame(track)) {
+        finished.push(toFinished(track));
+        continue;
+      }
+      survivors.push(track);
+    }
+    this.tracks = survivors;
 
-      // A brand new vehicle - nothing to predict from or smooth against yet,
-      // so it's reported exactly as detected and starts with zero velocity.
-      const trackId = this.nextId++;
-      this.tracks.set(trackId, { box: detection.box, velocity: { x: 0, y: 0 }, missedTicks: 0 });
-      matchedTrackIds.add(trackId);
-      return { ...detection, trackId };
+    for (const index of unmatchedHigh) {
+      this.tracks.push(this.createTrack(detections[index], index, timestampMs));
+    }
+
+    const reported = this.tracks
+      .filter((t) => t.confirmed && t.matchedIndex >= 0)
+      .sort((a, b) => a.matchedIndex - b.matchedIndex)
+      .map((t): TrackedVehicleDetection => ({ ...detections[t.matchedIndex], trackId: t.id, box: currentBox(t) }));
+
+    return { tracks: reported, finished };
+  }
+
+  /** Finishes every confirmed track now (e.g. when the camera's capture is torn down), returning them. */
+  flush(): FinishedTrack[] {
+    const finished = this.finishAll();
+    this.lastFrameMs = null;
+    return finished;
+  }
+
+  private finishAll(): FinishedTrack[] {
+    const finished = this.tracks.filter((t) => t.confirmed).map(toFinished);
+    this.tracks = [];
+    return finished;
+  }
+
+  /**
+   * Optimally matches `detectionIndices` to `tracks`, updating matched
+   * tracks in place. Returns the detection indices left unmatched.
+   */
+  private associate(tracks: Track[], detectionIndices: number[], detections: VehicleDetection[], timestampMs: number): number[] {
+    if (tracks.length === 0 || detectionIndices.length === 0) return detectionIndices;
+
+    const cost = tracks.map((track) =>
+      detectionIndices.map((di) => {
+        const s = this.similarity(track, detections[di].box);
+        return s >= this.minSimilarity ? 1 - s : Infinity;
+      }),
+    );
+    const assignment = solveAssignment(cost);
+
+    const used = new Set<number>();
+    assignment.forEach((col, row) => {
+      if (col < 0) return;
+      const track = tracks[row];
+      this.applyMatch(track, detections, detectionIndices[col], timestampMs);
+      used.add(col);
     });
-
-    for (const [trackId, track] of this.tracks) {
-      if (matchedTrackIds.has(trackId)) continue;
-      track.missedTicks += 1;
-      if (track.missedTicks > this.maxMissedTicks) {
-        this.tracks.delete(trackId);
-      } else {
-        // Keep an unmatched-but-not-yet-forgotten track advancing along its
-        // last known trajectory, so if it reappears a tick or two later (a
-        // brief occlusion, a missed detection) it's matched against where
-        // it actually is now rather than where it went missing.
-        track.box = { ...track.box, x: track.box.x + track.velocity.x, y: track.box.y + track.velocity.y };
-      }
-    }
-
-    return results;
+    return detectionIndices.filter((_, col) => !used.has(col));
   }
+
+  /**
+   * How plausibly `box` is this track's vehicle on the current frame, 0-1.
+   *
+   * Blends box overlap with the predicted box against how close the box's
+   * center is to the predicted center, relative to a gate that grows with
+   * the vehicle's size and with the filter's own positional uncertainty.
+   * Overlap alone scores zero for a small vehicle that moved more than its
+   * own length between frames; distance alone can't tell a big lorry from
+   * a car beside it - so neither is used on its own. Wildly different sizes
+   * are rejected outright.
+   */
+  private similarity(track: Track, box: BoundingBox): number {
+    const predicted = currentBox(track);
+    const areaA = predicted.width * predicted.height;
+    const areaB = box.width * box.height;
+    if (areaA <= 0 || areaB <= 0) return 0;
+    const ratio = areaA > areaB ? areaA / areaB : areaB / areaA;
+    if (ratio > MAX_AREA_RATIO) return 0;
+
+    const dx = box.x + box.width / 2 - track.x.position;
+    const dy = box.y + box.height / 2 - track.y.position;
+    const distance = Math.hypot(dx, dy);
+    const size = Math.max(Math.hypot(predicted.width, predicted.height), Math.hypot(box.width, box.height));
+    const uncertainty = 3 * Math.hypot(track.x.positionStd, track.y.positionStd);
+    const gate = Math.max(size, uncertainty);
+    if (distance >= gate) return 0;
+
+    return 0.5 * iou(predicted, box) + 0.5 * (1 - distance / gate);
+  }
+
+  private applyMatch(track: Track, detections: VehicleDetection[], index: number, timestampMs: number): void {
+    const box = detections[index].box;
+    track.x.update(box.x + box.width / 2, measurementNoise(box.width));
+    track.y.update(box.y + box.height / 2, measurementNoise(box.height));
+    track.width = lerp(track.width, box.width, this.sizeSmoothing);
+    track.height = lerp(track.height, box.height, this.sizeSmoothing);
+    track.hits += 1;
+    track.lastSeenMs = timestampMs;
+    track.lastBox = box;
+    track.matchedIndex = index;
+    if (track.hits >= this.minHits) track.confirmed = true;
+  }
+
+  private createTrack(detection: VehicleDetection, index: number, timestampMs: number): Track {
+    const box = detection.box;
+    return {
+      id: this.nextId++,
+      x: new AxisFilter(box.x + box.width / 2, measurementNoise(box.width)),
+      y: new AxisFilter(box.y + box.height / 2, measurementNoise(box.height)),
+      width: box.width,
+      height: box.height,
+      hits: 1,
+      confirmed: this.minHits <= 1,
+      firstSeenMs: timestampMs,
+      lastSeenMs: timestampMs,
+      firstBox: box,
+      lastBox: box,
+      matchedIndex: index,
+    };
+  }
+}
+
+function currentBox(track: Track): BoundingBox {
+  return {
+    x: track.x.position - track.width / 2,
+    y: track.y.position - track.height / 2,
+    width: track.width,
+    height: track.height,
+  };
+}
+
+function isOutOfFrame(track: Track): boolean {
+  const cx = track.x.position;
+  const cy = track.y.position;
+  return cx < 0 || cx > 1 || cy < 0 || cy > 1;
+}
+
+function toFinished(track: Track): FinishedTrack {
+  return {
+    trackId: track.id,
+    firstSeen: new Date(track.firstSeenMs).toISOString(),
+    lastSeen: new Date(track.lastSeenMs).toISOString(),
+    firstBox: track.firstBox,
+    lastBox: track.lastBox,
+    hits: track.hits,
+  };
+}
+
+function measurementNoise(extent: number): number {
+  return Math.max(MIN_MEASUREMENT_NOISE, extent * RELATIVE_MEASUREMENT_NOISE);
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -199,19 +379,11 @@ function lerp(a: number, b: number, t: number): number {
 }
 
 function iou(a: BoundingBox, b: BoundingBox): number {
-  const ax2 = a.x + a.width;
-  const ay2 = a.y + a.height;
-  const bx2 = b.x + b.width;
-  const by2 = b.y + b.height;
-
   const x1 = Math.max(a.x, b.x);
   const y1 = Math.max(a.y, b.y);
-  const x2 = Math.min(ax2, bx2);
-  const y2 = Math.min(ay2, by2);
-
+  const x2 = Math.min(a.x + a.width, b.x + b.width);
+  const y2 = Math.min(a.y + a.height, b.y + b.height);
   const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
-  const areaA = a.width * a.height;
-  const areaB = b.width * b.height;
-  const union = areaA + areaB - intersection;
+  const union = a.width * a.height + b.width * b.height - intersection;
   return union <= 0 ? 0 : intersection / union;
 }

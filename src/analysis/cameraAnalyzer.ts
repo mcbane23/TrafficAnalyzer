@@ -1,11 +1,15 @@
 import { CameraAnalysisResult, TrafficLevel, VehicleDetection } from '../types/analysis';
-import { MotionDetector } from './motionDetector';
+import { DetectionResult, MotionDetector } from './motionDetector';
 import { OccupancyEstimator } from './occupancyEstimator';
-import { VehicleTracker } from './vehicleTracker';
+import { TrackerUpdate, VehicleTracker } from './vehicleTracker';
 
-/** Narrow seam over MotionDetector so tests can inject canned detections without running real background-subtraction. */
+/**
+ * Narrow seam over MotionDetector so tests can inject canned detections
+ * without running real background-subtraction - and the point a different
+ * detector (e.g. an appearance-based model) would plug in.
+ */
 export interface VehicleDetectorLike {
-  detect(frameBuffer: Buffer): Promise<VehicleDetection[]>;
+  detect(frameBuffer: Buffer): Promise<DetectionResult>;
 }
 
 /** Narrow seam over OccupancyEstimator. */
@@ -15,7 +19,7 @@ export interface OccupancyEstimatorLike {
 
 /** Narrow seam over VehicleTracker. */
 export interface VehicleTrackerLike {
-  update(detections: VehicleDetection[]): VehicleDetection[];
+  update(detections: VehicleDetection[], timestampMs: number): TrackerUpdate;
 }
 
 export interface CameraAnalyzerOptions {
@@ -65,7 +69,7 @@ const DISABLED_OCCUPANCY: OccupancyEstimatorLike = { update: async () => ({ occu
  * signal later changes this module only.
  *
  * `TrafficAnalysisService` keeps what is genuinely *not* per-camera:
- * scheduling, boosting, the concurrency pool, persistence and subscriber
+ * the capture loops, the concurrency pool, persistence and subscriber
  * fan-out. It hands frames in and gets results out.
  *
  * The pipeline is: detect moving objects -> assign stable track ids ->
@@ -113,15 +117,17 @@ export class CameraAnalyzer {
    * produced nothing this time and why.
    */
   async analyze(frame: Buffer, timestamp: string): Promise<CameraAnalysisResult> {
-    let detections: VehicleDetection[];
+    let tracked: TrackerUpdate;
+    let warmingUp: boolean;
     try {
-      const rawDetections = await this.detector.detect(frame);
+      const detection = await this.detector.detect(frame);
+      warmingUp = detection.warmingUp;
       // No color estimation in the loop: it added a per-detection sharp
       // crop+resize cost (compounding with detection count) that meaningfully
       // slowed down every tick without being needed yet. `VehicleColorEstimator`
-      // is still on disk - re-enable by mapping rawDetections through its
-      // `estimateColor` here once that cost is worth paying.
-      detections = this.tracker.update(rawDetections);
+      // is still on disk - re-enable by mapping detection.detections through
+      // its `estimateColor` here once that cost is worth paying.
+      tracked = this.tracker.update(detection.detections, Date.parse(timestamp));
     } catch (err) {
       return this.errorResult(timestamp, err instanceof Error ? err.message : 'Detection failed');
     }
@@ -138,6 +144,9 @@ export class CameraAnalyzer {
       occupancy = null;
     }
 
+    // Only confirmed tracks are counted (and drawn): a blob the tracker hasn't
+    // yet seen on enough frames to trust is not a vehicle yet.
+    const detections: VehicleDetection[] = tracked.tracks;
     const totalCount = detections.length;
     return {
       cameraId: this.cameraId,
@@ -145,7 +154,9 @@ export class CameraAnalyzer {
       totalCount,
       trafficLevel: this.deriveTrafficLevel(totalCount, occupancy),
       detections,
+      finishedTracks: tracked.finished,
       ...(occupancy === null ? {} : { occupancy }),
+      ...(warmingUp ? { warmingUp } : {}),
     };
   }
 
@@ -157,6 +168,7 @@ export class CameraAnalyzer {
       totalCount: 0,
       trafficLevel: 'light',
       detections: [],
+      finishedTracks: [],
       error,
     };
   }

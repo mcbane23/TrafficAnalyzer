@@ -6,21 +6,17 @@ import { CameraAnalyzer } from './cameraAnalyzer';
 
 /** Narrow seam over FrameGrabber so tests can inject a fake without spawning ffmpeg. */
 export interface FrameGrabberLike {
-  /** One frame from a one-off process - used for a camera's single background pass. */
-  grabFrame(camera: CameraEntry): Promise<GrabFrameResult>;
-  /** A continuously-decoding capture, held for as long as a camera is being watched. The caller must close it. */
+  /** A continuously-decoding, self-reconnecting capture of one camera. The caller must close it. */
   openCapture(camera: CameraEntry): FrameCapture;
 }
 
 /**
  * Narrow seam over `CameraAnalyzer` - everything that turns one camera's
  * frame into one result, including all of that camera's learned state.
- * This is the single seam that used to be a detector, a tracker and an
- * occupancy estimator injected separately.
  */
 export interface CameraAnalyzerLike {
   analyze(frame: Buffer, timestamp: string): Promise<CameraAnalysisResult>;
-  /** The result for a tick whose frame never arrived - the analyzer owns this camera's result shape either way. */
+  /** The result for a frame that never arrived - the analyzer owns this camera's result shape either way. */
   errorResult(timestamp: string, error: string): CameraAnalysisResult;
   dispose(): void;
 }
@@ -48,35 +44,28 @@ const defaultScheduler: AnalysisScheduler = {
 
 export interface TrafficAnalysisServiceOptions {
   /**
-   * Delay, in ms, before an active camera's one-time initial analysis pass
-   * (used to stagger those passes on `start()` - see
-   * `STARTUP_STAGGER_STEP_MS`) and the retry delay when that one-time pass
-   * has to be skipped because another camera is currently being watched
-   * (see `runTick`). Defaults to 10000 (10s). Despite the name, this is no
-   * longer a repeating sampling interval - see the class docstring.
-   */
-  backgroundIntervalMs?: number;
-  /**
-   * How often a camera with at least one detail-page subscriber is sampled,
-   * in ms. Defaults to 200 (~5fps) - `MotionDetector.detect` runs in
-   * ~20-40ms (background-subtraction over a downscaled frame, not a model
-   * inference pass), and a boosted tick's frame grab is a near-instant
-   * dequeue from the camera's already-warm streaming capture (see
-   * `FrameGrabber`'s streaming mode), so the cadence here is limited by how
-   * often the client should redraw, not by how long a tick takes.
-   */
-  boostedIntervalMs?: number;
-  /**
-   * Max number of camera ticks in flight at once. Defaults to 6.
-   *
-   * This is effectively a *capture* limit. A tick is dominated by its frame
-   * grab - measured at 0.9-2.7s of ffmpeg reconnecting to an HLS stream,
-   * against ~70ms per inference pass - and that wait is pure network I/O.
-   * Inference is bounded separately, inside the ONNX runner, which knows the
-   * thread budget; gating both here with one small number meant a few
-   * cameras sitting in network wait left the CPU idle.
+   * Max number of frames being analyzed at once, across all cameras.
+   * Defaults to 6. Each camera only ever has one frame in flight (its loop
+   * waits for the analysis before taking the next frame), so this bounds
+   * CPU when many cameras' frames land together; a camera waiting on a slot
+   * just lets its capture queue up (and eventually drop) frames meanwhile.
    */
   maxConcurrency?: number;
+  /**
+   * How often (ms) a camera's history row is written. Defaults to 10000.
+   * Analysis runs at several frames per second on every active camera, and
+   * a row per frame would grow the database by millions of rows a day for
+   * no extra information - each row instead holds the mean vehicle count
+   * over its window.
+   */
+  historyIntervalMs?: number;
+  /**
+   * Minimum spacing (ms) between dashboard overview updates for one camera.
+   * Defaults to 2000. A changed traffic level or error state is always sent
+   * straight away; this only stops an unchanged badge from being re-sent at
+   * frame rate to every open dashboard.
+   */
+  overviewIntervalMs?: number;
   /**
    * Builds one camera's analyzer. A factory, not a shared instance: an
    * analyzer holds that camera's background model, tracks and learned
@@ -84,6 +73,13 @@ export interface TrafficAnalysisServiceOptions {
    * meaningless shared across cameras. Defaults to a real `CameraAnalyzer`.
    */
   createAnalyzer?: (cameraId: string) => CameraAnalyzerLike;
+  /**
+   * Called with every usable result - not errors, not warm-up frames - on
+   * every frame, including its `finishedTracks`. This is the hook for
+   * consumers that need every frame's output rather than the throttled
+   * history, e.g. persisting vehicle passages.
+   */
+  onResult?: (result: CameraAnalysisResult) => void;
   now?: () => Date;
   scheduler?: AnalysisScheduler;
 }
@@ -93,42 +89,36 @@ type OverviewSubscriber = (overview: CameraAnalysisOverview) => void;
 
 /**
  * Everything this service tracks about one camera, including the analyzer
- * holding that camera's learned state. One record per camera, created in
- * `start()` and dropped in `stop()` - there is deliberately no second map
- * keyed by camera id with a different lifetime.
+ * holding that camera's learned state and the capture feeding it. One
+ * record per camera, created in `start()` and dropped in `stop()` - there
+ * is deliberately no second map keyed by camera id with a different
+ * lifetime.
  */
-interface CameraTickState {
+interface CameraState {
   camera: CameraEntry;
   analyzer: CameraAnalyzerLike;
-  /**
-   * This camera's open continuous capture, held only while it's being
-   * watched. Owning the object (rather than remembering to call a
-   * stop-by-id method later) is what makes the ffmpeg process impossible to
-   * leave running by accident: it's dropped everywhere this state is.
-   */
+  /** Open for as long as the service runs; null only before this camera's staggered start. */
   capture: FrameCapture | null;
-  subscriberCount: number;
-  timeoutHandle: unknown;
-  /** Whether this camera has completed at least one analysis pass since `start()` - see `runTick`. */
-  analyzed: boolean;
+  startHandle: unknown;
+  /** Counts accumulated since the last history row. */
+  historyWindow: { startedAt: number; counts: number[]; lastResult: CameraAnalysisResult | null };
+  lastOverviewAt: number;
+  /** Most recent successfully decoded frame - served as the camera's still thumbnail. */
+  latestFrame: { buffer: Buffer; capturedAt: string } | null;
 }
 
 const DEFAULTS = {
-  backgroundIntervalMs: 10_000,
-  boostedIntervalMs: 200,
   maxConcurrency: 6,
+  historyIntervalMs: 10_000,
+  overviewIntervalMs: 2_000,
 };
 
 /**
- * Spacing between each active camera's very first tick on `start()`. Without
- * this, every camera's tick fires at the same instant (delay 0), so all of
- * them spawn ffmpeg against their stream at once - observed in practice to
- * make a chunk of that first batch fail ("frame capture timed out") purely
- * from the burst itself (OS/process-launch contention, and several cameras
- * sharing the same small upstream relay all connecting simultaneously),
- * even though each one succeeds comfortably in isolation. Spreading the
- * first tick out avoids the burst; it's capped by `backgroundIntervalMs` so
- * no camera's first sample is delayed past its normal cadence anyway.
+ * Spacing between each active camera's capture starting on `start()`.
+ * Without it every camera spawns ffmpeg against its stream at the same
+ * instant - observed in practice to make a chunk of that first batch fail
+ * purely from the burst (process-launch contention, and several cameras
+ * sharing the same small upstream relay all connecting at once).
  */
 const STARTUP_STAGGER_STEP_MS = 400;
 
@@ -136,58 +126,54 @@ const STARTUP_STAGGER_STEP_MS = 400;
  * TrafficAnalysisService is the central orchestrator for the vehicle
  * traffic analysis feature.
  *
- * For every camera whose registry `status` is `active`, it runs one tick
- * (grab a frame -> detect moving vehicles -> derive a Light/Moderate/Heavy
- * traffic badge -> persist -> publish) on `start()` and then goes idle -
- * the dashboard overview is a snapshot taken once at load, not a
- * continuously refreshed feed, since running detection against ~20+ live
- * streams on a timer for a grid nobody may be looking at is expensive for
- * a badge that's rarely worth re-computing faster than "whenever the page
- * was last opened". A camera only ticks again once it has at least one
- * detail-page subscriber, for as long as that subscription lasts, at a
- * boosted rate suited to live viewing - then goes back to idle (not back
- * to a repeating background rate) once the last subscriber disconnects,
- * simply keeping its last result and timestamp. While ANY camera is being
- * watched (has a subscriber), every other camera's still-pending one-time
- * pass is skipped for that instant (no frame grab, no detection) and
- * retried shortly after, rather than competing with the camera actually
- * being watched - see `runTick`. Detection work across all cameras is
- * capped by a small concurrency pool so ~20+ cameras' initial passes don't
- * overwhelm the host at once.
+ * Every camera whose registry `status` is `active` is analyzed
+ * continuously for as long as the service runs: one long-lived,
+ * self-reconnecting `FrameCapture` per camera (see `FrameGrabber`), and a
+ * loop that takes each decoded frame, runs it through that camera's
+ * `CameraAnalyzer`, and fans the result out. Continuous analysis is what
+ * makes tracking - and so counting vehicles rather than blobs - possible at
+ * all: a tracker needs consecutive frames, and a background model needs a
+ * few seconds of footage before it can see anything. (The previous design
+ * analyzed one frame per camera at startup, which never got past the
+ * detector's warm-up, so every dashboard count was a structural zero.)
+ *
+ * Results go three ways, at three rates:
+ * - detail-page subscribers get every frame's full result, live;
+ * - dashboard overview subscribers get a lightweight update when a camera's
+ *   badge or error state changes, otherwise at most every
+ *   `overviewIntervalMs`;
+ * - history gets one row per camera per `historyIntervalMs`, holding the
+ *   mean count over that window.
+ * Error and warm-up results are published to live viewers (who need to know
+ * the feed is broken or still settling) but never persisted - their zeroed
+ * counts describe the pipeline, not the road.
  *
  * What this service deliberately does *not* know is how a frame becomes a
- * result. Detection, tracking, occupancy and the Light/Moderate/Heavy
- * derivation are all per-camera stateful, all describe one fixed
- * viewpoint, and all have to be discarded together - so they live behind
- * one `CameraAnalyzer` per camera (see `createAnalyzer`), built in
- * `start()` and disposed in `stop()`. This module hands that analyzer a
- * frame and publishes what comes back.
- *
- * `FrameGrabber`, the per-camera analyzer factory, `TrafficHistoryStore`
- * and the scheduler/clock are all injected as narrow interfaces, so this
- * scheduling/boosting/concurrency/fan-out logic can be unit tested without
- * real frame capture, detection, or timers.
+ * result - that is `CameraAnalyzer`. `FrameGrabber`, the analyzer factory,
+ * `TrafficHistoryStore` and the scheduler/clock are all injected as narrow
+ * interfaces, so this orchestration can be unit tested without real
+ * capture, detection or timers.
  */
 export class TrafficAnalysisService {
   private readonly options: {
-    backgroundIntervalMs: number;
-    boostedIntervalMs: number;
     maxConcurrency: number;
+    historyIntervalMs: number;
+    overviewIntervalMs: number;
     createAnalyzer: (cameraId: string) => CameraAnalyzerLike;
+    onResult: ((result: CameraAnalysisResult) => void) | null;
     now: () => Date;
     scheduler: AnalysisScheduler;
   };
 
-  private readonly cameraStates = new Map<string, CameraTickState>();
+  private readonly cameraStates = new Map<string, CameraState>();
   private readonly resultSubscribers = new Map<string, Set<ResultSubscriber>>();
   private readonly overviewSubscribers = new Set<OverviewSubscriber>();
   private readonly latestOverview = new Map<string, CameraAnalysisOverview>();
+  private readonly loops = new Set<Promise<void>>();
 
   private running = false;
   private activeJobs = 0;
   private readonly queue: Array<() => void> = [];
-  /** Number of distinct cameras that currently have at least one detail-page subscriber. */
-  private boostedCameraCount = 0;
 
   constructor(
     private readonly source: CameraSource,
@@ -196,10 +182,11 @@ export class TrafficAnalysisService {
     options: TrafficAnalysisServiceOptions = {},
   ) {
     this.options = {
-      backgroundIntervalMs: options.backgroundIntervalMs ?? DEFAULTS.backgroundIntervalMs,
-      boostedIntervalMs: options.boostedIntervalMs ?? DEFAULTS.boostedIntervalMs,
       maxConcurrency: options.maxConcurrency ?? DEFAULTS.maxConcurrency,
+      historyIntervalMs: options.historyIntervalMs ?? DEFAULTS.historyIntervalMs,
+      overviewIntervalMs: options.overviewIntervalMs ?? DEFAULTS.overviewIntervalMs,
       createAnalyzer: options.createAnalyzer ?? ((cameraId) => new CameraAnalyzer(cameraId)),
+      onResult: options.onResult ?? null,
       now: options.now ?? (() => new Date()),
       scheduler: options.scheduler ?? defaultScheduler,
     };
@@ -214,7 +201,7 @@ export class TrafficAnalysisService {
     }
   }
 
-  /** Loads the current camera registry and runs each active camera's one-time initial analysis pass. Inactive cameras are skipped entirely. */
+  /** Loads the camera registry and starts continuous analysis of every active camera, staggered. Inactive cameras are skipped entirely. */
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -223,27 +210,28 @@ export class TrafficAnalysisService {
     let activeIndex = 0;
     for (const camera of entries) {
       if (camera.status !== 'active') continue;
-      this.cameraStates.set(camera.id, {
+      const state: CameraState = {
         camera,
         analyzer: this.options.createAnalyzer(camera.id),
         capture: null,
-        subscriberCount: 0,
-        timeoutHandle: null,
-        analyzed: false,
-      });
-      const startupDelayMs = Math.min(activeIndex * STARTUP_STAGGER_STEP_MS, this.options.backgroundIntervalMs);
-      this.scheduleTick(camera.id, startupDelayMs);
+        startHandle: null,
+        historyWindow: { startedAt: this.options.now().getTime(), counts: [], lastResult: null },
+        lastOverviewAt: -Infinity,
+        latestFrame: null,
+      };
+      this.cameraStates.set(camera.id, state);
+      state.startHandle = this.options.scheduler.setTimeout(() => this.startCamera(state), activeIndex * STARTUP_STAGGER_STEP_MS);
       activeIndex += 1;
     }
   }
 
+  /** Stops every camera's loop, closing its capture and disposing its analyzer. */
   stop(): void {
     this.running = false;
     for (const state of this.cameraStates.values()) {
-      if (state.timeoutHandle !== null) {
-        this.options.scheduler.clearTimeout(state.timeoutHandle);
-      }
-      this.closeCapture(state);
+      if (state.startHandle !== null) this.options.scheduler.clearTimeout(state.startHandle);
+      state.capture?.close();
+      state.capture = null;
       // Everything this camera had learned goes with its analyzer - see
       // `CameraAnalyzer.dispose`.
       state.analyzer.dispose();
@@ -251,45 +239,35 @@ export class TrafficAnalysisService {
     this.cameraStates.clear();
   }
 
+  /** Resolves once every camera loop has exited - after `stop()`, for tests and graceful shutdown. */
+  async idle(): Promise<void> {
+    await Promise.all(Array.from(this.loops));
+  }
+
   /** Latest known overview (count + traffic level) for every camera analyzed so far - used to bootstrap the dashboard before its SSE connection delivers the first live update. */
   getLatestOverview(): CameraAnalysisOverview[] {
     return Array.from(this.latestOverview.values());
+  }
+
+  /**
+   * The most recent frame decoded for this camera (JPEG), or null if none
+   * yet / not an active camera. Comes from the capture already running for
+   * analysis, so a thumbnail costs no extra ffmpeg process.
+   */
+  getLatestFrame(cameraId: string): { buffer: Buffer; capturedAt: string } | null {
+    return this.cameraStates.get(cameraId)?.latestFrame ?? null;
   }
 
   getHistory(cameraId: string, options?: { sinceIso?: string; limit?: number }): StoredAnalysisResult[] {
     return this.historyStore.getHistory(cameraId, options);
   }
 
-  /**
-   * Subscribes to full per-tick results for a single camera. While this
-   * subscription (or any other for the same camera) is active, that
-   * camera's sampling rate is boosted. Returns an unsubscribe function
-   * that reverts the boost once the last subscriber for that camera is
-   * gone.
-   */
+  /** Subscribes to every frame's full result for a single camera. Returns an unsubscribe function. */
   subscribeCameraDetail(cameraId: string, callback: ResultSubscriber): () => void {
     const existing = this.resultSubscribers.get(cameraId);
     const subs = existing ?? new Set<ResultSubscriber>();
     if (!existing) this.resultSubscribers.set(cameraId, subs);
     subs.add(callback);
-
-    const state = this.cameraStates.get(cameraId);
-    if (state) {
-      if (state.subscriberCount === 0) {
-        this.boostedCameraCount += 1;
-        // The first subscriber for this camera shouldn't have to wait out
-        // whatever's left of its current background-rate timer (up to
-        // `backgroundIntervalMs`) before analysis starts responding to them -
-        // cut that wait short and tick now, boosted, so opening a camera's
-        // detail page starts producing results immediately instead of
-        // however many seconds into its existing schedule it happens to land.
-        if (state.timeoutHandle !== null) {
-          this.options.scheduler.clearTimeout(state.timeoutHandle);
-        }
-        this.scheduleTick(cameraId, 0);
-      }
-      state.subscriberCount += 1;
-    }
 
     let unsubscribed = false;
     return () => {
@@ -301,16 +279,6 @@ export class TrafficAnalysisService {
       if (subs.size === 0 && this.resultSubscribers.get(cameraId) === subs) {
         this.resultSubscribers.delete(cameraId);
       }
-      if (state && state.subscriberCount > 0) {
-        state.subscriberCount -= 1;
-        if (state.subscriberCount === 0) {
-          this.boostedCameraCount = Math.max(0, this.boostedCameraCount - 1);
-          // Last detail-page viewer for this camera gone - close its
-          // continuous capture rather than leaving it running (and
-          // reconnected) in the background until the next boost.
-          this.closeCapture(state);
-        }
-      }
     };
   }
 
@@ -320,58 +288,30 @@ export class TrafficAnalysisService {
     return () => this.overviewSubscribers.delete(callback);
   }
 
-  private scheduleTick(cameraId: string, delayOverrideMs?: number): void {
-    const state = this.cameraStates.get(cameraId);
-    if (!state || !this.running) return;
-    const delay = delayOverrideMs ?? (state.subscriberCount > 0 ? this.options.boostedIntervalMs : this.options.backgroundIntervalMs);
-    // Note: this returns the runTick() promise even though the scheduler
-    // interface types the callback as `() => void` - TypeScript permits a
-    // void-returning callback type to be satisfied by a function that
-    // returns a value (the same rule that allows `arr.forEach(async fn)`),
-    // and the real return value lets tests await a fired tick to
-    // completion via the fake scheduler.
-    state.timeoutHandle = this.options.scheduler.setTimeout(() => this.runTick(cameraId), delay);
+  private startCamera(state: CameraState): void {
+    state.startHandle = null;
+    if (!this.running || this.cameraStates.get(state.camera.id) !== state) return;
+    const capture = this.frameGrabber.openCapture(state.camera);
+    state.capture = capture;
+    const loop = this.runLoop(state, capture)
+      // Anything escaping the loop's own handling must not go silent - see `processFrame`.
+      .catch((err) => console.error(`[TrafficAnalysisService] loop for camera "${state.camera.id}" failed:`, err))
+      .finally(() => this.loops.delete(loop));
+    this.loops.add(loop);
   }
 
-  private async runTick(cameraId: string): Promise<void> {
-    const state = this.cameraStates.get(cameraId);
-    if (!state || !this.running) return;
-    // A boosted tick (an open detail-page subscriber) differs only in how the
-    // frame is captured - it reuses the camera's warm streaming capture. It
-    // used to also drop to a cheaper detection pass to stay responsive, which
-    // made the live detail page - the one view users judge this feature by -
-    // the least accurate configuration in the system. MotionDetector's pass
-    // costs ~20-40ms regardless of mode, well inside the boosted cadence, so
-    // both paths now detect identically.
-    const boosted = state.subscriberCount > 0;
-    if (!boosted && this.boostedCameraCount > 0) {
-      // Someone is actively watching a different camera's detail page right
-      // now - skip analysing this unwatched camera entirely (no frame grab,
-      // no inference) so all available capacity goes to the camera actually
-      // being watched. If this camera hasn't produced even its one-time
-      // initial result yet, retry shortly once that capacity frees up
-      // rather than leaving it with nothing to show; a camera that's
-      // already been analyzed once has nothing left to do here and simply
-      // goes idle, keeping its last result until someone watches it.
-      if (!state.analyzed) {
-        this.scheduleTick(cameraId);
-      } else {
-        state.timeoutHandle = null;
-      }
-      return;
-    }
-    await this.enqueue(() => this.analyzeCamera(state, boosted));
-    state.analyzed = true;
-    // Keep ticking only for as long as this camera is actively being
-    // watched - see the class docstring. Once the last subscriber
-    // disconnects, `state.subscriberCount` is back to 0 by the time this
-    // check runs (or will be shortly after this tick's frame capture, at
-    // worst one trailing tick later), so this naturally settles back to
-    // idle instead of resuming a repeating background sample.
-    if (state.subscriberCount > 0) {
-      this.scheduleTick(cameraId);
-    } else {
-      state.timeoutHandle = null;
+  /**
+   * One camera's analysis loop: take the next frame, analyze it, publish,
+   * repeat - until the service stops. A failed frame (capture timed out,
+   * stream down and reconnecting) is published as an error result and the
+   * loop simply asks again; the capture handles reconnection itself, and
+   * `next()` waits rather than spinning while it does.
+   */
+  private async runLoop(state: CameraState, capture: FrameCapture): Promise<void> {
+    while (this.running && state.capture === capture) {
+      const frame = await capture.next();
+      if (!this.running || state.capture !== capture) return;
+      await this.enqueue(() => this.processFrame(state, frame));
     }
   }
 
@@ -380,12 +320,9 @@ export class TrafficAnalysisService {
       const run = () => {
         this.activeJobs += 1;
         job()
-          // Any failure that escapes `analyzeCamera`'s own try/catches (e.g. a
-          // bug in a detector/estimator constructor) must not go completely
-          // silent - it previously did, which is exactly how a persistence
-          // bug once stopped every tick from ever reaching `publish()` with
-          // nothing in the logs to point at why.
-          .catch((err) => console.error('[TrafficAnalysisService] tick failed:', err))
+          // A failure escaping `processFrame` (e.g. a bug in a subscriber
+          // path) must not kill the camera's loop or go completely silent.
+          .catch((err) => console.error('[TrafficAnalysisService] frame failed:', err))
           .finally(() => {
             this.activeJobs -= 1;
             resolve();
@@ -402,60 +339,58 @@ export class TrafficAnalysisService {
     });
   }
 
-  private async analyzeCamera(state: CameraTickState, boosted: boolean): Promise<void> {
-    const timestamp = this.options.now().toISOString();
-
-    // Boosted ticks pull from the camera's open continuous capture
-    // (near-instant, already-warm frame) so the boosted cadence is actually
-    // achievable; background ticks use a one-off capture since they run
-    // once per camera and shouldn't hold an ffmpeg process open at all.
-    const frame = boosted ? await this.captureFor(state).next() : await this.frameGrabber.grabFrame(state.camera);
+  private async processFrame(state: CameraState, frame: GrabFrameResult): Promise<void> {
+    // A frame's own capture time is its timestamp - not when analysis got
+    // round to it - since that's what the tracker's motion model runs on.
+    const timestamp = frame.ok ? new Date(frame.capturedAt).toISOString() : this.options.now().toISOString();
+    if (frame.ok) state.latestFrame = { buffer: frame.buffer, capturedAt: timestamp };
     const result = frame.ok
       ? await state.analyzer.analyze(frame.buffer, timestamp)
       : state.analyzer.errorResult(timestamp, frame.error);
 
-    // A failed tick is published but never persisted: its zeroed count and
-    // "light" badge describe a capture/detection failure, not an empty road,
-    // and writing those to history would show up in the trend view as
-    // genuine quiet traffic. Subscribers get it because a live viewer needs
-    // to know the feed is broken; history doesn't, because it can't tell the
-    // difference afterwards.
-    if (!result.error) {
-      // A persistence failure must not lose the live update - subscribers
-      // still care about seeing the current frame's result even if it
-      // couldn't be written to history.
-      try {
-        this.historyStore.record({
-          cameraId: result.cameraId,
-          timestamp: result.timestamp,
-          totalCount: result.totalCount,
-          trafficLevel: result.trafficLevel,
-        });
-      } catch (err) {
-        console.error(`[TrafficAnalysisService] failed to persist result for camera "${state.camera.id}":`, err);
-      }
+    const usable = !result.error && !result.warmingUp;
+    if (usable) {
+      this.recordHistory(state, result);
+      if (this.options.onResult) notify(this.options.onResult, result);
     }
-    this.publish(result);
+    this.publish(state, result, usable);
   }
 
-  /** This camera's open capture, started on the first boosted tick that needs one. */
-  private captureFor(state: CameraTickState): FrameCapture {
-    const existing = state.capture;
-    if (existing) return existing;
-    const opened = this.frameGrabber.openCapture(state.camera);
-    state.capture = opened;
-    return opened;
+  /**
+   * Accumulates this frame's count into the camera's current history
+   * window, writing one row (mean count, latest badge) once the window has
+   * run for `historyIntervalMs`.
+   */
+  private recordHistory(state: CameraState, result: CameraAnalysisResult): void {
+    const window = state.historyWindow;
+    window.counts.push(result.totalCount);
+    window.lastResult = result;
+
+    const nowMs = Date.parse(result.timestamp);
+    if (nowMs - window.startedAt < this.options.historyIntervalMs) return;
+
+    const mean = window.counts.reduce((a, b) => a + b, 0) / window.counts.length;
+    state.historyWindow = { startedAt: nowMs, counts: [], lastResult: null };
+    // A persistence failure must not lose the live update.
+    try {
+      this.historyStore.record({
+        cameraId: result.cameraId,
+        timestamp: result.timestamp,
+        totalCount: Math.round(mean),
+        trafficLevel: result.trafficLevel,
+      });
+    } catch (err) {
+      console.error(`[TrafficAnalysisService] failed to persist result for camera "${state.camera.id}":`, err);
+    }
   }
 
-  /** Closes and forgets this camera's capture, if one is open. Safe to call when there isn't. */
-  private closeCapture(state: CameraTickState): void {
-    state.capture?.close();
-    state.capture = null;
-  }
-
-  private publish(result: CameraAnalysisResult): void {
+  private publish(state: CameraState, result: CameraAnalysisResult, usable: boolean): void {
     const subs = this.resultSubscribers.get(result.cameraId);
     subs?.forEach((cb) => notify(cb, result));
+
+    // A warm-up frame says nothing about the road - keep showing the last
+    // real overview rather than replacing it with a zero.
+    if (!usable && !result.error) return;
 
     const overview: CameraAnalysisOverview = {
       cameraId: result.cameraId,
@@ -465,7 +400,13 @@ export class TrafficAnalysisService {
       ...(result.occupancy === undefined ? {} : { occupancy: result.occupancy }),
       error: result.error,
     };
+    const previous = this.latestOverview.get(result.cameraId);
     this.latestOverview.set(result.cameraId, overview);
+
+    const changed = !previous || previous.trafficLevel !== overview.trafficLevel || previous.error !== overview.error;
+    const nowMs = this.options.now().getTime();
+    if (!changed && nowMs - state.lastOverviewAt < this.options.overviewIntervalMs) return;
+    state.lastOverviewAt = nowMs;
     this.overviewSubscribers.forEach((cb) => notify(cb, overview));
   }
 }

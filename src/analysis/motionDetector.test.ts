@@ -58,14 +58,14 @@ function makeDetector(extractor: LumaExtractor, overrides = {}) {
  * like every other foreground tick.
  */
 async function warmUp(detector: MotionDetector) {
-  for (let i = 0; i < 8; i++) await detector.detect(FRAME);
+  for (let i = 0; i < 8; i++) (await detector.detect(FRAME)).detections;
 }
 
 /** Runs `ticks` calls alternating a "vehicle present" scene (every 4th tick) with an empty one, teaching the region a recurring roadway-like activity pattern - the same prerequisite OccupancyEstimator's own tests rely on for the identical gating logic. */
 async function teachRoadway(detector: MotionDetector, setFrame: (pixels: Uint8Array) => void, activeScene: () => Uint8Array, ticks = 20) {
   for (let i = 0; i < ticks; i++) {
     setFrame(i % 4 === 0 ? activeScene() : emptyScene());
-    await detector.detect(FRAME);
+    (await detector.detect(FRAME)).detections;
   }
 }
 
@@ -77,11 +77,11 @@ describe('MotionDetector', () => {
     const detector = makeDetector(extractor);
 
     setFrame(emptyScene());
-    await detector.detect(FRAME); // seeds the background model
+    (await detector.detect(FRAME)).detections; // seeds the background model
 
     setFrame(sceneWithRect(10, 5, 6, 6));
     for (let i = 0; i < 4; i++) {
-      expect(await detector.detect(FRAME)).toEqual([]);
+      expect(await detector.detect(FRAME)).toEqual({ detections: [], warmingUp: true });
     }
   });
 
@@ -93,8 +93,9 @@ describe('MotionDetector', () => {
     await teachRoadway(detector, setFrame, () => sceneWithRect(10, 5, 6, 6));
 
     setFrame(sceneWithRect(10, 5, 6, 6));
-    const result = await detector.detect(FRAME);
+    const { detections: result, warmingUp } = await detector.detect(FRAME);
 
+    expect(warmingUp).toBe(false);
     expect(result).toHaveLength(1);
     expect(result[0].class).toBe('vehicle');
     expect(result[0].box.x).toBeCloseTo(10 / W, 1);
@@ -111,7 +112,7 @@ describe('MotionDetector', () => {
     await teachRoadway(detector, setFrame, () => sceneWithRect(10, 5, 1, 1));
 
     setFrame(sceneWithRect(10, 5, 1, 1));
-    expect(await detector.detect(FRAME)).toEqual([]);
+    expect((await detector.detect(FRAME)).detections).toEqual([]);
   });
 
   it('ignores a frame-wide brightness shift as implausibly large to be a vehicle', async () => {
@@ -122,7 +123,7 @@ describe('MotionDetector', () => {
     await teachRoadway(detector, setFrame, () => new Uint8Array(N).fill(OBJECT_VALUE));
 
     setFrame(new Uint8Array(N).fill(OBJECT_VALUE));
-    expect(await detector.detect(FRAME)).toEqual([]);
+    expect((await detector.detect(FRAME)).detections).toEqual([]);
   });
 
   it('excludes perpetually-changing pixels such as water or foliage', async () => {
@@ -135,10 +136,10 @@ describe('MotionDetector', () => {
       const f = emptyScene();
       for (let p = 0; p < N / 2; p++) f[p] = i % 2 === 0 ? 20 : 230;
       setFrame(f);
-      await detector.detect(FRAME);
+      (await detector.detect(FRAME)).detections;
     }
 
-    expect(await detector.detect(FRAME)).toEqual([]);
+    expect((await detector.detect(FRAME)).detections).toEqual([]);
   });
 
   it('keeps reporting a vehicle for a while after it stops moving', async () => {
@@ -149,12 +150,12 @@ describe('MotionDetector', () => {
     await teachRoadway(detector, setFrame, () => sceneWithRect(10, 5, 6, 6));
 
     setFrame(sceneWithRect(10, 5, 6, 6));
-    const whenItStops = await detector.detect(FRAME);
+    const whenItStops = (await detector.detect(FRAME)).detections;
     // Several more ticks with the vehicle motionless in the same spot -
     // still reported, unlike frame-differencing which would drop it the
     // instant it stopped moving.
     let stillThere;
-    for (let i = 0; i < 15; i++) stillThere = await detector.detect(FRAME);
+    for (let i = 0; i < 15; i++) stillThere = (await detector.detect(FRAME)).detections;
 
     expect(whenItStops).toHaveLength(1);
     expect(stillThere).toHaveLength(1);
@@ -171,7 +172,7 @@ describe('MotionDetector', () => {
 
     setFrame(sceneWithRect(10, 5, 6, 6));
     let last: unknown;
-    for (let i = 0; i < 60; i++) last = await detector.detect(FRAME);
+    for (let i = 0; i < 60; i++) last = (await detector.detect(FRAME)).detections;
 
     expect(last).toEqual([]);
   });
@@ -191,7 +192,7 @@ describe('MotionDetector', () => {
     await teachRoadway(detector, setFrame, twoRects);
 
     setFrame(twoRects());
-    const result = await detector.detect(FRAME);
+    const result = (await detector.detect(FRAME)).detections;
 
     expect(result).toHaveLength(2);
   });

@@ -14,7 +14,7 @@ const usingAlternate = ref(false);
 let hls: Hls | null = null;
 
 // Bounding-box overlay: sourced from the per-camera analysis SSE stream
-// (opening it is also what boosts that camera's sampling rate server-side).
+// (every active camera is analyzed continuously server-side; this only listens).
 // It's expected to lag the live video somewhat (frame-grab + inference time,
 // plus hls.js's own live-edge buffering below) - an accepted tradeoff, not a
 // bug. What is fixed here is that boxes used to only ever *snap* to each new
@@ -77,9 +77,9 @@ let untrackedBoxes: VehicleDetection[] = [];
 
 let lastDetectionsAt: number | null = null;
 // The interpolation window is measured from how long the *previous* update
-// actually took to arrive, not assumed - a boosted tick is dominated by
-// tiled detection, which measures 360-750ms depending on camera resolution
-// (see docs/models.md), nowhere near the nominal 500ms sampling interval.
+// actually took to arrive, not assumed - frames are analyzed at the
+// server's capture fps (default 3), and an occasional dropped or delayed
+// frame stretches that gap.
 // Guessing wrong in either direction looks worse than not animating at all:
 // too short and boxes sit motionless waiting for the next update; too long
 // and a vehicle appears to glide for a full second after already having
