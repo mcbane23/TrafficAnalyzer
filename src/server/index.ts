@@ -72,12 +72,14 @@ const trafficAnalysisService = new TrafficAnalysisService(
 // OVERLAY_FPS (default 3) and OVERLAY_THREADS (default 2) trade smoothness
 // against CPU. OVERLAY_DEVICE=GPU runs the larger YOLO11s on an Intel GPU
 // through OpenVINO (the container needs /dev/dri), falling back to YOLO11n
-// on the CPU if the GPU can't be used.
+// on the CPU if the GPU can't be used. With the GPU, OVERLAY_MODEL picks
+// yolo11s (default), yolo26n (faster, finds fewer distant cars) or yolo26s.
 const overlayDevice = process.env.OVERLAY_DEVICE?.trim().toUpperCase() || 'CPU';
 let overlayModel: Promise<YoloModel> | null = null;
 const loadOverlayModel = (): Promise<YoloModel> =>
   (overlayModel ??= loadYoloModel({
     device: overlayDevice,
+    model: process.env.OVERLAY_MODEL,
     threads: Number(process.env.OVERLAY_THREADS) || 2,
     cacheDir: OPENVINO_CACHE_DIR,
   }).then((model) => {
