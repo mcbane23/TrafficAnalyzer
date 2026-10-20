@@ -55,10 +55,8 @@ function startPreview() {
     requestAnimationFrame(() => {
       const video = previewVideo.value;
       if (!video) return;
-      if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = props.camera.url;
-        video.play().catch(() => undefined);
-      } else if (Hls.isSupported()) {
+      // hls.js first, native only without MSE (iOS Safari) - see StreamPlayer's loadSource.
+      if (Hls.isSupported()) {
         hls = new Hls({ liveSyncDurationCount: 2 });
         hls.on(Hls.Events.ERROR, (_e, data) => {
           if (data.fatal) stopPreview();
@@ -66,6 +64,9 @@ function startPreview() {
         hls.loadSource(props.camera.url);
         hls.attachMedia(video);
         hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => undefined));
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = props.camera.url;
+        video.play().catch(() => undefined);
       }
     });
   }, 400);

@@ -173,22 +173,19 @@ function destroy() {
 }
 
 /**
- * Loads a stream URL into the video element, preferring hls.js except on
- * browsers with native HLS support (Safari). Failures are reported via
+ * Loads a stream URL into the video element with hls.js wherever Media
+ * Source Extensions exist, and the browser's native HLS player only where
+ * they don't (iOS Safari). hls.js comes first on purpose: newer desktop
+ * browsers also answer `canPlayType('application/vnd.apple.mpegurl')`, and
+ * their native player was seen failing on every one of these camera
+ * streams with a bare "failed to load video" while the same URLs played in
+ * hls.js. Failures are reported via
  * `onFailure` rather than directly setting `error`, so the caller can
  * decide whether to fall back to `camera.alternateUrl` first.
  */
 function loadSource(url: string, onFailure: (message: string) => void) {
   const video = videoRef.value;
   if (!video) return;
-
-  if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    // Native HLS support (Safari) - no hls.js needed.
-    video.addEventListener('error', handleNativeError);
-    video.src = url;
-    video.play().catch(() => undefined);
-    return;
-  }
 
   if (Hls.isSupported()) {
     hls = new Hls({
@@ -216,6 +213,14 @@ function loadSource(url: string, onFailure: (message: string) => void) {
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       video.play().catch(() => undefined);
     });
+    return;
+  }
+
+  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    // No MSE (iOS Safari) - fall back to the browser's own HLS player.
+    video.addEventListener('error', handleNativeError);
+    video.src = url;
+    video.play().catch(() => undefined);
     return;
   }
 
