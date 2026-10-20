@@ -1,4 +1,4 @@
-import { YoloDetector, YoloSession, decodeYoloOutput, letterboxToTensor } from './yoloDetector';
+import { YoloDetector, YoloSession, decodeYoloOutput, letterboxToTensor, loadYoloModel } from './yoloDetector';
 import { VideoFrame } from './videoFrame';
 
 /** A uniform `yuv420p` frame: every pixel the given Y, U and V. */
@@ -101,15 +101,45 @@ describe('YoloDetector', () => {
       [480, 360, 40, 40, 2, 0.9], // centre (0.75, 0.75)
     ]);
     const session: YoloSession & { run: jest.Mock } = { run: jest.fn(async () => output) };
-    const detector = new YoloDetector(session, { ignoreZones: [[[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]]] });
+    const model = async () => ({ session, inputWidth: 640, inputHeight: 480, label: 'test' });
+    const detector = new YoloDetector(model, { ignoreZones: [[[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]]] });
 
     const result = await detector.detect(solidFrame(640, 480, 100));
 
-    // Default input is the overlay capture's own 640x480 - no padding at all.
+    // The model's input is the overlay capture's own 640x480 - no padding at all.
     expect(session.run).toHaveBeenCalledWith(expect.any(Float32Array), 640, 480);
     expect((session.run.mock.calls[0][0] as Float32Array).length).toBe(3 * 640 * 480);
     expect(result.warmingUp).toBe(false);
     expect(result.detections).toHaveLength(1);
     expect(result.detections[0].box.x).toBeCloseTo(460 / 640, 5);
+  });
+});
+
+describe('loadYoloModel', () => {
+  const session: YoloSession = { run: async () => ({ data: new Float32Array(), dims: [1, 84, 0] }) };
+
+  it('uses YOLO11n on the CPU when no GPU is asked for', async () => {
+    const openVino = jest.fn(async () => session);
+    const onnx = jest.fn(async () => session);
+    const model = await loadYoloModel({ threads: 3 }, { openVino, onnx });
+    expect(openVino).not.toHaveBeenCalled();
+    expect(onnx).toHaveBeenCalledWith(undefined, 3);
+    expect(model).toMatchObject({ inputWidth: 640, inputHeight: 480, label: 'YOLO11n on CPU' });
+  });
+
+  it('runs the larger model on the requested OpenVINO device', async () => {
+    const openVino = jest.fn(async () => session);
+    const model = await loadYoloModel({ device: 'gpu', cacheDir: '/cache' }, { openVino, onnx: jest.fn() });
+    expect(openVino).toHaveBeenCalledWith(expect.stringMatching(/yolo11s\.xml$/), 'GPU', '/cache');
+    expect(model).toMatchObject({ inputWidth: 960, inputHeight: 736, label: 'YOLO11s on OpenVINO GPU' });
+  });
+
+  it('falls back to the CPU model when the device fails to load', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const onnx = jest.fn(async () => session);
+    const model = await loadYoloModel({ device: 'GPU' }, { openVino: async () => Promise.reject(new Error('no /dev/dri')), onnx });
+    expect(model.label).toBe('YOLO11n on CPU');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no /dev/dri'));
+    warn.mockRestore();
   });
 });

@@ -7,3 +7,4 @@ data/traffic-history.db
 data/traffic-history.db-*
 data/traffic-stats.db
 data/traffic-stats.db-*
+data/openvino-cache/

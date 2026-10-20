@@ -273,6 +273,18 @@ precedent for Vue components.
   AGPL-3.0, exported with a 640x480 input to match the capture - a square 640 input wasted a quarter
   of each inference on padding). `onnxruntime-node` is loaded lazily, and `.npmrc` skips its CUDA
   download. The Dockerfile drops its darwin/win32 binaries.
+- **`OVERLAY_DEVICE=GPU` runs the overlay on an Intel iGPU via OpenVINO** (Bane's call after
+  measuring recall: YOLO11n at 640px saw 3 of ~100 cars on Gazela, YOLO11s at 960px ~25-40, at ~4x
+  the compute). `loadYoloModel` compiles `models/yolo11s-openvino/yolo11s.xml` (FP16 IR, 960x736
+  input, output tensor renamed `output0` - an unnamed output makes `openvino-node` throw) on that
+  device, caching kernels in `data/openvino-cache`, and falls back to YOLO11n on onnxruntime CPU if
+  it fails; the overlay capture is 960x720 in GPU mode. `YoloDetector` takes a `() =>
+  Promise<YoloModel>` so the CPU-or-GPU choice is made lazily on the first viewer. The container
+  needs `/dev/dri` and the host's `render` GID in `group_add`. The runtime image is Debian trixie
+  with Intel's Ubuntu 24.04 `intel-opencl-icd` (bookworm's 2022 driver predates the N150 iGPU);
+  the Dockerfile drops `openvino-node`'s unused frontends and NPU plugin but must keep the IR
+  frontend. The GPU path can't be exercised in CI or the sandbox (OpenVINO's CPU device can, with
+  the same IR).
 - **The overlay must never fall behind the player** (regression found on Bane's N150: boxes only
   flickered on now and then). Its capture uses `maxQueuedFrames: 1`, so a detector slower than
   `OVERLAY_FPS` skips frames instead of working through a growing backlog that the player soon
