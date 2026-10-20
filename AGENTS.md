@@ -33,6 +33,7 @@ colocated `*.test.ts`:
 | `HlsProxyService` | [src/server/hlsProxyService.ts](src/server/hlsProxyService.ts) | Yes — mocks the `CameraSource`/fetcher (`ResourceFetcher`) seams |
 | `SseChannel` | [src/server/sseChannel.ts](src/server/sseChannel.ts) | Yes — against a fake request/response plus an injectable `SseTimer` |
 | `FrameGrabber` | [src/analysis/frameGrabber.ts](src/analysis/frameGrabber.ts) | Yes — mocks the `FfmpegRunner`/`FfmpegStreamRunner` seams (see [ffmpegRunner.ts](src/analysis/ffmpegRunner.ts)) |
+| `VideoFrame` helpers | [src/analysis/videoFrame.ts](src/analysis/videoFrame.ts) | Yes — `resampleLuma` (area-average downscale) and `encodeJpeg` (thumbnail) on synthetic planes |
 | `BackgroundModel` | [src/analysis/backgroundModel.ts](src/analysis/backgroundModel.ts) | Yes — injects a fake `LumaExtractor` over synthetic pixel data, no real image decoding |
 | `MotionDetector` | [src/analysis/motionDetector.ts](src/analysis/motionDetector.ts) | Yes — same, through the `BackgroundModel` it wraps |
 | `VehicleTracker` | [src/analysis/vehicleTracker.ts](src/analysis/vehicleTracker.ts) | Yes — pure ByteTrack-style logic (Kalman + Hungarian via [assignment.ts](src/analysis/assignment.ts)), timestamps passed in, no injectable seam needed |
@@ -157,14 +158,24 @@ precedent for Vue components.
 - `FrameGrabber.openCapture(camera)` returns a `FrameCapture` (`next()` / `close()`) backed by a
   long-running ffmpeg (`@ffmpeg-installer/ffmpeg`, the same bundled-binary pattern as
   `@ffprobe-installer/ffprobe`) decoding at a fixed low fps (`streamFps`, default 3, `ANALYSIS_FPS`
-  env var in `src/server/index.ts`). Input is paced with `-re`: without it ffmpeg decodes each HLS
+  env var in `src/server/index.ts`). Frames come out of ffmpeg already scaled to 320x240 as **raw
+  `yuv420p`** (`VideoFrame`), one decoding thread per process (`-threads 1`) — never JPEG. The
+  earlier MJPEG round trip (ffmpeg encodes every frame, `sharp` decodes it again once per background
+  model) was ~75% of the pipeline's CPU and made a 22-camera fleet need ~3.5 cores; on a smaller
+  Docker host that starved every capture into `frame capture timed out`. Background models take the
+  luma plane via `resampleLuma`; the only JPEG left is the dashboard thumbnail
+  (`TrafficAnalysisService.getLatestFrame`), encoded at most every `thumbnailIntervalMs` (2s).
+  Don't reintroduce a per-frame encode/decode step on this path. Input is paced with `-re`: without it ffmpeg decodes each HLS
   segment in a burst (many seconds of frames within ~100ms, then silence), which made frame spacing
   meaningless to the tracker. Each frame carries `capturedAt` (decode time), which is the result's
   timestamp. The capture **supervises its own ffmpeg**: a process that exits is restarted after
   `restartDelayMs`, backing off exponentially to `maxRestartDelayMs` while it keeps dying without
   producing frames; a process that stays up but produces nothing for `stallTimeoutMs` (a live
   playlist that stopped advancing) is killed and restarted; HTTP(S) inputs get `-rw_timeout` and
-  ffmpeg's `-reconnect` flags. It stays closed once `close()` is called. `grabFrame(camera)` (one
+  ffmpeg's `-reconnect` flags. A `next()` waits up to `timeoutMs` (30s) — deliberately longer than
+  the 20s stall watchdog, so a dead stream is reported with the watchdog's real reason and a stream
+  that is merely slow to open (HLS probing downloads whole 10s segments) isn't reported as broken.
+  It stays closed once `close()` is called. `grabFrame(camera)` (one
   frame from a one-off process) still exists but is not used by the analysis service. Both reuse
   the same header-forwarding logic `CameraValidator`/`HlsProxyService` use for cameras needing a
   special `Referer`.

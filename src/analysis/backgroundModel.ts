@@ -1,11 +1,11 @@
-import sharp from 'sharp';
+import { VideoFrame, resampleLuma } from './videoFrame';
 
 /**
- * Extracts a downscaled 8-bit luma plane from an encoded frame. Kept as a
+ * Extracts a downscaled 8-bit luma plane from a decoded frame. Kept as a
  * narrow, injectable seam so everything built on this model can be unit
- * tested with synthetic pixel data instead of real JPEGs.
+ * tested with synthetic pixel data instead of real footage.
  */
-export type LumaExtractor = (frame: Buffer, width: number, height: number) => Promise<Uint8Array>;
+export type LumaExtractor = (frame: VideoFrame, width: number, height: number) => Uint8Array;
 
 export interface BackgroundModelOptions {
   /** Working width the frame is reduced to before analysis. Defaults to 160. */
@@ -66,11 +66,6 @@ const DEFAULTS = {
 };
 
 const EMPTY_MASK = new Uint8Array(0);
-
-async function defaultLumaExtractor(frame: Buffer, width: number, height: number): Promise<Uint8Array> {
-  const data = await sharp(frame).removeAlpha().greyscale().resize(width, height, { fit: 'fill' }).raw().toBuffer();
-  return new Uint8Array(data.buffer, data.byteOffset, data.length);
-}
 
 /**
  * BackgroundModel answers one question about one fixed camera viewpoint:
@@ -140,13 +135,13 @@ export class BackgroundModel {
     this.warmupFrames = options.warmupFrames ?? DEFAULTS.warmupFrames;
     this.minActivityRate = options.minActivityRate ?? DEFAULTS.minActivityRate;
     this.maxActivityRate = options.maxActivityRate ?? DEFAULTS.maxActivityRate;
-    this.lumaExtractor = options.lumaExtractor ?? defaultLumaExtractor;
+    this.lumaExtractor = options.lumaExtractor ?? resampleLuma;
   }
 
   /** Folds one frame into the model and reports what it looked like against everything seen before. */
-  async observe(frame: Buffer): Promise<BackgroundObservation> {
+  observe(frame: VideoFrame): BackgroundObservation {
     const n = this.width * this.height;
-    const luma = await this.lumaExtractor(frame, this.width, this.height);
+    const luma = this.lumaExtractor(frame, this.width, this.height);
     if (luma.length < n) {
       throw new Error(`Expected at least ${n} luma samples, got ${luma.length}`);
     }

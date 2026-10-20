@@ -10,6 +10,7 @@ import { CameraSource } from '../server/cameraService';
 import { CameraEntry } from '../types/camera';
 import { CameraAnalysisOverview, CameraAnalysisResult, StoredAnalysisResult } from '../types/analysis';
 import { FrameCapture, GrabFrameResult } from './frameGrabber';
+import { VideoFrame } from './videoFrame';
 
 const T0 = Date.parse('2026-01-01T00:00:00.000Z');
 
@@ -53,6 +54,14 @@ function makeFakeScheduler() {
   return { scheduler, scheduled, fireAll };
 }
 
+/** A stand-in frame; its single pixel records when it was captured, so tests can tell frames apart. */
+function fakeFrame(atMs: number): VideoFrame {
+  return { width: 1, height: 1, data: Uint8Array.of(atMs % 256) };
+}
+
+/** Fake thumbnail encoder: names the frame it was given instead of producing a real JPEG. */
+const fakeEncode = async (frame: VideoFrame) => Buffer.from(`jpeg of pixel ${frame.data[0]}`);
+
 /** A capture whose frames are pushed by the test. */
 class FakeCapture implements FrameCapture {
   private readonly pending: GrabFrameResult[] = [];
@@ -75,7 +84,7 @@ class FakeCapture implements FrameCapture {
 
   /** Delivers a frame captured at `T0 + atMs`. */
   frame(atMs: number): void {
-    this.deliver({ ok: true, buffer: Buffer.from(`frame@${atMs}`), capturedAt: T0 + atMs });
+    this.deliver({ ok: true, frame: fakeFrame(atMs), capturedAt: T0 + atMs });
   }
 
   fail(error: string): void {
@@ -102,12 +111,12 @@ function makeFrameGrabber() {
   return { grabber, captures };
 }
 
-type AnalyzeImpl = (frame: Buffer, timestamp: string) => Partial<CameraAnalysisResult>;
+type AnalyzeImpl = (frame: VideoFrame, timestamp: string) => Partial<CameraAnalysisResult>;
 
 /** A fake analyzer: whatever `impl` says, shaped into a full result. */
 function makeAnalyzer(cameraId: string, impl: AnalyzeImpl = () => ({})) {
   const analyzer: CameraAnalyzerLike & { analyze: jest.Mock; errorResult: jest.Mock; dispose: jest.Mock } = {
-    analyze: jest.fn(async (frame: Buffer, timestamp: string) => ({
+    analyze: jest.fn(async (frame: VideoFrame, timestamp: string) => ({
       cameraId,
       timestamp,
       totalCount: 0,
@@ -157,6 +166,7 @@ function setup(cameras: CameraEntry[] = [makeCamera()], options: TrafficAnalysis
   const service = new TrafficAnalysisService(makeSource(cameras), grabber, history, {
     scheduler,
     now: () => new Date(nowMs),
+    encodeThumbnail: fakeEncode,
     createAnalyzer: (id) => {
       const a = makeAnalyzer(id, options.impl);
       analyzers.set(id, a);
@@ -336,7 +346,7 @@ describe('TrafficAnalysisService', () => {
       maxConcurrency: 2,
       createAnalyzer: (id) => {
         const a = makeAnalyzer(id);
-        a.analyze.mockImplementation(async (_f: Buffer, timestamp: string) => {
+        a.analyze.mockImplementation(async (_f: VideoFrame, timestamp: string) => {
           inFlight += 1;
           peak = Math.max(peak, inFlight);
           await new Promise<void>((r) => releases.push(r));
@@ -424,21 +434,49 @@ describe('TrafficAnalysisService', () => {
     ctx.service.stop();
   });
 
-  it('keeps the latest decoded frame per camera for thumbnails', async () => {
-    const ctx = setup();
+  it('keeps a recent frame per camera as a thumbnail, re-encoding at most every thumbnailIntervalMs', async () => {
+    const encode = jest.fn(fakeEncode);
+    const ctx = setup([makeCamera()], { thumbnailIntervalMs: 1000, encodeThumbnail: encode });
     await ctx.service.start();
     expect(ctx.service.getLatestFrame('cam-1')).toBeNull();
     ctx.fireAll();
 
-    ctx.captures.get('cam-1')!.frame(0);
-    await settle();
-    ctx.captures.get('cam-1')!.frame(500);
-    await settle();
+    for (const atMs of [0, 400, 800, 1200]) {
+      ctx.captures.get('cam-1')!.frame(atMs);
+      await settle();
+    }
     ctx.captures.get('cam-1')!.fail('stalled');
     await settle();
 
-    expect(ctx.service.getLatestFrame('cam-1')).toEqual({ buffer: Buffer.from('frame@500'), capturedAt: new Date(T0 + 500).toISOString() });
+    // 0 and 1200 are encoded; 400 and 800 fall inside the interval.
+    expect(encode).toHaveBeenCalledTimes(2);
+    expect(ctx.service.getLatestFrame('cam-1')).toEqual({
+      buffer: Buffer.from(`jpeg of pixel ${1200 % 256}`),
+      capturedAt: new Date(T0 + 1200).toISOString(),
+    });
     expect(ctx.service.getLatestFrame('unknown')).toBeNull();
+    ctx.service.stop();
+  });
+
+  it('never replaces a thumbnail with an older frame whose encode finished later', async () => {
+    const resolvers: Array<() => void> = [];
+    const encode = jest.fn(
+      (frame: VideoFrame) => new Promise<Buffer>((resolve) => resolvers.push(() => resolve(Buffer.from(`pixel ${frame.data[0]}`)))),
+    );
+    const ctx = setup([makeCamera()], { thumbnailIntervalMs: 0, encodeThumbnail: encode });
+    await ctx.service.start();
+    ctx.fireAll();
+
+    ctx.captures.get('cam-1')!.frame(10);
+    await settle();
+    ctx.captures.get('cam-1')!.frame(20);
+    await settle();
+    resolvers[1]();
+    await settle();
+    resolvers[0]();
+    await settle();
+
+    expect(ctx.service.getLatestFrame('cam-1')?.buffer).toEqual(Buffer.from('pixel 20'));
     ctx.service.stop();
   });
 

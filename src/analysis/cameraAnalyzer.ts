@@ -2,6 +2,7 @@ import { CameraAnalysisResult, TrafficLevel, VehicleDetection } from '../types/a
 import { DetectionResult, MotionDetector } from './motionDetector';
 import { OccupancyEstimator } from './occupancyEstimator';
 import { TrackerUpdate, VehicleTracker } from './vehicleTracker';
+import { VideoFrame } from './videoFrame';
 
 /**
  * Narrow seam over MotionDetector so tests can inject canned detections
@@ -9,12 +10,12 @@ import { TrackerUpdate, VehicleTracker } from './vehicleTracker';
  * detector (e.g. an appearance-based model) would plug in.
  */
 export interface VehicleDetectorLike {
-  detect(frameBuffer: Buffer): Promise<DetectionResult>;
+  detect(frame: VideoFrame): Promise<DetectionResult>;
 }
 
 /** Narrow seam over OccupancyEstimator. */
 export interface OccupancyEstimatorLike {
-  update(frame: Buffer): Promise<{ occupancy: number | null }>;
+  update(frame: VideoFrame): Promise<{ occupancy: number | null }>;
 }
 
 /** Narrow seam over VehicleTracker. */
@@ -116,7 +117,7 @@ export class CameraAnalyzer {
    * losing the tick, since a subscriber still needs to be told the camera
    * produced nothing this time and why.
    */
-  async analyze(frame: Buffer, timestamp: string): Promise<CameraAnalysisResult> {
+  async analyze(frame: VideoFrame, timestamp: string): Promise<CameraAnalysisResult> {
     let tracked: TrackerUpdate;
     let warmingUp: boolean;
     try {

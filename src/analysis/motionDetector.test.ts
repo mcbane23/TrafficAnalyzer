@@ -1,4 +1,5 @@
 import { LumaExtractor, MotionDetector } from './motionDetector';
+import { VideoFrame } from './videoFrame';
 
 const W = 40;
 const H = 20;
@@ -10,7 +11,7 @@ const OBJECT_VALUE = 240;
 function makeExtractor(): { extractor: LumaExtractor; setFrame: (pixels: Uint8Array) => void } {
   let current: Uint8Array = new Uint8Array(N).fill(BACKGROUND_VALUE);
   return {
-    extractor: async () => current,
+    extractor: () => current,
     setFrame: (pixels: Uint8Array) => {
       current = pixels;
     },
@@ -69,7 +70,8 @@ async function teachRoadway(detector: MotionDetector, setFrame: (pixels: Uint8Ar
   }
 }
 
-const FRAME = Buffer.from('unused - the extractor is injected');
+// Never read - the extractor is injected.
+const FRAME: VideoFrame = { width: 0, height: 0, data: new Uint8Array(0) };
 
 describe('MotionDetector', () => {
   it('suppresses detections until warmupFrames have been observed, even if something is already moving', async () => {
@@ -198,7 +200,7 @@ describe('MotionDetector', () => {
   });
 
   it('rejects a luma plane smaller than the configured working size', async () => {
-    const detector = makeDetector(async () => new Uint8Array(4));
+    const detector = makeDetector(() => new Uint8Array(4));
 
     await expect(detector.detect(FRAME)).rejects.toThrow(/luma samples/);
   });
