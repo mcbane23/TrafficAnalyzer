@@ -422,6 +422,60 @@ describe('TrafficAnalysisService', () => {
     expect(ctx.analyzers.get('a')!.errorResult).not.toHaveBeenCalled();
   });
 
+  it('reload() starts cameras that became active and stops ones that did not stay active, leaving the rest running', async () => {
+    const cameras = [makeCamera({ id: 'a' }), makeCamera({ id: 'b' }), makeCamera({ id: 'c', status: 'inactive' })];
+    const ctx = setup(cameras);
+    await ctx.service.start();
+    ctx.fireAll();
+    const analyzerA = ctx.analyzers.get('a')!;
+
+    cameras[1].status = 'inactive';
+    cameras[2].status = 'active';
+    expect(await ctx.service.reload()).toEqual({ started: ['c'], stopped: ['b'] });
+
+    expect(ctx.captures.get('b')!.closed).toBe(true);
+    expect(ctx.analyzers.get('b')!.dispose).toHaveBeenCalled();
+    expect(ctx.captures.get('a')!.closed).toBe(false);
+    expect(ctx.analyzers.get('a')).toBe(analyzerA);
+    expect(analyzerA.dispose).not.toHaveBeenCalled();
+
+    ctx.fireAll();
+    ctx.captures.get('c')!.frame(0);
+    await settle();
+    expect(ctx.analyzers.get('c')!.analyze).toHaveBeenCalledTimes(1);
+    expect(ctx.service.getMetrics().cameras.map((c) => c.cameraId)).toEqual(['a', 'c']);
+
+    expect(await ctx.service.reload()).toEqual({ started: [], stopped: [] });
+    ctx.service.stop();
+  });
+
+  it('drops a frame from a camera that reload() stopped while the frame waited for analysis', async () => {
+    const cameras = [makeCamera({ id: 'a' })];
+    let release: () => void = () => undefined;
+    const ctx = setup(cameras);
+    await ctx.service.start();
+    ctx.fireAll();
+    const analyzer = ctx.analyzers.get('a')!;
+    analyzer.analyze.mockImplementationOnce(
+      (_frame: VideoFrame, timestamp: string) =>
+        new Promise((resolve) => {
+          release = () => resolve({ cameraId: 'a', timestamp, totalCount: 3, trafficLevel: 'light', detections: [], finishedTracks: [] });
+        }),
+    );
+    const received: unknown[] = [];
+    ctx.service.subscribeCameraDetail('a', (r) => received.push(r));
+
+    ctx.captures.get('a')!.frame(0);
+    await settle();
+    cameras[0].status = 'inactive';
+    await ctx.service.reload();
+    release();
+    await settle();
+
+    expect(received).toEqual([]);
+    ctx.service.stop();
+  });
+
   it('a throwing subscriber does not stop others or the loop', async () => {
     const ctx = setup();
     const good = jest.fn();

@@ -146,7 +146,9 @@ precedent for Vue components.
   The one exception is `POST /api/cameras/revalidate`, which starts the same ffprobe-based check
   as the `cameras:revalidate` CLI as an in-process background job (`RevalidationService`) and
   returns immediately (202 started / 409 already running); poll `GET /api/cameras/revalidate/status`
-  for progress. `CameraRegistryStore` remains the only writer of `belgrade.json`, invoked either by
+  for progress. A web-triggered run then calls `TrafficAnalysisService.reload()`, which starts
+  analysis on cameras that became active and stops it on ones that didn't stay active - no restart
+  needed (a CLI run, being a separate process, still needs one). `CameraRegistryStore` remains the only writer of `belgrade.json`, invoked either by
   the CLI or by `RevalidationService`; only one revalidation run (CLI or web-triggered) should be
   run at a time since neither takes a file lock.
 

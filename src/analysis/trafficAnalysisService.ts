@@ -111,9 +111,9 @@ type OverviewSubscriber = (overview: CameraAnalysisOverview) => void;
 /**
  * Everything this service tracks about one camera, including the analyzer
  * holding that camera's learned state and the capture feeding it. One
- * record per camera, created in `start()` and dropped in `stop()` - there
- * is deliberately no second map keyed by camera id with a different
- * lifetime.
+ * record per camera, created in `start()` or `reload()` and dropped in
+ * `stop()` or `reload()` - there is deliberately no second map keyed by
+ * camera id with a different lifetime.
  */
 interface CameraState {
   camera: CameraEntry;
@@ -251,37 +251,77 @@ export class TrafficAnalysisService {
     let activeIndex = 0;
     for (const camera of entries) {
       if (camera.status !== 'active') continue;
-      const state: CameraState = {
-        camera,
-        analyzer: this.options.createAnalyzer(camera.id, camera),
-        capture: null,
-        startHandle: null,
-        historyWindow: { startedAt: this.options.now().getTime(), counts: [], lastResult: null },
-        lastOverviewAt: -Infinity,
-        latestFrame: null,
-        thumbnailStartedAt: -Infinity,
-        recentResults: [],
-        throughput: new ThroughputWindow(METRICS_WINDOW_MS, () => this.options.now().getTime()),
-        errors: new ThroughputWindow(METRICS_WINDOW_MS, () => this.options.now().getTime()),
-      };
-      this.cameraStates.set(camera.id, state);
-      state.startHandle = this.options.scheduler.setTimeout(() => this.startCamera(state), activeIndex * STARTUP_STAGGER_STEP_MS);
+      this.addCamera(camera, activeIndex * STARTUP_STAGGER_STEP_MS);
       activeIndex += 1;
     }
+  }
+
+  /**
+   * Re-reads the registry and brings the analyzed set in line with it
+   * without a restart: cameras that became active start (staggered, like
+   * at boot), cameras that are no longer active stop. Cameras active
+   * before and after keep running untouched, learned state and all. Called
+   * when an availability check has rewritten the registry.
+   */
+  async reload(): Promise<{ started: string[]; stopped: string[] }> {
+    if (!this.running) return { started: [], stopped: [] };
+    const entries = await this.source.load();
+    if (!this.running) return { started: [], stopped: [] };
+    const active = new Map(entries.filter((camera) => camera.status === 'active').map((camera) => [camera.id, camera]));
+
+    const stopped: string[] = [];
+    for (const [cameraId, state] of Array.from(this.cameraStates)) {
+      if (active.has(cameraId)) continue;
+      this.removeCamera(state);
+      stopped.push(cameraId);
+    }
+    const started: string[] = [];
+    for (const camera of active.values()) {
+      if (this.cameraStates.has(camera.id)) continue;
+      this.addCamera(camera, started.length * STARTUP_STAGGER_STEP_MS);
+      started.push(camera.id);
+    }
+    return { started, stopped };
+  }
+
+  private addCamera(camera: CameraEntry, startDelayMs: number): void {
+    const state: CameraState = {
+      camera,
+      analyzer: this.options.createAnalyzer(camera.id, camera),
+      capture: null,
+      startHandle: null,
+      historyWindow: { startedAt: this.options.now().getTime(), counts: [], lastResult: null },
+      lastOverviewAt: -Infinity,
+      latestFrame: null,
+      thumbnailStartedAt: -Infinity,
+      recentResults: [],
+      throughput: new ThroughputWindow(METRICS_WINDOW_MS, () => this.options.now().getTime()),
+      errors: new ThroughputWindow(METRICS_WINDOW_MS, () => this.options.now().getTime()),
+    };
+    this.cameraStates.set(camera.id, state);
+    state.startHandle = this.options.scheduler.setTimeout(() => this.startCamera(state), startDelayMs);
+  }
+
+  private isCurrent(state: CameraState): boolean {
+    return this.cameraStates.get(state.camera.id) === state;
+  }
+
+  /** Stops one camera's loop, closing its capture and disposing its analyzer. */
+  private removeCamera(state: CameraState): void {
+    if (state.startHandle !== null) this.options.scheduler.clearTimeout(state.startHandle);
+    state.startHandle = null;
+    state.capture?.close();
+    state.capture = null;
+    // Everything this camera had learned goes with its analyzer - see
+    // `CameraAnalyzer.dispose`.
+    state.analyzer.dispose();
+    if (this.cameraStates.get(state.camera.id) === state) this.cameraStates.delete(state.camera.id);
   }
 
   /** Stops every camera's loop, closing its capture and disposing its analyzer. */
   stop(): void {
     this.running = false;
-    for (const state of this.cameraStates.values()) {
-      if (state.startHandle !== null) this.options.scheduler.clearTimeout(state.startHandle);
-      state.capture?.close();
-      state.capture = null;
-      // Everything this camera had learned goes with its analyzer - see
-      // `CameraAnalyzer.dispose`.
-      state.analyzer.dispose();
-    }
-    this.cameraStates.clear();
+    for (const state of Array.from(this.cameraStates.values())) this.removeCamera(state);
   }
 
   /** Resolves once every camera loop has exited - after `stop()`, for tests and graceful shutdown. */
@@ -420,6 +460,8 @@ export class TrafficAnalysisService {
   }
 
   private async processFrame(state: CameraState, frame: GrabFrameResult): Promise<void> {
+    // A camera stopped by `reload()` while this frame waited for a slot is gone - its analyzer is disposed.
+    if (!this.isCurrent(state)) return;
     // A frame's own capture time is its timestamp - not when analysis got
     // round to it - since that's what the tracker's motion model runs on.
     const timestamp = frame.ok ? new Date(frame.capturedAt).toISOString() : this.options.now().toISOString();
@@ -428,6 +470,7 @@ export class TrafficAnalysisService {
     const analyzed = frame.ok
       ? await state.analyzer.analyze(frame.frame, timestamp)
       : state.analyzer.errorResult(timestamp, frame.error);
+    if (!this.isCurrent(state)) return;
     if (frame.ok) state.throughput.record(Date.now() - startedAt, frame.streamTime);
     else state.errors.record(0);
     // The analyzer doesn't need to know which stream moment a frame was; the

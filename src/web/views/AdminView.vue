@@ -362,8 +362,8 @@ onBeforeUnmount(() => {
         <section class="rounded-xl border border-slate-800 bg-slate-900 p-4">
           <h2 class="font-semibold text-slate-100">Camera availability</h2>
           <p class="mt-1 text-xs text-slate-400">
-            Re-probes every camera stream and updates which ones are active. Cameras that change state are picked up by
-            the analysis after the container restarts.
+            Re-probes every camera stream and updates which ones are active. When it finishes, analysis starts on cameras
+            that came back and stops on ones that went offline.
           </p>
           <button
             type="button"
