@@ -16,43 +16,28 @@ export interface YoloSession {
 }
 
 /**
- * Path to the bundled YOLO11n (COCO-pretrained) ONNX model, exported with a
- * 640x480 input: the overlay capture is 640x480, and a square 640x640 input
- * spent a quarter of every inference on letterbox padding.
- */
-export const BUNDLED_YOLO_MODEL_PATH = path.resolve(__dirname, '../../models/yolo11n.onnx');
-
-/**
- * The CPU models `OVERLAY_CPU_MODEL` can pick, ONNX with a 640x480 input and
- * `[1, 84, anchors]` output, run on onnxruntime. YOLO26n is the default
- * (Bane's call): about as accurate as YOLO11n and a little faster.
+ * The CPU models `OVERLAY_CPU_MODEL` can pick, ONNX with a 640x480 input (the
+ * overlay capture's size, so no letterbox padding) and `[1, 84, anchors]`
+ * output, run on onnxruntime. Only YOLO26n for now.
  */
 export const ONNX_MODELS: Readonly<Record<string, { path: string; label: string }>> = {
   yolo26n: { path: path.resolve(__dirname, '../../models/yolo26n.onnx'), label: 'YOLO26n' },
-  yolo11n: { path: BUNDLED_YOLO_MODEL_PATH, label: 'YOLO11n' },
 };
 const DEFAULT_ONNX_MODEL = 'yolo26n';
 
 /**
- * Path to the bundled YOLO11s (COCO-pretrained) OpenVINO IR model, FP16, with
- * a 960x736 input, for an Intel GPU. On the 704x576 camera streams YOLO11n at
- * 640px found 3 of ~100 cars on Gazela; this one finds ~40, at roughly 4x the
- * compute - affordable on an iGPU, not on the CPU next to the fleet analysis.
- */
-export const BUNDLED_OPENVINO_MODEL_PATH = path.resolve(__dirname, '../../models/yolo11s-openvino/yolo11s.xml');
-
-/**
  * The GPU models `OVERLAY_MODEL` can pick, OpenVINO IR, all FP16 with the
  * same 960x736 input and `[1, 84, anchors]` output. On six camera frames
- * (960px, confidence 0.25, OpenVINO CPU) YOLO11s found 112 vehicles in 145 ms
- * per frame, YOLO26s 98 in 139 ms, YOLO26n 77 in 59 ms. YOLO26s is the
- * default: Bane found it worked very well live on the N150, missing mostly
- * motorcycles and distant cars. YOLO11s stays available to switch back to.
+ * (960px, confidence 0.25, OpenVINO CPU) YOLO26s found 98 vehicles in 139 ms
+ * per frame and YOLO26n 77 in 59 ms; on Brankov most at rush hour YOLO26m
+ * found no more than YOLO26s at ~3x the time. YOLO26s is the default: Bane
+ * found it worked very well live on the N150, missing mostly motorcycles and
+ * distant cars.
  */
 export const OPENVINO_MODELS: Readonly<Record<string, { path: string; label: string }>> = {
   yolo26s: { path: path.resolve(__dirname, '../../models/yolo26s-openvino/yolo26s.xml'), label: 'YOLO26s' },
   yolo26n: { path: path.resolve(__dirname, '../../models/yolo26n-openvino/yolo26n.xml'), label: 'YOLO26n' },
-  yolo11s: { path: BUNDLED_OPENVINO_MODEL_PATH, label: 'YOLO11s' },
+  yolo26m: { path: path.resolve(__dirname, '../../models/yolo26m-openvino/yolo26m.xml'), label: 'YOLO26m' },
 };
 const DEFAULT_OPENVINO_MODEL = 'yolo26s';
 
@@ -74,7 +59,7 @@ export interface YoloModel {
   session: YoloSession;
   inputWidth: number;
   inputHeight: number;
-  /** What runs where, for the logs - e.g. "YOLO11s on OpenVINO GPU". */
+  /** What runs where, for the logs - e.g. "YOLO26s on OpenVINO GPU". */
   label: string;
 }
 
@@ -130,7 +115,7 @@ export async function loadYoloModel(
  * Opens an onnxruntime CPU session over a YOLO ONNX model. `onnxruntime-node`
  * is loaded lazily, so nothing that merely imports this module pays for it.
  */
-export async function createOnnxYoloSession(modelPath: string = BUNDLED_YOLO_MODEL_PATH, threads = 2): Promise<YoloSession> {
+export async function createOnnxYoloSession(modelPath: string = ONNX_MODELS[DEFAULT_ONNX_MODEL].path, threads = 2): Promise<YoloSession> {
   const ort = await import('onnxruntime-node');
   const session = await ort.InferenceSession.create(modelPath, {
     intraOpNumThreads: threads,
@@ -187,7 +172,12 @@ const COCO_VEHICLES: ReadonlyMap<number, VehicleClass> = new Map<number, Vehicle
 ]);
 
 export interface YoloDetectorOptions {
-  /** Class score below which a candidate is discarded. Defaults to 0.25, the usual YOLO setting. */
+  /**
+   * Class score below which a candidate is discarded. Defaults to 0.2: below
+   * the usual 0.25, because on these small, compressed cars that drew about
+   * half as many boxes again for only a few false ones (Bane tried 0.15 and
+   * 0.20 live).
+   */
   minConfidence?: number;
   /** Overlap (IoU) above which the weaker of two boxes is suppressed. Defaults to 0.5. */
   iouThreshold?: number;
@@ -196,7 +186,7 @@ export interface YoloDetectorOptions {
 }
 
 const DEFAULTS = {
-  minConfidence: 0.25,
+  minConfidence: 0.2,
   iouThreshold: 0.5,
 };
 

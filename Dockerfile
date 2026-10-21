@@ -88,7 +88,7 @@ COPY --from=build /app/dist ./dist
 # `npm run cameras:revalidate`. Also holds traffic-history.db, the SQLite
 # file TrafficHistoryStore creates on first run - persisted the same way.
 COPY data ./data
-# YOLO11n (COCO, ONNX, CPU) and YOLO11s (OpenVINO IR, Intel GPU) for the
+# YOLO26 models (COCO; ONNX for the CPU, OpenVINO IR for an Intel GPU) for the
 # boxes drawn over a watched camera - see
 # LiveOverlayService. Resolved relative to dist/, i.e. /app/models.
 COPY models ./models

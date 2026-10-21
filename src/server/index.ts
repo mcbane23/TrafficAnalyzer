@@ -73,11 +73,10 @@ const trafficAnalysisService = new TrafficAnalysisService(
 // against CPU. OVERLAY_DEVICE=GPU runs a larger model on an Intel GPU
 // through OpenVINO (the container needs /dev/dri), falling back to the CPU
 // model if the GPU can't be used. OVERLAY_MODEL picks the GPU model:
-// yolo26s (default), yolo26n (faster, finds fewer distant cars) or yolo11s.
-// OVERLAY_CPU_MODEL picks the CPU one: yolo26n (default) or yolo11n.
+// yolo26s (default), yolo26n (faster, finds fewer distant cars) or yolo26m
+// (larger and ~3x slower). OVERLAY_CPU_MODEL picks the CPU one: yolo26n.
 const overlayDevice = process.env.OVERLAY_DEVICE?.trim().toUpperCase() || 'CPU';
-// OVERLAY_CONFIDENCE (default 0.25): the YOLO score a box needs to be drawn.
-// 0.15 draws about half as many again on busy views, with a few more false boxes.
+// OVERLAY_CONFIDENCE (default 0.2): the YOLO score a box needs to be drawn.
 const overlayConfidence = Number(process.env.OVERLAY_CONFIDENCE) || undefined;
 let overlayModel: Promise<YoloModel> | null = null;
 const loadOverlayModel = (): Promise<YoloModel> =>
