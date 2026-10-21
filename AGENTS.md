@@ -305,7 +305,7 @@ precedent for Vue components.
   the Dockerfile drops `openvino-node`'s unused frontends and NPU plugin but must keep the IR
   frontend. The GPU path can't be exercised in CI or the sandbox (OpenVINO's CPU device can, with
   the same IR).
-- **`OVERLAY_MODEL` picks the GPU model, `OVERLAY_CPU_MODEL` the CPU one** (`OPENVINO_MODELS` /
+- **`OVERLAY_MODEL` picks the GPU model, `OVERLAY_CPU_MODEL` the CPU one, `OVERLAY_CONFIDENCE` the minimum score (0.25)** (`OPENVINO_MODELS` /
   `ONNX_MODELS` in `yoloDetector.ts`). GPU: `yolo26s` (default), `yolo26n`, `yolo11s`, all FP16 IR,
   960x736, output renamed `output0`. CPU (also the GPU's fallback): `yolo26n` (default), `yolo11n`,
   ONNX 640x480. Ultralytics exports YOLO26 with the same `[1, 84, anchors]` one-to-many head, so
@@ -316,7 +316,9 @@ precedent for Vue components.
 - **The overlay must never fall behind the player** (regression found on Bane's N150: boxes only
   flickered on now and then). Its capture uses `maxQueuedFrames: 1`, so a detector slower than
   `OVERLAY_FPS` skips frames instead of working through a growing backlog that the player soon
-  overtakes. Its tracker draws every YOLO vehicle (`minHits: 1`, `minTravel: 0` - the motion
+  overtakes. Its tracker draws every YOLO vehicle (`minHits: 1`, `minTravel: 0`, `highConfidence: 0` - the
+  default 0.5 let only high-scoring detections start tracks, which hid about half the queued cars on
+  Brankov most; the motion
   pipeline's travel gate hid parked and queued cars) and keeps a missed car's box for
   `reportCoastingMs` (1s, only once a track has 3 matches and a trustworthy velocity). `maxSpeed: 2`
   (box diagonals per second) caps the association gate: with `minHits: 1` and ~1 fps on the N150,

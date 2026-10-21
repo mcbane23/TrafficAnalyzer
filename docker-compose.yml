@@ -17,6 +17,9 @@ services:
       # Live-view model on the CPU, also used when the GPU can't be: yolo26n
       # (default) or yolo11n (the previous default).
       # - OVERLAY_CPU_MODEL=yolo26n
+      # Minimum YOLO score for a live-view box (default 0.25). 0.15 draws about
+      # half as many again on busy views, with a few more false boxes.
+      # - OVERLAY_CONFIDENCE=0.25
     # Intel GPU for OVERLAY_DEVICE=GPU. group_add is the host's `render` group id:
     # `stat -c %g /dev/dri/renderD128`.
     # devices:

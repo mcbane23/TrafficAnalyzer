@@ -76,6 +76,9 @@ const trafficAnalysisService = new TrafficAnalysisService(
 // yolo26s (default), yolo26n (faster, finds fewer distant cars) or yolo11s.
 // OVERLAY_CPU_MODEL picks the CPU one: yolo26n (default) or yolo11n.
 const overlayDevice = process.env.OVERLAY_DEVICE?.trim().toUpperCase() || 'CPU';
+// OVERLAY_CONFIDENCE (default 0.25): the YOLO score a box needs to be drawn.
+// 0.15 draws about half as many again on busy views, with a few more false boxes.
+const overlayConfidence = Number(process.env.OVERLAY_CONFIDENCE) || undefined;
 let overlayModel: Promise<YoloModel> | null = null;
 const loadOverlayModel = (): Promise<YoloModel> =>
   (overlayModel ??= loadYoloModel({
@@ -106,13 +109,18 @@ const liveOverlayService =
           maxQueuedFrames: 1,
         }),
         (camera) => ({
-          detector: new YoloDetector(loadOverlayModel, { ignoreZones: camera.ignoreZones?.map((zone) => zone.points) }),
+          detector: new YoloDetector(loadOverlayModel, {
+            ignoreZones: camera.ignoreZones?.map((zone) => zone.points),
+            minConfidence: overlayConfidence,
+          }),
           // Every vehicle the model sees is drawn, parked or queued ones
-          // included (no travel gate, no confirmation delay), and a car the
-          // model misses on one frame keeps its box for a second instead of
-          // blinking out. maxSpeed stops a track from jumping to a different
-          // car when frames are a second apart on a slow host.
-          tracker: new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 1000, maxSpeed: 2 }),
+          // included (no travel gate, no confirmation delay, and any detection
+          // may start a track - the default 0.5 ByteTrack threshold hid every
+          // car YOLO scored 0.25-0.5, about half of them in a queue on Brankov
+          // most), and a car the model misses on one frame keeps its box for a
+          // second instead of blinking out. maxSpeed stops a track from jumping
+          // to a different car when frames are a second apart on a slow host.
+          tracker: new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 1000, maxSpeed: 2, highConfidence: 0 }),
         }),
       );
 const app = createApp(
