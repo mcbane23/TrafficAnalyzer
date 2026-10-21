@@ -322,6 +322,7 @@ describe('FrameGrabber', () => {
 
       expect(await capture.next()).toMatchObject({ ok: true, frame: frameOf('frame-2') });
       expect(await capture.next()).toMatchObject({ ok: true, frame: frameOf('frame-3') });
+      expect(capture.counters?.()).toMatchObject({ starts: 1, stalls: 0, dropped: 1, lastError: null });
     });
 
     it('uses -vf fps=<streamFps> (then scales) instead of -frames:v 1 for streaming captures, with one decoding thread', async () => {
@@ -505,6 +506,7 @@ describe('FrameGrabber', () => {
 
         jest.advanceTimersByTime(1000);
         expect(runner).toHaveBeenCalledTimes(2);
+        expect(capture.counters?.()).toMatchObject({ starts: 2, stalls: 1, lastError: 'stream stalled: no frames for 5s' });
         capture.close();
       });
 

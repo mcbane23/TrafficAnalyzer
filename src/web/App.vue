@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import { RANGES, useStatsRange } from './composables/trafficUi';
 
 const range = useStatsRange();
+const route = useRoute();
 
 // Live indicator: the browser's own view of connectivity. Individual views
 // still report their own stream disconnects next to the data they affect.
@@ -41,8 +43,16 @@ onBeforeUnmount(() => {
         >
           Statistics
         </router-link>
+        <router-link
+          to="/admin"
+          class="rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+          active-class="bg-slate-800 !text-slate-100"
+        >
+          Admin
+        </router-link>
       </nav>
-      <div class="ml-auto flex items-center gap-1 rounded-lg bg-slate-900 p-1 text-xs" role="group" aria-label="Time range">
+      <!-- The Admin page shows live server figures, not traffic over a period. -->
+      <div v-if="route.name !== 'admin'" class="ml-auto flex items-center gap-1 rounded-lg bg-slate-900 p-1 text-xs" role="group" aria-label="Time range">
         <button
           v-for="option in RANGES"
           :key="option.value"

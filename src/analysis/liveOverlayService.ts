@@ -4,6 +4,8 @@ import { LiveOverlayResult } from '../types/analysis';
 import { VehicleDetectorLike, VehicleTrackerLike } from './cameraAnalyzer';
 import { AnalysisScheduler, FrameGrabberLike } from './trafficAnalysisService';
 import { FrameCapture } from './frameGrabber';
+import { ThroughputWindow } from './throughputWindow';
+import { OverlayCameraMetrics } from '../types/admin';
 
 /** One watched camera's detector and tracker - built when the first viewer arrives, dropped when the last one leaves. */
 export interface OverlayPipeline {
@@ -42,6 +44,8 @@ interface WatchedCamera {
   stopHandle: unknown;
   /** Frames analyzed, detection time spent and stream time covered since the last throughput log line. */
   stats: OverlayStats;
+  /** The same figures over the last few seconds, for the Admin page. */
+  throughput: ThroughputWindow;
 }
 
 interface OverlayStats {
@@ -148,6 +152,24 @@ export class LiveOverlayService {
     };
   }
 
+  /** What each watched camera's detector is doing right now, for the Admin page. */
+  getMetrics(): { maxCameras: number; cameras: OverlayCameraMetrics[] } {
+    const cameras = Array.from(this.watched.values()).map((entry): OverlayCameraMetrics => {
+      const { fps, avgMs, streamRatio, avgValue } = entry.throughput.snapshot();
+      return {
+        cameraId: entry.camera.id,
+        name: entry.camera.name,
+        viewers: entry.subscribers.size,
+        fps,
+        avgMs,
+        streamRatio,
+        vehiclesPerFrame: avgValue,
+        capture: entry.capture.counters?.() ?? null,
+      };
+    });
+    return { maxCameras: this.maxCameras, cameras };
+  }
+
   /** Stops every pipeline now. */
   stop(): void {
     for (const entry of Array.from(this.watched.values())) this.release(entry);
@@ -189,6 +211,7 @@ export class LiveOverlayService {
       recent: [],
       stopHandle: null,
       stats: { since: Date.now(), frames: 0, detectMs: 0, vehicles: 0 },
+      throughput: new ThroughputWindow(),
     };
     this.watched.set(camera.id, entry);
     const loop = this.runLoop(entry)
@@ -251,6 +274,7 @@ export class LiveOverlayService {
    * boxes to draw however fast the detector is.
    */
   private recordThroughput(entry: WatchedCamera, detectMs: number, vehicles: number, streamTime?: number): void {
+    entry.throughput.record(detectMs, streamTime, vehicles);
     const stats = entry.stats;
     stats.frames += 1;
     stats.detectMs += detectMs;

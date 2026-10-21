@@ -512,6 +512,30 @@ describe('TrafficAnalysisService', () => {
     expect(service.getLatestOverview()).toEqual(seed);
   });
 
+  it('reports per-camera frame rate, stream speed and capture errors for the Admin page', async () => {
+    const ctx = setup([makeCamera(), makeCamera({ id: 'cam-2', name: 'Second' })]);
+    await ctx.service.start();
+    ctx.fireAll();
+    const capture = ctx.captures.get('cam-1')!;
+
+    for (let i = 0; i <= 10; i++) {
+      ctx.setNow(i * 500);
+      capture.frame(i * 500, 100 + i * 0.25);
+      await settle();
+    }
+    capture.fail('stream stalled: no frames for 20s');
+    await settle();
+
+    const metrics = ctx.service.getMetrics();
+    expect(metrics).toMatchObject({ activeJobs: 0, queuedJobs: 0, maxConcurrency: 6 });
+    const [first, second] = metrics.cameras;
+    expect(first).toMatchObject({ cameraId: 'cam-1', name: 'Test Camera', errors: 1, capture: null });
+    expect(first.fps).toBeCloseTo(2.2, 1);
+    expect(first.streamRatio).toBeCloseTo(0.5, 5);
+    expect(second).toMatchObject({ cameraId: 'cam-2', fps: 0, avgMs: null, errors: 0 });
+    ctx.service.stop();
+  });
+
   it('getHistory delegates to the history store', () => {
     const history = makeHistoryStore();
     const service = new TrafficAnalysisService(makeSource([]), makeFrameGrabber().grabber, history);

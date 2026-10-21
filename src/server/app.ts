@@ -7,6 +7,7 @@ import { HlsProxyService } from './hlsProxyService';
 import { SseChannel } from './sseChannel';
 import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
+import { ServerMetricsService } from './serverMetrics';
 import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
 
 /**
@@ -16,7 +17,7 @@ import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '.
  * check the `cameras:revalidate` CLI performs), an HLS proxy route for
  * cameras that need special request headers the browser can't send
  * itself, the vehicle-traffic-analysis routes (bootstrap + SSE streams +
- * history), plus (when a built frontend is present) static file serving
+ * history), server health metrics for the Admin page, plus (when a built frontend is present) static file serving
  * and an SPA fallback so Vue Router's history-mode routes work on a hard
  * refresh/direct link.
  *
@@ -35,6 +36,7 @@ export function createApp(
   trafficAnalysisService: TrafficAnalysisService,
   trafficStatsService: TrafficStatsService,
   liveOverlayService: LiveOverlayService | null,
+  serverMetrics: ServerMetricsService,
   staticDir?: string,
 ): Express {
   const app = express();
@@ -69,6 +71,11 @@ export function createApp(
 
   app.get('/api/cameras/revalidate/status', (_req, res) => {
     res.json(revalidationService.getStatus());
+  });
+
+  // Server health for the Admin page: CPU, memory, analysis/overlay throughput, database sizes.
+  app.get('/api/admin/metrics', (_req, res) => {
+    res.set('Cache-Control', 'no-store').json(serverMetrics.getMetrics());
   });
 
   app.get('/api/cameras/:id/stream/:file', async (req, res) => {

@@ -49,6 +49,8 @@ colocated `*.test.ts`:
 | `CameraPassageModel` (`DirectionModel`, `SizeClassifier`) | [src/analysis/passageModel.ts](src/analysis/passageModel.ts) | Yes — pure logic over synthetic tracks |
 | `TrafficStatsStore` | [src/analysis/trafficStatsStore.ts](src/analysis/trafficStatsStore.ts) | Through `TrafficStatsService`'s tests, against a real `:memory:` DB |
 | `TrafficStatsService` | [src/analysis/trafficStatsService.ts](src/analysis/trafficStatsService.ts) | Yes — real `:memory:` `TrafficStatsStore` plus an injected `now` |
+| `ThroughputWindow` | [src/analysis/throughputWindow.ts](src/analysis/throughputWindow.ts) | Yes — rolling fps / ms per frame / stream-vs-wall-clock ratio over an injected clock |
+| `ServerMetricsService` | [src/server/serverMetrics.ts](src/server/serverMetrics.ts) | Yes — CPU delta arithmetic through the `SystemReader` seam (fake `/proc` counters); backs the Admin page (`GET /api/admin/metrics`) |
 | Pipeline end-to-end | [src/analysis/pipeline.test.ts](src/analysis/pipeline.test.ts) | Yes — real ffmpeg + detector + tracker on committed synthetic footage with known ground truth ([__fixtures__/syntheticFootage.ts](src/analysis/__fixtures__/syntheticFootage.ts)) |
 | Express app / routes | [src/server/app.ts](src/server/app.ts) | No — thin wiring around `CameraService`/`RevalidationService`/`HlsProxyService`/`SseChannel`/`TrafficAnalysisService`/`TrafficStatsService` |
 | Revalidate CLI | [src/cli/revalidate.ts](src/cli/revalidate.ts) | No — thin orchestrator |
