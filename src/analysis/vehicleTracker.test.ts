@@ -145,6 +145,13 @@ describe('VehicleTracker', () => {
     expect([...rightIds][0]).not.toBe([...leftIds][0]);
   });
 
+  it('with highConfidence 0, starts a track from any detection (the live overlay: the detector already filtered them)', () => {
+    const tracker = new VehicleTracker({ minHits: 1, minTravel: 0, highConfidence: 0 });
+    const [update] = run(tracker, [[det({ x: 0.2 }, 0.3), det({ x: 0.6 }, 0.26)]]);
+
+    expect(update.tracks).toHaveLength(2);
+  });
+
   it('uses low-confidence detections to keep a confirmed track alive, but never to start one', () => {
     const tracker = new VehicleTracker({ highConfidence: 0.5, maxLostMs: 300 });
     const frames = movingVehicle(10, { x: 0.1, y: 0.5 }, { x: 0.03, y: 0 }).map((frame, i) =>
