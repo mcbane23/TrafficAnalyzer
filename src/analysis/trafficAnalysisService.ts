@@ -4,6 +4,8 @@ import { CameraAnalysisOverview, CameraAnalysisResult, StoredAnalysisResult } fr
 import { FrameCapture, GrabFrameResult } from './frameGrabber';
 import { CameraAnalyzer } from './cameraAnalyzer';
 import { VideoFrame, encodeJpeg } from './videoFrame';
+import { ThroughputWindow } from './throughputWindow';
+import { CameraAnalysisMetrics } from '../types/admin';
 
 /** Narrow seam over FrameGrabber so tests can inject a fake without spawning ffmpeg. */
 export interface FrameGrabberLike {
@@ -128,6 +130,9 @@ interface CameraState {
   thumbnailStartedAt: number;
   /** This camera's results from the last `recentResultsMs`, oldest first - see `getRecentResults`. */
   recentResults: CameraAnalysisResult[];
+  /** Analyzed frames and failed captures over the last few seconds, for `getMetrics`. */
+  throughput: ThroughputWindow;
+  errors: ThroughputWindow;
 }
 
 const DEFAULTS = {
@@ -146,6 +151,9 @@ const DEFAULTS = {
  * sharing the same small upstream relay all connecting at once).
  */
 const STARTUP_STAGGER_STEP_MS = 400;
+
+/** How far back the Admin page's per-camera rates look. */
+const METRICS_WINDOW_MS = 15_000;
 
 /**
  * TrafficAnalysisService is the central orchestrator for the vehicle
@@ -253,6 +261,8 @@ export class TrafficAnalysisService {
         latestFrame: null,
         thumbnailStartedAt: -Infinity,
         recentResults: [],
+        throughput: new ThroughputWindow(METRICS_WINDOW_MS, () => this.options.now().getTime()),
+        errors: new ThroughputWindow(METRICS_WINDOW_MS, () => this.options.now().getTime()),
       };
       this.cameraStates.set(camera.id, state);
       state.startHandle = this.options.scheduler.setTimeout(() => this.startCamera(state), activeIndex * STARTUP_STAGGER_STEP_MS);
@@ -304,6 +314,28 @@ export class TrafficAnalysisService {
    */
   getRecentResults(cameraId: string): CameraAnalysisResult[] {
     return [...(this.cameraStates.get(cameraId)?.recentResults ?? [])];
+  }
+
+  /**
+   * How the fleet-wide analysis is keeping up, for the Admin page: the
+   * shared job queue, and per camera the analyzed frame rate, time per
+   * frame, how fast the stream advances against the clock, and its
+   * capture's restart/stall/drop counters.
+   */
+  getMetrics(): { activeJobs: number; queuedJobs: number; maxConcurrency: number; cameras: CameraAnalysisMetrics[] } {
+    const cameras = Array.from(this.cameraStates.values()).map((state): CameraAnalysisMetrics => {
+      const { fps, avgMs, streamRatio } = state.throughput.snapshot();
+      return {
+        cameraId: state.camera.id,
+        name: state.camera.name,
+        fps,
+        avgMs,
+        streamRatio,
+        errors: state.errors.snapshot().count,
+        capture: state.capture?.counters?.() ?? null,
+      };
+    });
+    return { activeJobs: this.activeJobs, queuedJobs: this.queue.length, maxConcurrency: this.options.maxConcurrency, cameras };
   }
 
   getHistory(cameraId: string, options?: { sinceIso?: string; limit?: number }): StoredAnalysisResult[] {
@@ -392,9 +424,12 @@ export class TrafficAnalysisService {
     // round to it - since that's what the tracker's motion model runs on.
     const timestamp = frame.ok ? new Date(frame.capturedAt).toISOString() : this.options.now().toISOString();
     if (frame.ok) this.refreshThumbnail(state, frame.frame, frame.capturedAt);
+    const startedAt = Date.now();
     const analyzed = frame.ok
       ? await state.analyzer.analyze(frame.frame, timestamp)
       : state.analyzer.errorResult(timestamp, frame.error);
+    if (frame.ok) state.throughput.record(Date.now() - startedAt, frame.streamTime);
+    else state.errors.record(0);
     // The analyzer doesn't need to know which stream moment a frame was; the
     // overlay does, to line the result up with the picture.
     const result = frame.ok && frame.streamTime !== undefined ? { ...analyzed, streamTime: frame.streamTime } : analyzed;

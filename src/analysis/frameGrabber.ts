@@ -1,4 +1,5 @@
 import { CameraEntry } from '../types/camera';
+import { CaptureCounters } from '../types/admin';
 import { FfmpegRunner, FfmpegStreamHandle, FfmpegStreamRunner, createFfmpegRunner, createFfmpegStreamRunner } from './ffmpegRunner';
 import { VideoFrame, yuv420pFrameSize } from './videoFrame';
 
@@ -122,6 +123,8 @@ export interface FrameCapture {
   next(): Promise<GrabFrameResult>;
   /** Stops the underlying ffmpeg process and fails any pending `next()`. Safe to call more than once. */
   close(): void;
+  /** Restart/stall/drop counters for the Admin page. Optional so test fakes needn't implement it. */
+  counters?(): CaptureCounters;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -326,6 +329,12 @@ class FfmpegFrameCapture implements FrameCapture {
   private lastFrameAt = 0;
   private restartTimer: NodeJS.Timeout | null = null;
   private stallTimer: NodeJS.Timeout | null = null;
+  /** Lifetime supervision counters - see `counters()`. Unlike `lastError`, `lastFailure` survives the next good frame. */
+  private starts = 0;
+  private stalls = 0;
+  private dropped = 0;
+  private lastFailure: string | null = null;
+  private everDecoded = false;
 
   constructor(
     private readonly spawn: () => FfmpegStreamHandle,
@@ -371,6 +380,16 @@ class FfmpegFrameCapture implements FrameCapture {
     });
   }
 
+  counters(): CaptureCounters {
+    return {
+      starts: this.starts,
+      stalls: this.stalls,
+      dropped: this.dropped,
+      lastFrameAt: this.everDecoded ? new Date(this.lastFrameAt).toISOString() : null,
+      lastError: this.lastFailure,
+    };
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -392,6 +411,7 @@ class FfmpegFrameCapture implements FrameCapture {
     this.stderrRemainder = '';
     this.showinfoTimeBase = null;
     this.lastFrameAt = Date.now();
+    this.starts += 1;
 
     const handle = this.spawn();
     this.handle = handle;
@@ -424,6 +444,7 @@ class FfmpegFrameCapture implements FrameCapture {
         const reason = `stream stalled: no frames for ${Math.round(this.supervision.stallTimeoutMs / 1000)}s`;
         this.handle = null;
         handle.kill();
+        this.stalls += 1;
         this.lastError = reason;
         this.onProcessEnded(reason);
       } else {
@@ -433,6 +454,7 @@ class FfmpegFrameCapture implements FrameCapture {
   }
 
   private onProcessEnded(reason: string): void {
+    if (!this.closed) this.lastFailure = reason;
     if (this.stallTimer) {
       clearTimeout(this.stallTimer);
       this.stallTimer = null;
@@ -516,6 +538,7 @@ class FfmpegFrameCapture implements FrameCapture {
 
     const capturedAt = Date.now();
     this.lastFrameAt = capturedAt;
+    this.everDecoded = true;
     this.lastError = null;
 
     // Waiters get first claim on newly-decoded frames (FIFO pairing: the
@@ -543,7 +566,10 @@ class FfmpegFrameCapture implements FrameCapture {
     // works off each frame's own timestamp, so a dropped frame shows up as a
     // longer gap, not as a vehicle jumping.
     const overflow = this.frameQueue.length - this.maxQueuedFrames;
-    if (overflow > 0) this.frameQueue.splice(0, overflow);
+    if (overflow > 0) {
+      this.frameQueue.splice(0, overflow);
+      this.dropped += overflow;
+    }
   }
 
   private failWaiters(reason: string): void {

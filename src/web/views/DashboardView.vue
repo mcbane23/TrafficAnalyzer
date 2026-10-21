@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import type { CameraEntry } from '../../types/camera';
 import type { CameraAnalysisOverview, TrafficLevel } from '../../types/analysis';
 import type { StatsSummary } from '../../types/stats';
-import { fetchCameras, fetchRevalidationStatus, startRevalidation } from '../services/api';
+import { fetchCameras } from '../services/api';
 import { fetchLatestOverview, subscribeOverview } from '../services/analysis';
 import { fetchStatsSummary } from '../services/stats';
 import { RANGES, TRAFFIC_LABELS, formatCount, useStatsRange } from '../composables/trafficUi';
@@ -107,51 +107,6 @@ async function loadSummary() {
 }
 watch(range, loadSummary);
 
-// Availability check (admin action): the same ffprobe pass as the CLI, run in the background.
-const checking = ref(false);
-const checkError = ref<string | null>(null);
-const checkProgress = ref<{ checked: number; total: number; active: number } | null>(null);
-let pollHandle: ReturnType<typeof setInterval> | null = null;
-
-function stopPolling() {
-  if (pollHandle !== null) {
-    clearInterval(pollHandle);
-    pollHandle = null;
-  }
-}
-
-async function pollStatus() {
-  try {
-    const status = await fetchRevalidationStatus();
-    checkProgress.value = { checked: status.checked, total: status.total, active: status.active };
-    if (status.state === 'idle') {
-      stopPolling();
-      checking.value = false;
-      checkError.value = status.error ?? null;
-      cameras.value = await fetchCameras();
-    }
-  } catch (err) {
-    stopPolling();
-    checking.value = false;
-    checkError.value = err instanceof Error ? err.message : 'Failed to check availability status.';
-  }
-}
-
-async function runAvailabilityCheck() {
-  if (checking.value) return;
-  checking.value = true;
-  checkError.value = null;
-  checkProgress.value = null;
-  try {
-    await startRevalidation();
-    stopPolling();
-    pollHandle = setInterval(pollStatus, 1500);
-  } catch (err) {
-    checking.value = false;
-    checkError.value = err instanceof Error ? err.message : 'Failed to start availability check.';
-  }
-}
-
 onMounted(async () => {
   loadSummary();
   summaryHandle = setInterval(loadSummary, SUMMARY_REFRESH_MS);
@@ -182,7 +137,6 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  stopPolling();
   unsubscribeOverview?.();
   if (summaryHandle !== null) clearInterval(summaryHandle);
   if (snapshotHandle !== null) clearInterval(snapshotHandle);
@@ -196,25 +150,6 @@ onBeforeUnmount(() => {
         <h1 class="text-2xl font-bold text-slate-100">Traffic overview</h1>
         <p class="mt-1 text-sm text-slate-400">Belgrade traffic cameras · last {{ rangeLabel }}</p>
       </div>
-      <details class="relative">
-        <summary class="cursor-pointer list-none rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">Admin ▾</summary>
-        <div class="absolute right-0 z-10 mt-2 w-64 rounded-lg border border-slate-700 bg-slate-900 p-3 shadow-xl">
-          <button
-            type="button"
-            :disabled="checking"
-            class="inline-flex w-full items-center justify-center gap-2 rounded-md bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-            @click="runAvailabilityCheck"
-          >
-            <span v-if="checking" class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-900/30 border-t-slate-900"></span>
-            {{ checking ? 'Checking availability…' : 'Check camera availability' }}
-          </button>
-          <p v-if="checking && checkProgress" class="mt-2 text-xs text-slate-400">
-            {{ checkProgress.checked }} / {{ checkProgress.total }} checked ({{ checkProgress.active }} active)
-          </p>
-          <p v-if="checkError" class="mt-2 text-xs text-red-400">{{ checkError }}</p>
-          <p class="mt-2 text-[11px] text-slate-500">Re-probes every camera stream and updates which ones are active.</p>
-        </div>
-      </details>
     </div>
 
     <!-- KPI row -->

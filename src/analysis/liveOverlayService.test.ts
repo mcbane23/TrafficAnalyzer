@@ -115,6 +115,21 @@ describe('LiveOverlayService', () => {
     ctx.service.stop();
   });
 
+  it('reports watched cameras with their viewers and boxes per frame for the Admin page', async () => {
+    const ctx = setup();
+    expect(ctx.service.getMetrics()).toEqual({ maxCameras: 2, cameras: [] });
+    ctx.service.subscribe('cam-1', () => undefined);
+    ctx.service.subscribe('cam-1', () => undefined);
+    await settle();
+    ctx.captures.get('cam-1')!.frame(0, 10);
+    await settle();
+
+    expect(ctx.service.getMetrics().cameras).toEqual([
+      expect.objectContaining({ cameraId: 'cam-1', name: 'Camera 1', viewers: 2, vehiclesPerFrame: 1, capture: null }),
+    ]);
+    ctx.service.stop();
+  });
+
   it('shares one pipeline between viewers of the same camera and sends a late viewer the recent results first', async () => {
     const ctx = setup();
     const first: LiveOverlayResult[] = [];

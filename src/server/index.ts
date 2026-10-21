@@ -15,12 +15,14 @@ import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { AnalysisWorkerPool } from '../analysis/analysisWorkerPool';
 import { YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
 import { VehicleTracker } from '../analysis/vehicleTracker';
+import { ServerMetricsService } from './serverMetrics';
 
 const REGISTRY_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.json');
 const SCHEMA_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.schema.json');
 // Runtime-generated - not committed (see .gitignore) - recreated on first boot.
 const TRAFFIC_HISTORY_DB_PATH = path.resolve(__dirname, '../../data/traffic-history.db');
 const TRAFFIC_STATS_DB_PATH = path.resolve(__dirname, '../../data/traffic-stats.db');
+const DATA_DIR = path.resolve(__dirname, '../../data');
 // Runtime-generated as well: OpenVINO's compiled GPU kernels for the overlay model.
 const OPENVINO_CACHE_DIR = path.resolve(__dirname, '../../data/openvino-cache');
 // Resolved from the working directory, not `__dirname` like the paths above:
@@ -79,6 +81,7 @@ const overlayDevice = process.env.OVERLAY_DEVICE?.trim().toUpperCase() || 'CPU';
 // OVERLAY_CONFIDENCE (default 0.2): the YOLO score a box needs to be drawn.
 const overlayConfidence = Number(process.env.OVERLAY_CONFIDENCE) || undefined;
 let overlayModel: Promise<YoloModel> | null = null;
+let overlayModelLabel: string | null = null;
 const loadOverlayModel = (): Promise<YoloModel> =>
   (overlayModel ??= loadYoloModel({
     device: overlayDevice,
@@ -88,6 +91,7 @@ const loadOverlayModel = (): Promise<YoloModel> =>
     cacheDir: OPENVINO_CACHE_DIR,
   }).then((model) => {
     console.log(`[LiveOverlayService] detector: ${model.label}`);
+    overlayModelLabel = model.label;
     return model;
   }));
 const liveOverlayService =
@@ -122,6 +126,23 @@ const liveOverlayService =
           tracker: new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 1000, maxSpeed: 2, highConfidence: 0 }),
         }),
       );
+// CPU, memory and pipeline throughput for the Admin page, sampled every 5 s.
+const serverMetrics = new ServerMetricsService({
+  analysis: trafficAnalysisService,
+  overlay: liveOverlayService,
+  config: {
+    analysisFps: ANALYSIS_FPS ?? 3,
+    analysisThreads,
+    overlayDevice: process.env.OVERLAY_DETECTOR === 'off' ? 'off' : overlayDevice,
+    overlayModel: () => overlayModelLabel,
+  },
+  dataDir: DATA_DIR,
+  databases: [
+    { name: 'Traffic history', path: TRAFFIC_HISTORY_DB_PATH },
+    { name: 'Traffic statistics', path: TRAFFIC_STATS_DB_PATH },
+  ],
+});
+serverMetrics.start();
 const app = createApp(
   cameraService,
   revalidationService,
@@ -129,6 +150,7 @@ const app = createApp(
   trafficAnalysisService,
   trafficStatsService,
   liveOverlayService,
+  serverMetrics,
   STATIC_DIR,
 );
 
