@@ -289,15 +289,15 @@ precedent for Vue components.
   refused, busy or keeps failing (`subscribeCameraOverlay`). The player also draws the motion boxes while the overlay
   starts (up to ~30s: it starts on the first viewer and its first results are ~10s ahead of the
   picture), handing over once an overlay result covers the frame on screen. Env: `OVERLAY_DETECTOR=off`,
-  `OVERLAY_FPS` (3), `OVERLAY_THREADS` (2). The model is `models/yolo11n.onnx` (Ultralytics YOLO11n,
+  `OVERLAY_FPS` (3), `OVERLAY_THREADS` (2). The CPU model is `models/yolo26n.onnx` (Ultralytics YOLO26n,
   AGPL-3.0, exported with a 640x480 input to match the capture - a square 640 input wasted a quarter
   of each inference on padding). `onnxruntime-node` is loaded lazily, and `.npmrc` skips its CUDA
   download. The Dockerfile drops its darwin/win32 binaries.
 - **`OVERLAY_DEVICE=GPU` runs the overlay on an Intel iGPU via OpenVINO** (Bane's call after
   measuring recall: YOLO11n at 640px saw 3 of ~100 cars on Gazela, YOLO11s at 960px ~25-40, at ~4x
-  the compute). `loadYoloModel` compiles `models/yolo11s-openvino/yolo11s.xml` (FP16 IR, 960x736
+  the compute). `loadYoloModel` compiles the `OVERLAY_MODEL` IR (now YOLO26s by default; FP16, 960x736
   input, output tensor renamed `output0` - an unnamed output makes `openvino-node` throw) on that
-  device, caching kernels in `data/openvino-cache`, and falls back to YOLO11n on onnxruntime CPU if
+  device, caching kernels in `data/openvino-cache`, and falls back to the CPU model on onnxruntime if
   it fails; the overlay capture is 960x720 in GPU mode. `YoloDetector` takes a `() =>
   Promise<YoloModel>` so the CPU-or-GPU choice is made lazily on the first viewer. The container
   needs `/dev/dri` and the host's `render` GID in `group_add`. The runtime image is Debian trixie
@@ -305,14 +305,15 @@ precedent for Vue components.
   the Dockerfile drops `openvino-node`'s unused frontends and NPU plugin but must keep the IR
   frontend. The GPU path can't be exercised in CI or the sandbox (OpenVINO's CPU device can, with
   the same IR).
-- **`OVERLAY_MODEL` picks the GPU model, `OVERLAY_CPU_MODEL` the CPU one, `OVERLAY_CONFIDENCE` the minimum score (0.25)** (`OPENVINO_MODELS` /
-  `ONNX_MODELS` in `yoloDetector.ts`). GPU: `yolo26s` (default), `yolo26n`, `yolo11s`, all FP16 IR,
-  960x736, output renamed `output0`. CPU (also the GPU's fallback): `yolo26n` (default), `yolo11n`,
-  ONNX 640x480. Ultralytics exports YOLO26 with the same `[1, 84, anchors]` one-to-many head, so
-  the same decoder and NMS apply. On six camera frames (960px, conf 0.25, OpenVINO CPU): YOLO11s
-  112 vehicles at 145 ms, YOLO26s 98 at 139 ms, YOLO26n 77 at 59 ms. Bane made YOLO26s/26n the
-  defaults after trying 26s live on the N150 (it misses mostly motorcycles and distant cars); the
-  YOLO11 models stay bundled so switching back is one env var.
+- **`OVERLAY_MODEL` picks the GPU model, `OVERLAY_CPU_MODEL` the CPU one, `OVERLAY_CONFIDENCE` the minimum score (0.2)** (`OPENVINO_MODELS` /
+  `ONNX_MODELS` in `yoloDetector.ts`). GPU: `yolo26s` (default), `yolo26n`, `yolo26m`, all FP16 IR,
+  960x736, output renamed `output0`. CPU (also the GPU's fallback): `yolo26n`, ONNX 640x480.
+  Ultralytics exports YOLO26 with the same `[1, 84, anchors]` one-to-many head, so the same decoder
+  and NMS apply. On six camera frames (960px, conf 0.25, OpenVINO CPU): YOLO26s 98 vehicles at
+  139 ms, YOLO26n 77 at 59 ms; on Brankov most at rush hour YOLO26m found no more than 26s at ~3x the
+  time. Bane chose the YOLO26 defaults after trying them live on the N150 (26s misses mostly
+  motorcycles and distant cars) and had the YOLO11 models removed; 0.2 is the score threshold he
+  settled on live (0.15 drew more boxes with a few false ones).
 - **The overlay must never fall behind the player** (regression found on Bane's N150: boxes only
   flickered on now and then). Its capture uses `maxQueuedFrames: 1`, so a detector slower than
   `OVERLAY_FPS` skips frames instead of working through a growing backlog that the player soon

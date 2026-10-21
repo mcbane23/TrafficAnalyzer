@@ -129,9 +129,9 @@ describe('loadYoloModel', () => {
 
   it('runs the CPU model picked by name', async () => {
     const onnx = jest.fn(async () => session);
-    const model = await loadYoloModel({ cpuModel: 'yolo11n' }, { openVino: jest.fn(), onnx });
-    expect(onnx).toHaveBeenCalledWith(expect.stringMatching(/models\/yolo11n\.onnx$/), 2);
-    expect(model.label).toBe('YOLO11n on CPU');
+    const model = await loadYoloModel({ cpuModel: ' YOLO26N ' }, { openVino: jest.fn(), onnx });
+    expect(onnx).toHaveBeenCalledWith(expect.stringMatching(/models\/yolo26n\.onnx$/), 2);
+    expect(model.label).toBe('YOLO26n on CPU');
   });
 
   it('runs the larger model on the requested OpenVINO device', async () => {
@@ -143,9 +143,9 @@ describe('loadYoloModel', () => {
 
   it('runs the OpenVINO model picked by name', async () => {
     const openVino = jest.fn(async () => session);
-    const model = await loadYoloModel({ device: 'GPU', model: ' YOLO11s ' }, { openVino, onnx: jest.fn() });
-    expect(openVino).toHaveBeenCalledWith(expect.stringMatching(/yolo11s-openvino\/yolo11s\.xml$/), 'GPU', undefined);
-    expect(model).toMatchObject({ inputWidth: 960, inputHeight: 736, label: 'YOLO11s on OpenVINO GPU' });
+    const model = await loadYoloModel({ device: 'GPU', model: ' YOLO26m ' }, { openVino, onnx: jest.fn() });
+    expect(openVino).toHaveBeenCalledWith(expect.stringMatching(/yolo26m-openvino\/yolo26m\.xml$/), 'GPU', undefined);
+    expect(model).toMatchObject({ inputWidth: 960, inputHeight: 736, label: 'YOLO26m on OpenVINO GPU' });
   });
 
   it('falls back to YOLO26s for an unknown model name', async () => {
