@@ -64,20 +64,11 @@ export function subscribeCameraAnalysis(
   return () => source.close();
 }
 
-/** A camera's per-frame analysis results from the last ~45s, oldest first - what a just-opened player needs to draw boxes over the (older) picture it is about to show. */
-export async function fetchRecentAnalysis(cameraId: string): Promise<CameraAnalysisResult[]> {
-  const res = await fetch(`${CAMERAS_BASE_URL}/${encodeURIComponent(cameraId)}/analysis/recent`);
-  if (!res.ok) {
-    throw new Error(await parseErrorMessage(res, `Failed to load recent analysis (${res.status})`));
-  }
-  return res.json();
-}
-
 /**
  * Subscribes to a watched camera's appearance-model (YOLO) boxes. `onUnavailable`
  * fires once if the server can't provide them - the detector is switched off
  * (the stream is refused) or it reports an error for this camera - so the
- * caller can fall back to the motion-analysis boxes. Returns an unsubscribe
+ * caller can tell the viewer there will be no boxes. Returns an unsubscribe
  * function.
  */
 export function subscribeCameraOverlay(
