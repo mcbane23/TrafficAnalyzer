@@ -53,6 +53,12 @@ export class RevalidationService {
     private readonly now: () => Date = () => new Date(),
     /** How many cameras are probed at once. Defaults to 5. */
     concurrency: number = DEFAULT_CONCURRENCY,
+    /**
+     * Called once a run has saved the registry, before it reports itself
+     * finished - so the live analysis can start and stop cameras whose
+     * status changed. A failure here is logged; the check itself succeeded.
+     */
+    private readonly onSaved: (() => Promise<unknown> | void) | null = null,
   ) {
     this.concurrency = Math.max(1, Math.floor(concurrency));
   }
@@ -138,6 +144,13 @@ export class RevalidationService {
     if (failure !== null) throw failure;
 
     await this.store.save(entries);
+    if (this.onSaved) {
+      try {
+        await this.onSaved();
+      } catch (err) {
+        console.error('[RevalidationService] applying the new camera statuses failed:', err);
+      }
+    }
     this.status.state = 'idle';
     this.status.finishedAt = this.now().toISOString();
   }

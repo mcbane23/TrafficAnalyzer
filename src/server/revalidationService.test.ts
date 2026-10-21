@@ -61,6 +61,37 @@ describe('RevalidationService', () => {
     });
   });
 
+  it('lets the live analysis apply the new statuses after saving, before reporting the run finished', async () => {
+    const store = makeFakeStore([makeCamera({ id: 'a' })]);
+    const validator = makeInstantValidator({ a: { cameraId: 'a', status: 'active', checkedAt: '2026-01-01T00:00:00.000Z' } });
+    const seen: Array<{ saved: number; state: string }> = [];
+    const service = new RevalidationService(store, validator, undefined, undefined, () => {
+      seen.push({ saved: store.saved.length, state: service.getStatus().state });
+    });
+
+    service.start();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(seen).toEqual([{ saved: 1, state: 'running' }]);
+    expect(service.getStatus()).toMatchObject({ state: 'idle', error: null });
+  });
+
+  it('still reports a successful check when applying the new statuses fails', async () => {
+    const store = makeFakeStore([makeCamera({ id: 'a' })]);
+    const validator = makeInstantValidator({ a: { cameraId: 'a', status: 'active', checkedAt: '2026-01-01T00:00:00.000Z' } });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const service = new RevalidationService(store, validator, undefined, undefined, async () => {
+      throw new Error('registry unreadable');
+    });
+
+    service.start();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(service.getStatus()).toMatchObject({ state: 'idle', error: null, active: 1 });
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
   it('validates every camera, updates their status, and persists the result', async () => {
     const entries = [makeCamera({ id: 'a' }), makeCamera({ id: 'b' })];
     const store = makeFakeStore(entries);

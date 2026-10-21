@@ -39,7 +39,6 @@ const PORT = Number(process.env.PORT) || 3001;
 
 const store = new CameraRegistryStore(REGISTRY_PATH, SCHEMA_PATH);
 const cameraService = new CameraService(store);
-const revalidationService = new RevalidationService(store, new CameraValidator());
 const hlsProxyService = new HlsProxyService(store);
 // One CameraAnalyzer per camera is built internally - it owns that camera's
 // detector, tracker and occupancy model, all of which describe a single fixed
@@ -126,6 +125,15 @@ const liveOverlayService =
           tracker: new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 1000, maxSpeed: 2, highConfidence: 0 }),
         }),
       );
+// The Admin page's availability check rewrites camera statuses; the analysis
+// then starts and stops cameras to match, without a restart. (The
+// `cameras:revalidate` CLI runs in its own process, so it still needs one.)
+const revalidationService = new RevalidationService(store, new CameraValidator(), undefined, undefined, async () => {
+  const { started, stopped } = await trafficAnalysisService.reload();
+  if (started.length || stopped.length) {
+    console.log(`[TrafficAnalysisService] after availability check: started ${started.join(', ') || 'none'}; stopped ${stopped.join(', ') || 'none'}`);
+  }
+});
 // CPU, memory and pipeline throughput for the Admin page, sampled every 5 s.
 const serverMetrics = new ServerMetricsService({
   analysis: trafficAnalysisService,
