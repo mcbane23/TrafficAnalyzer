@@ -12,6 +12,8 @@ import VolumeChart from '../components/charts/VolumeChart.vue';
 import HourHeatmap from '../components/charts/HourHeatmap.vue';
 import '../components/charts/chartSetup';
 import { intlLocale, t } from '../i18n';
+import { pageSubject } from '../composables/pageTitle';
+import AppIcon from '../components/AppIcon.vue';
 
 const route = useRoute();
 const range = useStatsRange();
@@ -32,6 +34,8 @@ const heatmap = ref<CameraHeatmap | null>(null);
 let refreshHandle: ReturnType<typeof setInterval> | null = null;
 
 const STATS_REFRESH_MS = 60_000;
+
+watch(camera, (value) => (pageSubject.value = value?.name ?? null));
 
 const labels = computed(() => directionLabels(camera.value, stats.value?.axis));
 const bucketOptions = computed(() => ALLOWED_BUCKETS_UI[range.value]);
@@ -94,6 +98,7 @@ onMounted(() => {
   refreshHandle = setInterval(loadAll, STATS_REFRESH_MS);
 });
 onBeforeUnmount(() => {
+  pageSubject.value = null;
   if (refreshHandle !== null) clearInterval(refreshHandle);
 });
 watch(
@@ -110,15 +115,17 @@ watch([range, activeBucket], () => loadStats());
 </script>
 
 <template>
-  <main class="mx-auto max-w-7xl px-4 py-6">
-    <router-link :to="{ path: '/', query: { range } }" class="text-sm font-medium text-slate-400 hover:text-slate-200">{{ t('cam.back') }}</router-link>
+  <main class="mx-auto max-w-7xl px-4 py-4 sm:py-6">
+    <router-link :to="{ path: '/', query: { range } }" class="inline-flex items-center gap-1.5 text-sm font-medium text-slate-400 hover:text-slate-200">
+      <AppIcon name="back" :size="15" />{{ t('cam.back') }}
+    </router-link>
 
     <p v-if="loading" class="mt-8 text-sm text-slate-400">{{ t('cam.loading') }}</p>
     <p v-else-if="error" class="mt-8 text-sm text-red-400">{{ error }}</p>
     <template v-else-if="camera">
       <div class="mt-2 flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h1 class="text-2xl font-bold text-slate-100">{{ camera.name }}</h1>
+          <h1 class="text-xl font-bold text-slate-100 sm:text-2xl">{{ camera.name }}</h1>
           <p class="mt-1 text-sm text-slate-400">{{ camera.location.address ?? `${camera.location.lat}, ${camera.location.lon}` }} · {{ camera.source }}</p>
         </div>
       </div>
@@ -133,8 +140,8 @@ watch([range, activeBucket], () => loadStats());
             <label class="inline-flex cursor-pointer items-center gap-1.5">
               <input v-model="showTrails" type="checkbox" class="accent-sky-400" /> {{ t('cam.trails') }}
             </label>
-            <button type="button" class="ml-auto rounded-md px-2 py-1 hover:bg-slate-800 hover:text-slate-200" @click="player?.toggleFullscreen()">
-              ⛶ {{ t('cam.fullscreen') }}
+            <button type="button" class="ml-auto inline-flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-slate-800 hover:text-slate-200" @click="player?.toggleFullscreen()">
+              <AppIcon name="fullscreen" :size="14" />{{ t('cam.fullscreen') }}
             </button>
           </div>
         </div>

@@ -15,6 +15,7 @@ import {
 } from '../services/admin';
 import { directionLabels } from '../composables/trafficUi';
 import { formatNumber, intlLocale, t } from '../i18n';
+import AppIcon from '../components/AppIcon.vue';
 
 /**
  * The counting-accuracy check (Admin): record a few minutes of a camera,
@@ -296,7 +297,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="mx-auto max-w-7xl px-4 py-6">
-    <router-link to="/admin" class="text-xs text-sky-400 hover:text-sky-300">← {{ t('check.backToAdmin') }}</router-link>
+    <router-link to="/admin" class="inline-flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300"><AppIcon name="back" :size="13" />{{ t('check.backToAdmin') }}</router-link>
     <h1 class="mt-1 text-xl font-semibold text-slate-100">{{ t('check.title') }}</h1>
 
     <!-- List and start -->

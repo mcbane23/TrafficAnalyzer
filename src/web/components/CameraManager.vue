@@ -5,6 +5,7 @@ import type { RoadAxis } from '../../types/stats';
 import { addCamera, fetchAdminCameras, updateCamera } from '../services/admin';
 import { cameraSnapshotUrl, fetchCameraStats } from '../services/stats';
 import { t } from '../i18n';
+import AppIcon from './AppIcon.vue';
 import ZoneEditor from './ZoneEditor.vue';
 
 /**
@@ -239,7 +240,7 @@ onMounted(load);
       <form class="my-4 w-full max-w-4xl rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-2xl" @submit.prevent="saveEditor">
         <div class="flex items-start justify-between gap-3">
           <h3 class="font-semibold text-slate-100">{{ t('cameraEdit.editTitle', { name: editing.name }) }}</h3>
-          <button type="button" class="text-slate-400 hover:text-slate-200" :aria-label="t('cameraEdit.cancel')" @click="closeEditor">✕</button>
+          <button type="button" class="text-slate-400 hover:text-slate-200" :aria-label="t('cameraEdit.cancel')" @click="closeEditor"><AppIcon name="close" /></button>
         </div>
 
         <div class="mt-3 grid gap-4 lg:grid-cols-[1fr_18rem]">
