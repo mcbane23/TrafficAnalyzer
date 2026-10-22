@@ -46,3 +46,8 @@ export function cameraStatsCsvUrl(cameraId: string, range: StatsRange, bucket: S
 export function cameraSnapshotUrl(cameraId: string, cacheBust: number): string {
   return `${cameraPath(cameraId)}/snapshot.jpg?t=${cacheBust}`;
 }
+
+/** When each camera's dashboard thumbnail was captured (ISO), by camera id. */
+export function fetchSnapshotTimes(): Promise<Record<string, string>> {
+  return getJson('/api/cameras/snapshots');
+}

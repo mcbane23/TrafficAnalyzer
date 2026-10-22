@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import Hls from 'hls.js';
 import type { CameraEntry } from '../../types/camera';
 import type { BoundingBox, VehicleDetection } from '../../types/analysis';
-import { subscribeCameraOverlay } from '../services/analysis';
+import { fetchOverlayModel, subscribeCameraOverlay } from '../services/analysis';
 import { t } from '../i18n';
 
 /**
@@ -37,6 +37,35 @@ let hls: Hls | null = null;
  * and `unavailable` when the server refuses or keeps failing the overlay.
  */
 const overlayState = ref<'starting' | 'ready' | 'unavailable'>('starting');
+
+/**
+ * Seconds since the boxes started coming, for the progress bar over the
+ * video: it fills over the usual ~30 s and then waits near the end.
+ */
+const STARTUP_SECONDS = 30;
+const startingSeconds = ref(0);
+let startingHandle: ReturnType<typeof setInterval> | null = null;
+const startingProgress = computed(() => Math.min(95, (startingSeconds.value / STARTUP_SECONDS) * 100));
+function stopStartingClock() {
+  if (startingHandle !== null) clearInterval(startingHandle);
+  startingHandle = null;
+}
+function startStartingClock() {
+  stopStartingClock();
+  startingSeconds.value = 0;
+  const startedAt = Date.now();
+  startingHandle = setInterval(() => (startingSeconds.value = Math.round((Date.now() - startedAt) / 1000)), 1000);
+}
+/** Which model draws the boxes (e.g. "YOLO26s · GPU"), shown once they appear. */
+const overlayModel = ref<string | null>(null);
+watch(overlayState, (state) => {
+  if (state !== 'starting') stopStartingClock();
+  if (state === 'ready') {
+    fetchOverlayModel()
+      .then((model) => (overlayModel.value = model))
+      .catch(() => undefined);
+  }
+});
 
 // Bounding-box overlay. Boxes come from the appearance-model overlay stream
 // (YOLO, run server-side only while this camera is watched - see
@@ -577,6 +606,8 @@ function attachOverlay() {
   unsubscribeOverlay?.();
   unsubscribeOverlay = null;
   overlayState.value = 'starting';
+  overlayModel.value = null;
+  startStartingClock();
   trackedBoxes.clear();
   trails.clear();
   untrackedBoxes = [];
@@ -584,7 +615,10 @@ function attachOverlay() {
   synced = [];
   reportInView(null);
 
-  if (props.camera.status !== 'active') return;
+  if (props.camera.status !== 'active') {
+    stopStartingClock();
+    return;
+  }
 
   const cameraId = props.camera.id;
   const unsubscribe = subscribeCameraOverlay(cameraId, ingestOverlay, () => {
@@ -621,6 +655,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   destroy();
   unsubscribeOverlay?.();
+  stopStartingClock();
   resizeObserver?.disconnect();
   if (animationFrameHandle !== null) cancelAnimationFrame(animationFrameHandle);
 });
@@ -639,12 +674,31 @@ watch(
       <video v-show="!error" ref="videoRef" class="aspect-video h-full w-full" muted autoplay playsinline></video>
       <canvas v-show="!error" ref="canvasRef" class="pointer-events-none absolute inset-0 h-full w-full"></canvas>
       <div
-        v-if="!error && showBoxes && camera.status === 'active' && overlayState !== 'ready'"
+        v-if="!error && showBoxes && camera.status === 'active' && overlayState === 'starting'"
+        class="pointer-events-none absolute left-1/2 top-3 w-64 max-w-[90%] -translate-x-1/2 rounded-md bg-slate-900/85 px-3 py-2 text-xs font-medium text-slate-200"
+        role="status"
+      >
+        <div class="flex items-center justify-between gap-3">
+          <span>{{ startingSeconds < STARTUP_SECONDS ? t('player.starting') : t('player.startingLong') }}</span>
+          <span class="tabular-nums text-slate-400">{{ startingSeconds }} s</span>
+        </div>
+        <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-slate-700">
+          <div class="h-full rounded-full bg-sky-400 transition-[width] duration-1000 ease-linear" :style="{ width: `${startingProgress}%` }"></div>
+        </div>
+      </div>
+      <div
+        v-else-if="!error && showBoxes && camera.status === 'active' && overlayState === 'unavailable'"
         class="pointer-events-none absolute left-1/2 top-3 max-w-[90%] -translate-x-1/2 rounded-md bg-slate-900/80 px-3 py-1.5 text-center text-xs font-medium text-slate-200"
       >
-        <template v-if="overlayState === 'starting'">{{ t('player.starting') }}</template>
-        <template v-else>{{ t('player.unavailable') }}</template>
+        {{ t('player.unavailable') }}
       </div>
+      <span
+        v-if="!error && showBoxes && overlayState === 'ready' && overlayModel"
+        class="pointer-events-none absolute bottom-2 left-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-slate-300"
+        :title="t('player.modelTitle')"
+      >
+        {{ overlayModel }}
+      </span>
     </div>
     <div
       v-if="usingAlternate && !error"

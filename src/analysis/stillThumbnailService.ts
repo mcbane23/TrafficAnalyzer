@@ -122,6 +122,16 @@ export class StillThumbnailService {
     return this.stills.get(cameraId) ?? null;
   }
 
+  /** When each of these cameras' thumbnails was captured (ISO), for those that have one - the dashboard shows their age. */
+  capturedTimes(cameraIds: string[]): Record<string, string> {
+    const times: Record<string, string> = {};
+    for (const id of cameraIds) {
+      const thumbnail = this.getThumbnail(id);
+      if (thumbnail) times[id] = thumbnail.capturedAt;
+    }
+    return times;
+  }
+
   private runPass(): void {
     this.pass = this.grabDue()
       .catch((err) => console.error('[StillThumbnailService] pass failed:', err))
