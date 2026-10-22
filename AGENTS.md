@@ -147,7 +147,9 @@ precedent for Vue components.
   `FrameGrabber.setStreamFps` restarts open captures' ffmpeg on the new rate, a model change drops
   the cached model so the next overlay frame loads the new one, and `YoloDetector` reads its
   threshold per frame. `ANALYSIS_FPS`, `OVERLAY_FPS`, `OVERLAY_MODEL` and `OVERLAY_CONFIDENCE` are only
-  the defaults now. A camera not switched on tells its viewers why on the camera page. Bane wants
+  the defaults now. A camera not switched on is still analyzed while its camera page is open
+  (`subscribeCameraDetail` starts it, and it stops `VIEWER_LINGER_MS` = 15 s after the last viewer
+  leaves; a reload keeps it while watched) - Bane wants the camera page to always show analysis. Bane wants
   these in the UI, not docker-compose — don't move them back to env vars. Ideas he raised for later:
   a password on the Admin page, NVIDIA GPU support for YOLO.
 - CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): every branch/PR runs `npm ci`, `npm test`,

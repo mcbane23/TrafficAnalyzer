@@ -173,8 +173,8 @@ onMounted(load);
         </div>
       </div>
       <p class="mt-1 max-w-3xl text-xs text-slate-400">
-        Statistics, dashboard badges and thumbnails come only from cameras switched on here. Each one keeps an ffmpeg running (~{{ MB_PER_CAMERA }} MB of
-        memory and part of a CPU core). Live view and its boxes work for every camera either way.
+        Statistics, dashboard badges and thumbnails come from cameras switched on here. Each one keeps an ffmpeg running (~{{ MB_PER_CAMERA }} MB of
+        memory and part of a CPU core). A camera switched off is still analyzed while its page is open, and stops ~15 s after it is closed.
       </p>
 
       <ul class="mt-3 grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">

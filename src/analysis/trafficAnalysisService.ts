@@ -2,7 +2,7 @@ import { CameraEntry } from '../types/camera';
 import { CameraSource } from '../server/cameraService';
 import { CameraAnalysisOverview, CameraAnalysisResult, StoredAnalysisResult } from '../types/analysis';
 import { FrameCapture, GrabFrameResult } from './frameGrabber';
-import { CameraAnalyzer, errorAnalysisResult } from './cameraAnalyzer';
+import { CameraAnalyzer } from './cameraAnalyzer';
 import { VideoFrame, encodeJpeg } from './videoFrame';
 import { ThroughputWindow } from './throughputWindow';
 import { CameraAnalysisMetrics } from '../types/admin';
@@ -160,6 +160,9 @@ const DEFAULTS = {
  */
 const STARTUP_STAGGER_STEP_MS = 400;
 
+/** How long a camera analyzed only for its viewers keeps running after the last one leaves. */
+const VIEWER_LINGER_MS = 15_000;
+
 /** How far back the Admin page's per-camera rates look. */
 const METRICS_WINDOW_MS = 15_000;
 
@@ -215,8 +218,13 @@ export class TrafficAnalysisService {
   private readonly latestOverview = new Map<string, CameraAnalysisOverview>();
   private readonly loops = new Set<Promise<void>>();
   private enabledCameras: Set<string> | null;
-  /** Active cameras the settings leave out, with the reason shown to their viewers. */
-  private readonly excluded = new Map<string, string>();
+  /**
+   * Active cameras the settings leave out. One of them is still analyzed
+   * while its camera page is open (see `subscribeCameraDetail`).
+   */
+  private readonly excluded = new Map<string, CameraEntry>();
+  /** Pending stops of left-out cameras whose last viewer just left. */
+  private readonly viewerLinger = new Map<string, unknown>();
 
   private running = false;
   private activeJobs = 0;
@@ -279,21 +287,25 @@ export class TrafficAnalysisService {
   }
 
   /**
-   * The active cameras to analyze, in registry order, after the settings;
-   * records why each other active camera was left out.
+   * The active cameras to analyze, in registry order: those the settings
+   * switch on, plus any left-out one that is being watched (or was until a
+   * moment ago); records the left-out ones.
    */
   private selectCameras(entries: CameraEntry[]): CameraEntry[] {
     this.excluded.clear();
     const selected: CameraEntry[] = [];
     for (const camera of entries) {
       if (camera.status !== 'active') continue;
-      if (this.enabledCameras && !this.enabledCameras.has(camera.id)) {
-        this.excluded.set(camera.id, 'Traffic analysis is not switched on for this camera - it can be on the Admin page.');
-      } else {
-        selected.push(camera);
-      }
+      const switchedOn = !this.enabledCameras || this.enabledCameras.has(camera.id);
+      if (!switchedOn) this.excluded.set(camera.id, camera);
+      if (switchedOn || this.isViewed(camera.id)) selected.push(camera);
     }
     return selected;
+  }
+
+  /** Has camera-page viewers, or lost its last one less than `VIEWER_LINGER_MS` ago. */
+  private isViewed(cameraId: string): boolean {
+    return (this.resultSubscribers.get(cameraId)?.size ?? 0) > 0 || this.viewerLinger.has(cameraId);
   }
 
   /**
@@ -361,6 +373,8 @@ export class TrafficAnalysisService {
   /** Stops every camera's loop, closing its capture and disposing its analyzer. */
   stop(): void {
     this.running = false;
+    for (const handle of this.viewerLinger.values()) this.options.scheduler.clearTimeout(handle);
+    this.viewerLinger.clear();
     for (const state of Array.from(this.cameraStates.values())) this.removeCamera(state);
   }
 
@@ -423,20 +437,26 @@ export class TrafficAnalysisService {
     return this.historyStore.getHistory(cameraId, options);
   }
 
-  /** Subscribes to every frame's full result for a single camera. Returns an unsubscribe function. */
+  /**
+   * Subscribes to every frame's full result for a single camera. Returns an
+   * unsubscribe function. An active camera the settings leave out is
+   * analyzed anyway while it has viewers (Bane's call: the camera page should
+   * always show live analysis), and stops `VIEWER_LINGER_MS` after the last
+   * one leaves - so a reload doesn't throw away what it has learned.
+   */
   subscribeCameraDetail(cameraId: string, callback: ResultSubscriber): () => void {
     const existing = this.resultSubscribers.get(cameraId);
     const subs = existing ?? new Set<ResultSubscriber>();
     if (!existing) this.resultSubscribers.set(cameraId, subs);
     subs.add(callback);
-    // A camera that is never analyzed would otherwise look like it is still
-    // warming up forever: tell its viewer why there are no results instead.
-    const excludedReason = this.excluded.get(cameraId);
-    if (excludedReason !== undefined) {
-      queueMicrotask(() => {
-        if (subs.has(callback)) callback(errorAnalysisResult(cameraId, this.options.now().toISOString(), excludedReason));
-      });
+
+    const linger = this.viewerLinger.get(cameraId);
+    if (linger !== undefined) {
+      this.options.scheduler.clearTimeout(linger);
+      this.viewerLinger.delete(cameraId);
     }
+    const leftOut = this.excluded.get(cameraId);
+    if (this.running && leftOut && !this.cameraStates.has(cameraId)) this.addCamera(leftOut, 0);
 
     let unsubscribed = false;
     return () => {
@@ -447,8 +467,20 @@ export class TrafficAnalysisService {
       // ever subscribed to - including ids that don't exist in the registry.
       if (subs.size === 0 && this.resultSubscribers.get(cameraId) === subs) {
         this.resultSubscribers.delete(cameraId);
+        if (this.excluded.has(cameraId) && this.cameraStates.has(cameraId)) this.scheduleViewedStop(cameraId);
       }
     };
+  }
+
+  /** Stops a left-out camera analyzed only for its viewers, unless one is back by then. */
+  private scheduleViewedStop(cameraId: string): void {
+    const handle = this.options.scheduler.setTimeout(() => {
+      if (this.viewerLinger.get(cameraId) !== handle) return;
+      this.viewerLinger.delete(cameraId);
+      const state = this.cameraStates.get(cameraId);
+      if (state && this.excluded.has(cameraId) && !this.isViewed(cameraId)) this.removeCamera(state);
+    }, VIEWER_LINGER_MS);
+    this.viewerLinger.set(cameraId, handle);
   }
 
   /** Subscribes to the lightweight dashboard-wide overview feed. Returns an unsubscribe function. */
