@@ -289,13 +289,14 @@ export class TrafficAnalysisService {
   /**
    * The active cameras to analyze, in registry order: those the settings
    * switch on, plus any left-out one that is being watched (or was until a
-   * moment ago); records the left-out ones.
+   * moment ago); records the left-out ones. A camera hidden on the Admin
+   * page is never analyzed.
    */
   private selectCameras(entries: CameraEntry[]): CameraEntry[] {
     this.excluded.clear();
     const selected: CameraEntry[] = [];
     for (const camera of entries) {
-      if (camera.status !== 'active') continue;
+      if (camera.status !== 'active' || camera.hidden) continue;
       const switchedOn = !this.enabledCameras || this.enabledCameras.has(camera.id);
       if (!switchedOn) this.excluded.set(camera.id, camera);
       if (switchedOn || this.isViewed(camera.id)) selected.push(camera);
@@ -334,6 +335,20 @@ export class TrafficAnalysisService {
       started.push(camera.id);
     }
     return { started, stopped };
+  }
+
+  /**
+   * Restarts one camera's analysis from the registry's current entry, e.g.
+   * after its ignore zones were edited: its analyzer is built from the entry,
+   * so the new zones need a fresh one (what it had learned goes with the old
+   * one). A camera not being analyzed is left alone.
+   */
+  async restartCamera(cameraId: string): Promise<boolean> {
+    const state = this.cameraStates.get(cameraId);
+    if (!state) return false;
+    this.removeCamera(state);
+    await this.reload();
+    return this.cameraStates.has(cameraId);
   }
 
   private addCamera(camera: CameraEntry, startDelayMs: number): void {

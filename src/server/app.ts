@@ -11,14 +11,15 @@ import { StillThumbnailService } from '../analysis/stillThumbnailService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { ServerMetricsService } from './serverMetrics';
 import { AdminSettingsService } from './adminSettingsService';
+import { CameraEditError, CameraEditor } from './cameraEditor';
 import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
 
 /**
  * Creates the Express app: read-only camera API routes, a background
  * revalidation trigger/status pair (they don't accept a request body, they
  * just kick off / report on the same check the `cameras:revalidate` CLI
- * performs), the Admin page's analysis settings (the only endpoint that
- * takes a body - normalized and clamped before use), an HLS proxy route for
+ * performs), the Admin page's analysis settings and camera editor (the only
+ * endpoints that take a body - normalized and clamped before use), an HLS proxy route for
  * cameras that need special request headers the browser can't send
  * itself, the vehicle-traffic-analysis routes (bootstrap + SSE streams +
  * history), server health metrics for the Admin page, plus (when a built frontend is present) static file serving
@@ -43,6 +44,7 @@ export function createApp(
   liveOverlayService: LiveOverlayService | null,
   serverMetrics: ServerMetricsService,
   adminSettings: AdminSettingsService,
+  cameraEditor: CameraEditor,
   staticDir?: string,
 ): Express {
   const app = express();
@@ -106,6 +108,33 @@ export function createApp(
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save analysis settings' });
     }
   });
+
+  // The Admin page's camera editor: every camera (hidden ones too), edits to one, and adding one - see CameraEditor.
+  const editRoute =
+    (handler: (req: express.Request) => Promise<unknown>, status = 200): express.RequestHandler =>
+    async (req, res) => {
+      try {
+        res.status(status).json(await handler(req));
+      } catch (err) {
+        if (err instanceof CameraEditError) res.status(err.status).json({ error: err.message, code: err.code });
+        else res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save the camera' });
+      }
+    };
+  app.get('/api/admin/cameras', async (_req, res) => {
+    try {
+      res.set('Cache-Control', 'no-store').json(await cameraService.listAllCameras());
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load cameras' });
+    }
+  });
+  app.patch('/api/admin/cameras/:id', express.json({ limit: '64kb' }), editRoute(async (req) => {
+    const camera = await cameraEditor.update(String(req.params.id), req.body);
+    return cameraService.getCameraById(camera.id);
+  }));
+  app.post('/api/admin/cameras', express.json({ limit: '16kb' }), editRoute(async (req) => {
+    const camera = await cameraEditor.add(req.body);
+    return cameraService.getCameraById(camera.id);
+  }, 201));
 
   // Server health for the Admin page: CPU, memory, analysis/overlay throughput, database sizes.
   app.get('/api/admin/metrics', (_req, res) => {

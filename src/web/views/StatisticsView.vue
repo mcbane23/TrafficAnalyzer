@@ -26,7 +26,8 @@ const SERIES_COLORS = ['#38bdf8', '#f97316', '#a78bfa', '#22c55e', '#f43f5e'];
 const nameById = computed(() => new Map(cameras.value.map((c) => [c.id, c.name])));
 const rangeLabel = computed(() => RANGES.find((r) => r.value === range.value)?.label ?? range.value);
 
-const ranked = computed(() => (summary.value?.cameras ?? []).filter((c) => c.total > 0));
+// Hidden cameras (left out of /api/cameras) are left out of the ranking too.
+const ranked = computed(() => (summary.value?.cameras ?? []).filter((c) => c.total > 0 && nameById.value.has(c.id)));
 
 const rankingHeight = computed(() => `${Math.max(160, ranked.value.length * 28 + 60)}px`);
 

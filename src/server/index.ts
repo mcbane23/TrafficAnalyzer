@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
 import path from 'node:path';
 import { CameraRegistryStore } from '../registry/cameraRegistryStore';
 import { seedMissingFiles } from '../registry/seedRegistry';
@@ -21,6 +22,7 @@ import { VehicleTracker } from '../analysis/vehicleTracker';
 import { ServerMetricsService } from './serverMetrics';
 import { AnalysisSettingsStore } from './analysisSettingsStore';
 import { AdminSettingsService } from './adminSettingsService';
+import { CameraEditor } from './cameraEditor';
 import { ProcessingSettings } from '../types/admin';
 
 const REGISTRY_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.json');
@@ -52,7 +54,10 @@ const REGISTRY_DEFAULTS_DIR = path.resolve(__dirname, '../../defaults/cameras');
 const seeded = seedMissingFiles(REGISTRY_DEFAULTS_DIR, path.dirname(REGISTRY_PATH));
 if (seeded.length) console.log(`[CameraRegistry] data/cameras was missing ${seeded.join(', ')}; copied the image's defaults`);
 
-const store = new CameraRegistryStore(REGISTRY_PATH, SCHEMA_PATH);
+// The schema always comes from the image when it has one: a data volume keeps
+// the copy it was first seeded with, which would reject fields added since.
+const DEFAULT_SCHEMA_PATH = path.join(REGISTRY_DEFAULTS_DIR, 'belgrade.schema.json');
+const store = new CameraRegistryStore(REGISTRY_PATH, fs.existsSync(DEFAULT_SCHEMA_PATH) ? DEFAULT_SCHEMA_PATH : SCHEMA_PATH);
 const cameraService = new CameraService(store);
 const hlsProxyService = new HlsProxyService(store);
 // One CameraAnalyzer per camera is built internally - it owns that camera's
@@ -184,11 +189,28 @@ const adminSettings = new AdminSettingsService({
 // The Admin page's availability check rewrites camera statuses; the analysis
 // then starts and stops cameras to match, without a restart. (The
 // `cameras:revalidate` CLI runs in its own process, so it still needs one.)
-const revalidationService = new RevalidationService(store, new CameraValidator(), undefined, undefined, async () => {
+const cameraValidator = new CameraValidator();
+const revalidationService = new RevalidationService(store, cameraValidator, undefined, undefined, async () => {
   const { started, stopped } = await trafficAnalysisService.reload();
   if (started.length || stopped.length) {
     console.log(`[TrafficAnalysisService] after availability check: started ${started.join(', ') || 'none'}; stopped ${stopped.join(', ') || 'none'}`);
   }
+});
+// The Admin page's camera editor. Each change is applied without a restart:
+// hiding, showing or adding a camera brings the analyzed set in line, and new
+// ignore zones rebuild that camera's analysis and live boxes.
+const cameraEditor = new CameraEditor({
+  store,
+  validator: cameraValidator,
+  isRevalidating: () => revalidationService.getStatus().state === 'running',
+  onChanged: async (camera, change) => {
+    if (change.zones) {
+      await trafficAnalysisService.restartCamera(camera.id);
+      liveOverlayService?.updateCamera(camera);
+    }
+    if (change.hidden || change.added) await trafficAnalysisService.reload();
+    console.log(`[CameraEditor] ${change.added ? 'added' : 'edited'} camera "${camera.id}"`);
+  },
 });
 // CPU, memory and pipeline throughput for the Admin page, sampled every 5 s.
 const serverMetrics = new ServerMetricsService({
@@ -226,6 +248,7 @@ const app = createApp(
   liveOverlayService,
   serverMetrics,
   adminSettings,
+  cameraEditor,
   STATIC_DIR,
 );
 

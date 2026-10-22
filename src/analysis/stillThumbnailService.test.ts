@@ -100,8 +100,8 @@ function setup(cameras: CameraEntry[], options: Partial<StillThumbnailServiceOpt
 }
 
 describe('StillThumbnailService', () => {
-  it('grabs a still for every active camera without a live thumbnail, one at a time, at start', async () => {
-    const t = setup([makeCamera('a'), makeCamera('b'), makeCamera('off', { status: 'inactive' }), makeCamera('live')]);
+  it('grabs a still for every active, shown camera without a live thumbnail, one at a time, at start', async () => {
+    const t = setup([makeCamera('a'), makeCamera('b'), makeCamera('off', { status: 'inactive' }), makeCamera('hid', { hidden: true }), makeCamera('live')]);
     t.live.set('live', { buffer: Buffer.from('live'), capturedAt: new Date(T0).toISOString() });
     t.service.start();
     await flush();

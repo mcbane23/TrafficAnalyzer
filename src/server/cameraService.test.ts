@@ -31,6 +31,15 @@ describe('CameraService', () => {
     expect(result).toEqual(entries);
   });
 
+  it('leaves hidden cameras out of the list, but not out of the Admin list', async () => {
+    const shown = makeCamera({ id: 'a' });
+    const hidden = makeCamera({ id: 'b', hidden: true });
+    const service = new CameraService(makeFakeSource([shown, hidden]));
+
+    expect(await service.listCameras()).toEqual([shown]);
+    expect(await service.listAllCameras()).toEqual([shown, hidden]);
+  });
+
   it('returns the camera matching the requested id', async () => {
     const target = makeCamera({ id: 'brankov-most', name: 'Brankov Most' });
     const entries = [makeCamera({ id: 'other' }), target];

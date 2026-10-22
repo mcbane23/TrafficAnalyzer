@@ -50,6 +50,7 @@ colocated `*.test.ts`:
 | `TrafficStatsStore` | [src/analysis/trafficStatsStore.ts](src/analysis/trafficStatsStore.ts) | Through `TrafficStatsService`'s tests, against a real `:memory:` DB |
 | `TrafficStatsService` | [src/analysis/trafficStatsService.ts](src/analysis/trafficStatsService.ts) | Yes — real `:memory:` `TrafficStatsStore` plus an injected `now` |
 | `StillThumbnailService` | [src/analysis/stillThumbnailService.ts](src/analysis/stillThumbnailService.ts) | Yes — fake `StillGrabber`/scheduler/clock; `FileThumbnailStore` against a temp dir. Serves `/api/cameras/:id/snapshot.jpg`: the analysis' live thumbnail, else a still from a one-off ffmpeg (one camera at a time, refreshed every 30 min, kept in `data/thumbnails/`) |
+| `CameraEditor` | [src/server/cameraEditor.ts](src/server/cameraEditor.ts) | Yes — fake registry store/validator; the Admin page's camera list (`GET/PATCH/POST /api/admin/cameras`) |
 | `ThroughputWindow` | [src/analysis/throughputWindow.ts](src/analysis/throughputWindow.ts) | Yes — rolling fps / ms per frame / stream-vs-wall-clock ratio over an injected clock |
 | `ServerMetricsService` | [src/server/serverMetrics.ts](src/server/serverMetrics.ts) | Yes — CPU delta arithmetic through the `SystemReader` seam (fake `/proc` counters); backs the Admin page (`GET /api/admin/metrics`) |
 | Pipeline end-to-end | [src/analysis/pipeline.test.ts](src/analysis/pipeline.test.ts) | Yes — real ffmpeg + detector + tracker on committed synthetic footage with known ground truth ([__fixtures__/syntheticFootage.ts](src/analysis/__fixtures__/syntheticFootage.ts)) |
@@ -153,6 +154,17 @@ precedent for Vue components.
   leaves; a reload keeps it while watched) - Bane wants the camera page to always show analysis. Bane wants
   these in the UI, not docker-compose — don't move them back to env vars. Ideas he raised for later:
   a password on the Admin page, NVIDIA GPU support for YOLO.
+- **Admin "Cameras"** (`CameraEditor`, UI in `CameraManager.vue` + `ZoneEditor.vue`): rename a camera,
+  name its directions A/B (`directions`), draw `ignoreZones` with the mouse over its snapshot (arrows
+  show the learned road axis when the stats have one), hide it (`hidden: true`: left out of
+  `/api/cameras`, the stats ranking, the analysis switches, stills and analysis, but kept in the
+  registry), or add one (probed by `CameraValidator` first; id is a slug of the name). Writes go
+  through `CameraRegistryStore` (schema-checked), queued one at a time, and are refused with 409 while
+  the availability check runs, since that rewrites the whole registry when it ends. Changes apply
+  live: zones -> `TrafficAnalysisService.restartCamera` + `LiveOverlayService.updateCamera`; hidden or
+  added -> `reload()`. Errors carry a `code` the UI translates. The server reads the registry schema
+  from the image's `defaults/cameras` when present, because a data volume keeps the schema it was
+  first seeded with and would reject new fields like `hidden`.
 - CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): every branch/PR runs `npm ci`, `npm test`,
   `npm run build` and a Docker build, and keeps **nothing** on GitHub — no uploaded artifacts, no
   build records (`DOCKER_BUILD_RECORD_UPLOAD=false`), no npm cache, no Docker layer cache writes.

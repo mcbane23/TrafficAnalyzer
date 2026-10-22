@@ -51,6 +51,8 @@ export interface CameraEntry {
    * mirroring `headers` for the primary url.
    */
   alternateHeaders?: Record<string, string>;
+  /** Hidden on the Admin page: off the dashboard, never analyzed, kept so it can be shown again. */
+  hidden?: boolean;
   /**
    * Optional display names for the two traffic directions the statistics
    * learn per camera (see DirectionModel): `a` is movement down the frame,

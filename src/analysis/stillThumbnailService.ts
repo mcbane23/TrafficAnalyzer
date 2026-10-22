@@ -131,10 +131,10 @@ export class StillThumbnailService {
       });
   }
 
-  /** Active cameras without a live thumbnail whose still is missing or due, in registry order. */
+  /** Active, shown cameras without a live thumbnail whose still is missing or due, in registry order. */
   private async dueCameras(): Promise<CameraEntry[]> {
     const entries = await this.source.load();
-    return entries.filter((camera) => camera.status === 'active' && this.isDue(camera.id));
+    return entries.filter((camera) => camera.status === 'active' && !camera.hidden && this.isDue(camera.id));
   }
 
   private isDue(cameraId: string): boolean {
