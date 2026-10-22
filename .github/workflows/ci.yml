@@ -3,7 +3,8 @@ name: CI
 # Every branch and PR: install, test, build, and build the Docker image as a
 # check - nothing is uploaded, pushed or cached on GitHub.
 # Push to main (i.e. a merged PR): same, then the image is pushed to GHCR as
-# ghcr.io/mcbane23/trafficanalyzer:latest and :<commit sha>.
+# ghcr.io/mcbane23/trafficanalyzer:latest and :<commit sha>, for linux/amd64
+# and linux/arm64 (each built natively on its own runner, no emulation).
 on:
   push:
     branches: ['**']
@@ -41,15 +42,29 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  # One job per architecture on a native runner (QEMU would take an hour for
+  # the ffmpeg build). On main each pushes its image by digest only, and the
+  # `publish` job below joins the two into the tagged multi-arch image.
   docker:
-    name: Docker image
+    name: Docker image (${{ matrix.arch }})
     needs: test
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
     env:
       PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    outputs:
+      # Each leg sets only its own output, so both survive the matrix.
+      digest-amd64: ${{ steps.digest.outputs.digest-amd64 }}
+      digest-arm64: ${{ steps.digest.outputs.digest-arm64 }}
     steps:
       - uses: actions/checkout@v5
 
@@ -58,6 +73,41 @@ jobs:
       - name: Log in to GHCR
         if: env.PUBLISH == 'true'
         uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Branches only read the layer cache that main builds write, so they
+      # don't add cache entries of their own.
+      - name: Build (and push by digest on main)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          provenance: false
+          outputs: ${{ env.PUBLISH == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_NAME) || 'type=cacheonly' }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: ${{ env.PUBLISH == 'true' && format('type=gha,mode=max,scope={0}', matrix.arch) || '' }}
+
+      - name: Record digest
+        id: digest
+        if: env.PUBLISH == 'true'
+        run: echo "digest-${{ matrix.arch }}=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish multi-arch image
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -72,15 +122,12 @@ jobs:
             type=raw,value=latest
             type=sha,format=long,prefix=
 
-      # Branches only read the layer cache that main builds write, so they
-      # don't add cache entries of their own.
-      - name: Build (and push on main)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: ${{ env.PUBLISH == 'true' }}
-          provenance: false
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: ${{ env.PUBLISH == 'true' && 'type=gha,mode=max' || '' }}
+      - name: Tag the amd64 + arm64 image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          AMD64: ${{ needs.docker.outputs.digest-amd64 }}
+          ARM64: ${{ needs.docker.outputs.digest-arm64 }}
+        run: |
+          test -n "$AMD64" && test -n "$ARM64"
+          docker buildx imagetools create $(printf -- '-t %s ' $TAGS) "$IMAGE_NAME@$AMD64" "$IMAGE_NAME@$ARM64"
+          docker buildx imagetools inspect "$IMAGE_NAME:latest"
