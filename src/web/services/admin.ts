@@ -1,5 +1,6 @@
 import type { AnalysisSettings, AnalysisSettingsResponse, ServerMetrics } from '../../types/admin';
 import type { CameraEntry } from '../../types/camera';
+import type { AccuracyCheck, AccuracyChecksResponse, ManualCount } from '../../types/accuracy';
 import { t, tDynamic } from '../i18n';
 
 /** Fetches the server's current health metrics (CPU, memory, analysis throughput, storage). */
@@ -90,4 +91,53 @@ export async function addCamera(camera: NewCamera): Promise<CameraEntry> {
   });
   if (!res.ok) throw await cameraError(res);
   return res.json();
+}
+
+/** Past and running counting-accuracy checks, newest first. */
+export async function fetchAccuracyChecks(): Promise<AccuracyChecksResponse> {
+  const res = await fetch('/api/admin/accuracy-checks');
+  if (!res.ok) throw await checkError(res);
+  return res.json();
+}
+
+export async function fetchAccuracyCheck(id: string): Promise<AccuracyCheck> {
+  const res = await fetch(`/api/admin/accuracy-checks/${encodeURIComponent(id)}`);
+  if (!res.ok) throw await checkError(res);
+  return res.json();
+}
+
+/** Starts recording a camera; the check then records, analyzes and becomes ready on its own. */
+export async function startAccuracyCheck(cameraId: string, durationSec: number): Promise<AccuracyCheck> {
+  const res = await fetch('/api/admin/accuracy-checks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cameraId, durationSec }),
+  });
+  if (!res.ok) throw await checkError(res);
+  return res.json();
+}
+
+export async function saveManualCount(id: string, clicks: ManualCount[]): Promise<AccuracyCheck> {
+  const res = await fetch(`/api/admin/accuracy-checks/${encodeURIComponent(id)}/manual`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clicks }),
+  });
+  if (!res.ok) throw await checkError(res);
+  return res.json();
+}
+
+export function accuracyClipUrl(id: string): string {
+  return `/api/admin/accuracy-checks/${encodeURIComponent(id)}/clip.mp4`;
+}
+
+async function checkError(res: Response): Promise<Error> {
+  let body: { error?: string; code?: string } = {};
+  try {
+    body = await res.json();
+  } catch {
+    // Not JSON - fall back to the status.
+  }
+  const fallback = body.error ?? t('check.error.generic', { status: res.status });
+  return new Error(body.code ? tDynamic(`check.error.${body.code}`, fallback) : fallback);
 }

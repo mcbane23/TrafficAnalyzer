@@ -51,6 +51,7 @@ colocated `*.test.ts`:
 | `TrafficStatsService` | [src/analysis/trafficStatsService.ts](src/analysis/trafficStatsService.ts) | Yes — real `:memory:` `TrafficStatsStore` plus an injected `now` |
 | `StillThumbnailService` | [src/analysis/stillThumbnailService.ts](src/analysis/stillThumbnailService.ts) | Yes — fake `StillGrabber`/scheduler/clock; `FileThumbnailStore` against a temp dir. Serves `/api/cameras/:id/snapshot.jpg`: the analysis' live thumbnail, else a still from a one-off ffmpeg (one camera at a time, refreshed every 30 min, kept in `data/thumbnails/`) |
 | `CameraEditor` | [src/server/cameraEditor.ts](src/server/cameraEditor.ts) | Yes — fake registry store/validator; the Admin page's camera list (`GET/PATCH/POST /api/admin/cameras`) |
+| `AccuracyCheckService` | [src/analysis/accuracyCheck.ts](src/analysis/accuracyCheck.ts) | Yes — fake recorder/decoder/analyzer against a temp dir, plus one end-to-end run of the real decoder ([clipFfmpeg.ts](src/analysis/clipFfmpeg.ts)) and `CameraAnalyzer` on the synthetic clip |
 | `ThroughputWindow` | [src/analysis/throughputWindow.ts](src/analysis/throughputWindow.ts) | Yes — rolling fps / ms per frame / stream-vs-wall-clock ratio over an injected clock |
 | `ServerMetricsService` | [src/server/serverMetrics.ts](src/server/serverMetrics.ts) | Yes — CPU delta arithmetic through the `SystemReader` seam (fake `/proc` counters); backs the Admin page (`GET /api/admin/metrics`) |
 | Pipeline end-to-end | [src/analysis/pipeline.test.ts](src/analysis/pipeline.test.ts) | Yes — real ffmpeg + detector + tracker on committed synthetic footage with known ground truth ([__fixtures__/syntheticFootage.ts](src/analysis/__fixtures__/syntheticFootage.ts)) |
@@ -165,6 +166,16 @@ precedent for Vue components.
   added -> `reload()`. Errors carry a `code` the UI translates. The server reads the registry schema
   from the image's `defaults/cameras` when present, because a data volume keeps the schema it was
   first seeded with and would reject new fields like `hidden`.
+- **Counting-accuracy check** (`AccuracyCheckService`, page `/admin/accuracy`, Bane's F5): records
+  2/5/10 min (+15 s warm-up) of one camera to MP4 with `-c:v copy` (needs the `mp4` muxer in the
+  image's ffmpeg), decodes it at the Admin analysis fps through a fresh `CameraAnalyzer` (same ignore
+  zones) and labels passages with `TrafficStatsService.createPassageModel` (seeded with the learned
+  axis, so the live model is untouched). The user clicks per vehicle (A/B/unknown, keys A/B/X, Z
+  undo) while the clip plays; both counts are compared over `[countFrom, countTo)` (warm-up and the
+  last 5 s excluded). One check at a time; kept in `data/accuracy-checks/<id>/` (30 checks, clips
+  only for the last 5). A check interrupted by a restart is marked failed on the next start.
+  Bane chose the tool first; a counting line (count only tracks that cross a drawn line) is the
+  possible second step once the tool shows where the count goes wrong.
 - CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): every branch/PR runs `npm ci`, `npm test`,
   `npm run build` and a Docker build, and keeps **nothing** on GitHub — no uploaded artifacts, no
   build records (`DOCKER_BUILD_RECORD_UPLOAD=false`), no npm cache, no Docker layer cache writes.

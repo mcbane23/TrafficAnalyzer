@@ -12,6 +12,7 @@ import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { ServerMetricsService } from './serverMetrics';
 import { AdminSettingsService } from './adminSettingsService';
 import { CameraEditError, CameraEditor } from './cameraEditor';
+import { AccuracyCheckError, AccuracyCheckService, CHECK_DURATIONS } from '../analysis/accuracyCheck';
 import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
 
 /**
@@ -45,6 +46,7 @@ export function createApp(
   serverMetrics: ServerMetricsService,
   adminSettings: AdminSettingsService,
   cameraEditor: CameraEditor,
+  accuracyChecks: AccuracyCheckService,
   staticDir?: string,
 ): Express {
   const app = express();
@@ -135,6 +137,39 @@ export function createApp(
     const camera = await cameraEditor.add(req.body);
     return cameraService.getCameraById(camera.id);
   }, 201));
+
+  // Counting-accuracy checks: record a clip, count it with the live analysis, compare with the user's own count.
+  const checkError = (res: express.Response, err: unknown) => {
+    if (err instanceof AccuracyCheckError) res.status(err.status).json({ error: err.message, code: err.code });
+    else res.status(500).json({ error: err instanceof Error ? err.message : 'Accuracy check failed' });
+  };
+  app.get('/api/admin/accuracy-checks', (_req, res) => {
+    res.set('Cache-Control', 'no-store').json({ checks: accuracyChecks.list(), durations: CHECK_DURATIONS });
+  });
+  app.post('/api/admin/accuracy-checks', express.json({ limit: '4kb' }), async (req, res) => {
+    try {
+      res.status(202).json(await accuracyChecks.start(req.body?.cameraId, req.body?.durationSec));
+    } catch (err) {
+      checkError(res, err);
+    }
+  });
+  app.get('/api/admin/accuracy-checks/:id', (req, res) => {
+    const check = accuracyChecks.get(String(req.params.id));
+    if (!check) res.status(404).json({ error: `Check not found: ${req.params.id}`, code: 'not-found' });
+    else res.set('Cache-Control', 'no-store').json(check);
+  });
+  app.get('/api/admin/accuracy-checks/:id/clip.mp4', (req, res) => {
+    const file = accuracyChecks.clipFile(String(req.params.id));
+    if (!file) res.status(404).json({ error: 'No clip for this check.' });
+    else res.sendFile(file);
+  });
+  app.put('/api/admin/accuracy-checks/:id/manual', express.json({ limit: '256kb' }), (req, res) => {
+    try {
+      res.json(accuracyChecks.saveManual(String(req.params.id), req.body));
+    } catch (err) {
+      checkError(res, err);
+    }
+  });
 
   // Server health for the Admin page: CPU, memory, analysis/overlay throughput, database sizes.
   app.get('/api/admin/metrics', (_req, res) => {

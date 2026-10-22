@@ -128,8 +128,8 @@ export interface FrameCapture {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_FRAME_WIDTH = 320;
-const DEFAULT_FRAME_HEIGHT = 240;
+export const DEFAULT_FRAME_WIDTH = 320;
+export const DEFAULT_FRAME_HEIGHT = 240;
 const DEFAULT_STREAM_FPS = 3;
 const DEFAULT_MAX_QUEUED_FRAMES = 12;
 const DEFAULT_STALL_TIMEOUT_MS = 20_000;
@@ -647,6 +647,11 @@ function scaleFilter(size: FrameSize): string {
 
 function rawVideoOutput(): string[] {
   return ['-f', 'rawvideo', '-pix_fmt', 'yuv420p', 'pipe:1'];
+}
+
+/** ffmpeg's input arguments for a camera (its headers, RTSP over TCP, HTTP timeouts), for other one-off ffmpeg jobs such as recording a clip. */
+export function cameraInputArgs(camera: CameraEntry): string[] {
+  return buildCommonArgs(camera);
 }
 
 function buildCommonArgs(camera: CameraEntry, mode: { realtime?: boolean; streaming?: boolean } = {}): string[] {

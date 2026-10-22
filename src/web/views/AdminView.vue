@@ -308,6 +308,14 @@ onBeforeUnmount(() => {
 
       <CameraManager class="mt-6" @changed="camerasVersion++" />
 
+      <section class="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <div class="max-w-3xl">
+          <h2 class="font-semibold text-slate-100">{{ t('check.title') }}</h2>
+          <p class="mt-1 text-xs text-slate-400">{{ t('check.adminNote') }}</p>
+        </div>
+        <router-link to="/admin/accuracy" class="rounded-md bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-white">{{ t('check.openTool') }}</router-link>
+      </section>
+
       <!-- Fleet analysis -->
       <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-4">
         <div class="flex flex-wrap items-baseline justify-between gap-2">

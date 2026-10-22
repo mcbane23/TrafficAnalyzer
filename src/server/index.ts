@@ -23,6 +23,9 @@ import { ServerMetricsService } from './serverMetrics';
 import { AnalysisSettingsStore } from './analysisSettingsStore';
 import { AdminSettingsService } from './adminSettingsService';
 import { CameraEditor } from './cameraEditor';
+import { AccuracyCheckService } from '../analysis/accuracyCheck';
+import { decodeClip, recordClip } from '../analysis/clipFfmpeg';
+import { CameraAnalyzer } from '../analysis/cameraAnalyzer';
 import { ProcessingSettings } from '../types/admin';
 
 const REGISTRY_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.json');
@@ -212,6 +215,18 @@ const cameraEditor = new CameraEditor({
     console.log(`[CameraEditor] ${change.added ? 'added' : 'edited'} camera "${camera.id}"`);
   },
 });
+// The Admin page's counting-accuracy check: records a few minutes of one
+// camera, counts them with the same motion analysis as runs live, and keeps
+// the result next to the user's own count - see AccuracyCheckService.
+const accuracyChecks = new AccuracyCheckService({
+  dir: path.join(DATA_DIR, 'accuracy-checks'),
+  getCamera: async (cameraId) => (await store.load()).find((camera) => camera.id === cameraId),
+  record: (camera, file, seconds) => recordClip(camera, file, seconds),
+  decode: (file, fps, onFrame) => decodeClip(file, fps, onFrame),
+  createAnalyzer: (camera) => new CameraAnalyzer(`${camera.id}#check`, { ignoreZones: camera.ignoreZones?.map((zone) => zone.points) }),
+  passageModel: (cameraId) => trafficStatsService.createPassageModel(cameraId),
+  analysisFps: () => adminSettings.effective().analysisFps,
+});
 // CPU, memory and pipeline throughput for the Admin page, sampled every 5 s.
 const serverMetrics = new ServerMetricsService({
   analysis: trafficAnalysisService,
@@ -249,6 +264,7 @@ const app = createApp(
   serverMetrics,
   adminSettings,
   cameraEditor,
+  accuracyChecks,
   STATIC_DIR,
 );
 

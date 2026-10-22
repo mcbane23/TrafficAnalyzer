@@ -48,7 +48,8 @@ RUN npm run build \
 # ---- ffmpeg stage -------------------------------------------------------
 # A minimal ffmpeg/ffprobe, built with only what the cameras need: H.264/HEVC
 # and MJPEG decoding, HLS/MPEG-TS/RTSP input over http(s), and the fps/scale
-# filters with raw video output. Every active camera keeps one ffmpeg running,
+# filters with raw video output, plus the MP4 muxer the accuracy check records
+# its clips with (copied, never re-encoded). Every active camera keeps one ffmpeg running,
 # and Debian's build links dozens of codec libraries whose start-up cost
 # (~18 MB of private memory) each of those processes pays. Measured on 22
 # live cameras: ~36 MB per capture with Debian's ffmpeg, ~17 MB with this one.
@@ -73,7 +74,7 @@ RUN curl -fsSL -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER
       --enable-parser=h264,hevc,mjpeg,aac \
       --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb \
       --enable-filter=fps,scale,format,showinfo,null,anull \
-      --enable-encoder=rawvideo --enable-muxer=rawvideo \
+      --enable-encoder=rawvideo --enable-muxer=rawvideo,mp4 \
  && make -j"$(nproc)" \
  && make install \
  && /opt/ffmpeg/bin/ffmpeg -hide_banner -protocols | grep -q https
