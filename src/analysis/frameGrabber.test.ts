@@ -340,6 +340,35 @@ describe('FrameGrabber', () => {
       expect(runner).toHaveBeenCalledWith(expect.not.arrayContaining(['-frames:v']));
     });
 
+    it('setStreamFps restarts open captures on the new rate without failing a waiting next()', async () => {
+      const handles: Array<{ stdout: EventEmitter; kill: jest.Mock }> = [];
+      const runner: FfmpegStreamRunner = jest.fn(() => {
+        const stdout = new EventEmitter();
+        const kill = jest.fn();
+        handles.push({ stdout, kill });
+        return { stdout: stdout as unknown as NodeJS.ReadableStream, stderr: new EventEmitter() as unknown as NodeJS.ReadableStream, onExit: () => undefined, kill };
+      });
+      const grabber = new FrameGrabber({ ...SIZE, ffmpegStreamRunner: runner, streamFps: 3 });
+      const capture = grabber.openCapture(makeCamera());
+      const first = capture.next();
+      handles[0].stdout.emit('data', raw('frame-1'));
+      await first;
+
+      const waiting = capture.next();
+      grabber.setStreamFps(6);
+      expect(handles[0].kill).toHaveBeenCalled();
+      expect(runner).toHaveBeenCalledTimes(2);
+      expect(runner).toHaveBeenLastCalledWith(expect.arrayContaining(['-vf', 'fps=6,scale=2:2,format=yuv420p,showinfo']));
+      handles[1].stdout.emit('data', raw('frame-2'));
+      expect(await waiting).toMatchObject({ ok: true, frame: frameOf('frame-2') });
+      expect(capture.counters?.().lastError).toBeNull();
+
+      // A closed capture is forgotten: no restart for it.
+      capture.close();
+      grabber.setStreamFps(2);
+      expect(runner).toHaveBeenCalledTimes(2);
+    });
+
     it('tags each frame with its stream presentation time from showinfo, matched by frame index', async () => {
       const { runner, stdout, stderr } = makeFakeStreamRunner();
       const grabber = new FrameGrabber({ ...SIZE, ffmpegStreamRunner: runner });

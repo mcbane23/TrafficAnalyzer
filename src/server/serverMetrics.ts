@@ -47,7 +47,8 @@ export interface ServerMetricsOptions {
   analysis: AnalysisMetricsSource;
   overlay: OverlayMetricsSource | null;
   config: {
-    analysisFps: number;
+    /** The analysis frame rate in effect (the Admin page can change it). */
+    analysisFps: () => number;
     analysisThreads: number;
     overlayDevice: string;
     /** The overlay model actually loaded, once it has been. */
@@ -188,7 +189,7 @@ export class ServerMetricsService {
         childrenCpu: this.latest.childrenCpu === null ? null : round1(this.latest.childrenCpu),
       },
       cpu: [...this.history],
-      analysis: { fpsTarget: config.analysisFps, threads: config.analysisThreads, ...analysis.getMetrics() },
+      analysis: { fpsTarget: config.analysisFps(), threads: config.analysisThreads, ...analysis.getMetrics() },
       overlay: overlay ? { enabled: true, ...overlay.getMetrics() } : { enabled: false, maxCameras: 0, cameras: [] },
       storage: this.options.databases.map(({ name, path: file }) => ({ name, bytes: fileSize(file) })),
     };

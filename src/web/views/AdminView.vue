@@ -295,7 +295,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <!-- Which cameras are analyzed -->
+      <!-- Which cameras are analyzed, frame rates, YOLO model -->
       <AnalysisSwitches class="mt-6" @changed="load" />
 
       <!-- Fleet analysis -->
@@ -309,7 +309,7 @@ onBeforeUnmount(() => {
           </p>
         </div>
         <p class="mt-1 text-[11px] text-slate-500">Rates are over the last 15 s; slowest cameras first. Restarts, stalls and skipped frames count since the server started.</p>
-        <p v-if="analysisCameras.length === 0" class="mt-3 text-sm text-slate-500">No cameras are being analyzed.</p>
+        <p v-if="analysisCameras.length === 0" class="mt-3 text-sm text-slate-500">No cameras are being analyzed - switch some on under Analysis settings above.</p>
         <div v-else class="mt-3 overflow-x-auto">
           <table class="w-full whitespace-nowrap text-left text-sm">
             <thead class="text-xs text-slate-500">

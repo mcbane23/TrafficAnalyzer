@@ -5,7 +5,7 @@ import { FrameCapture, GrabFrameResult } from './frameGrabber';
 import { CameraAnalyzer, errorAnalysisResult } from './cameraAnalyzer';
 import { VideoFrame, encodeJpeg } from './videoFrame';
 import { ThroughputWindow } from './throughputWindow';
-import { AnalysisSettings, CameraAnalysisMetrics } from '../types/admin';
+import { CameraAnalysisMetrics } from '../types/admin';
 
 /** Narrow seam over FrameGrabber so tests can inject a fake without spawning ffmpeg. */
 export interface FrameGrabberLike {
@@ -100,14 +100,13 @@ export interface TrafficAnalysisServiceOptions {
    */
   recentResultsMs?: number;
   /**
-   * Which cameras to analyze, as switched on the Admin page (see
-   * `applySettings`). Each analyzed camera keeps an ffmpeg capture running
-   * (~17 MB of memory and a share of a CPU core), so these are the knobs for
-   * a smaller host. With `enabled: false` no capture is started at all: no
-   * statistics, dashboard badges or thumbnails. Defaults to every active
-   * camera.
+   * Cameras to analyze, as switched on on the Admin page (see
+   * `applySettings`); active cameras outside it are skipped. Each analyzed
+   * camera keeps an ffmpeg capture running (~17 MB of memory and a share of
+   * a CPU core), so the user picks them - none by default. Unset analyzes
+   * every active camera (tests, and callers without an Admin page).
    */
-  settings?: AnalysisSettings;
+  enabledCameras?: string[];
   /** Encodes a thumbnail. Defaults to `encodeJpeg`. */
   encodeThumbnail?: (frame: VideoFrame) => Promise<Buffer>;
   now?: () => Date;
@@ -215,7 +214,7 @@ export class TrafficAnalysisService {
   private readonly overviewSubscribers = new Set<OverviewSubscriber>();
   private readonly latestOverview = new Map<string, CameraAnalysisOverview>();
   private readonly loops = new Set<Promise<void>>();
-  private settings: { enabled: boolean; disabledCameras: Set<string> };
+  private enabledCameras: Set<string> | null;
   /** Active cameras the settings leave out, with the reason shown to their viewers. */
   private readonly excluded = new Map<string, string>();
 
@@ -244,7 +243,7 @@ export class TrafficAnalysisService {
       scheduler: options.scheduler ?? defaultScheduler,
     };
 
-    this.settings = toSettingsState(options.settings);
+    this.enabledCameras = options.enabledCameras ? new Set(options.enabledCameras) : null;
 
     for (const result of this.historyStore.getLatestForAllCameras()) {
       this.latestOverview.set(result.cameraId, {
@@ -270,12 +269,12 @@ export class TrafficAnalysisService {
   }
 
   /**
-   * Switches analysis on or off, globally or per camera (the Admin page's
-   * switches), and applies it straight away, like `reload()`: cameras
-   * switched off stop, cameras switched on start, the rest keep running.
+   * Changes which cameras are analyzed (the Admin page's switches) and
+   * applies it straight away, like `reload()`: cameras switched off stop,
+   * cameras switched on start, the rest keep running.
    */
-  async applySettings(settings: AnalysisSettings): Promise<{ started: string[]; stopped: string[] }> {
-    this.settings = toSettingsState(settings);
+  async setEnabledCameras(cameraIds: string[]): Promise<{ started: string[]; stopped: string[] }> {
+    this.enabledCameras = new Set(cameraIds);
     return this.reload();
   }
 
@@ -288,10 +287,8 @@ export class TrafficAnalysisService {
     const selected: CameraEntry[] = [];
     for (const camera of entries) {
       if (camera.status !== 'active') continue;
-      if (!this.settings.enabled) {
-        this.excluded.set(camera.id, 'Traffic analysis is switched off on the Admin page.');
-      } else if (this.settings.disabledCameras.has(camera.id)) {
-        this.excluded.set(camera.id, 'Traffic analysis is switched off for this camera on the Admin page.');
+      if (this.enabledCameras && !this.enabledCameras.has(camera.id)) {
+        this.excluded.set(camera.id, 'Traffic analysis is not switched on for this camera - it can be on the Admin page.');
       } else {
         selected.push(camera);
       }
@@ -637,6 +634,3 @@ function notify<T>(callback: (payload: T) => void, payload: T): void {
   }
 }
 
-function toSettingsState(settings: AnalysisSettings | undefined): { enabled: boolean; disabledCameras: Set<string> } {
-  return { enabled: settings?.enabled ?? true, disabledCameras: new Set(settings?.disabledCameras ?? []) };
-}

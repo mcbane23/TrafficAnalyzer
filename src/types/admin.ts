@@ -113,12 +113,30 @@ export interface ServerMetrics {
   storage: Array<{ name: string; bytes: number | null }>;
 }
 
-/** Which cameras the fleet analysis runs on - switched on the Admin page, see AnalysisSettingsStore. */
+/**
+ * The Admin page's analysis settings, see AdminSettingsService: which cameras
+ * the fleet analysis runs on, and the processing knobs. A knob left out uses
+ * the server's default (its env var, else the built-in value).
+ */
 export interface AnalysisSettings {
-  /** False analyzes no camera at all (no statistics, badges or thumbnails; the live view still works). */
-  enabled: boolean;
-  /** Ids of cameras left out of the analysis. */
-  disabledCameras: string[];
+  /** Cameras the fleet analysis runs on. None by default: each one is switched on on the Admin page. */
+  enabledCameras: string[];
+  /** Frames a second the fleet analysis decodes per camera (ANALYSIS_FPS). */
+  analysisFps?: number;
+  /** Frames a second the live YOLO boxes are computed at (OVERLAY_FPS). */
+  overlayFps?: number;
+  /** YOLO model on the GPU (OVERLAY_MODEL); the CPU always runs yolo26n. */
+  overlayModel?: string;
+  /** Minimum YOLO score for a box to be drawn (OVERLAY_CONFIDENCE). */
+  overlayConfidence?: number;
+}
+
+/** The processing knobs with every value filled in - the defaults, or what is in effect. */
+export interface ProcessingSettings {
+  analysisFps: number;
+  overlayFps: number;
+  overlayModel: string;
+  overlayConfidence: number;
 }
 
 /** One camera's row in the Admin page's analysis switches. */
@@ -127,10 +145,21 @@ export interface AnalysisCameraSetting {
   name: string;
   /** Registry status: only active cameras can be analyzed. */
   active: boolean;
-  /** Its own switch (independent of the global one). */
+  /** Its switch. */
   enabled: boolean;
 }
 
-export interface AnalysisSettingsResponse extends AnalysisSettings {
+export interface AnalysisSettingsResponse {
+  settings: AnalysisSettings;
   cameras: AnalysisCameraSetting[];
+  /** What a knob falls back to when it is not set. */
+  defaults: ProcessingSettings;
+  overlay: {
+    /** False with OVERLAY_DETECTOR=off - the overlay knobs then do nothing. */
+    enabled: boolean;
+    /** OVERLAY_DEVICE: the model choice only applies on a GPU. */
+    device: string;
+    /** Models `overlayModel` may name. */
+    models: string[];
+  };
 }

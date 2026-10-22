@@ -139,11 +139,17 @@ precedent for Vue components.
   `-filter_threads 1` halves the threads, while probesize, `-fflags nobuffer`, thread queue size,
   `MALLOC_ARENA_MAX` and a lower `ANALYSIS_FPS`/resolution save ~0-2 MB each (the stream is always
   decoded at full size). The Admin page reports the children's PSS, not RSS: summed RSS counts the
-  shared libraries once per process and overstated it ~2x. On a smaller host the Admin page's "Analyzed
-  cameras" switches (whole fleet, or per camera; `AnalysisSettingsStore`, saved to
-  `data/analysis-settings.json`, applied at once via `TrafficAnalysisService.applySettings`) cut the
-  number of captures; a camera switched off shows its viewers why on the camera page. Bane asked
-  for these in the UI rather than env vars, so don't move them back into docker-compose.
+  shared libraries once per process and overstated it ~2x. - **Admin "Analysis settings"** (`AdminSettingsService`, saved by `AnalysisSettingsStore` to
+  `data/analysis-settings.json`): which cameras the fleet analysis runs on — **none by default**, the
+  user switches each one on (Bane's call: weaker servers analyze a few, stronger ones switch all on) —
+  plus the analysis frame rate, live-box frame rate, GPU YOLO model and box confidence. Everything
+  applies without a restart: `TrafficAnalysisService.setEnabledCameras` starts/stops captures,
+  `FrameGrabber.setStreamFps` restarts open captures' ffmpeg on the new rate, a model change drops
+  the cached model so the next overlay frame loads the new one, and `YoloDetector` reads its
+  threshold per frame. `ANALYSIS_FPS`, `OVERLAY_FPS`, `OVERLAY_MODEL` and `OVERLAY_CONFIDENCE` are only
+  the defaults now. A camera not switched on tells its viewers why on the camera page. Bane wants
+  these in the UI, not docker-compose — don't move them back to env vars. Ideas he raised for later:
+  a password on the Admin page, NVIDIA GPU support for YOLO.
 - CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): every branch/PR runs `npm ci`, `npm test`,
   `npm run build` and a Docker build, and keeps **nothing** on GitHub — no uploaded artifacts, no
   build records (`DOCKER_BUILD_RECORD_UPLOAD=false`), no npm cache, no Docker layer cache writes.

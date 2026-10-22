@@ -13,10 +13,12 @@ import { TrafficStatsStore } from '../analysis/trafficStatsStore';
 import { TrafficStatsService } from '../analysis/trafficStatsService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { AnalysisWorkerPool } from '../analysis/analysisWorkerPool';
-import { YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
+import { DEFAULT_MIN_CONFIDENCE, DEFAULT_OPENVINO_MODEL, OPENVINO_MODELS, YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
 import { VehicleTracker } from '../analysis/vehicleTracker';
 import { ServerMetricsService } from './serverMetrics';
 import { AnalysisSettingsStore } from './analysisSettingsStore';
+import { AdminSettingsService } from './adminSettingsService';
+import { ProcessingSettings } from '../types/admin';
 
 const REGISTRY_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.json');
 const SCHEMA_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.schema.json');
@@ -45,9 +47,8 @@ const hlsProxyService = new HlsProxyService(store);
 // One CameraAnalyzer per camera is built internally - it owns that camera's
 // detector, tracker and occupancy model, all of which describe a single fixed
 // viewpoint (see CameraAnalyzer's docstring).
-// Every active camera is analyzed continuously at ANALYSIS_FPS (default 3);
-// lower it if the host can't keep up with the whole fleet.
-const ANALYSIS_FPS = Number(process.env.ANALYSIS_FPS) || undefined;
+// Every camera switched on on the Admin page is analyzed continuously at the
+// analysis frame rate set there (ANALYSIS_FPS is only its default, 3).
 // Vehicle passages and analysis coverage for the statistics views, fed from
 // every usable analysis result. STATS_TIMEZONE sets what "today" and the
 // hour-of-day heatmap mean (the container itself usually runs in UTC).
@@ -60,16 +61,27 @@ const trafficStatsService = new TrafficStatsService(new TrafficStatsStore(TRAFFI
 // thread as before.
 const analysisThreads = process.env.ANALYSIS_THREADS === undefined ? 2 : Number(process.env.ANALYSIS_THREADS) || 0;
 const analysisWorkers = analysisThreads > 0 ? new AnalysisWorkerPool({ size: analysisThreads }) : null;
-// Each analyzed camera keeps one ffmpeg capture running (~17 MB and a share
-// of a core). Which cameras are analyzed is switched on the Admin page (all
-// of them, or one by one) and kept in the data volume.
+// The Admin page's settings, kept in the data volume: which cameras are
+// analyzed (each keeps an ffmpeg capture running, ~17 MB and a share of a
+// core, so none is until the user switches it on) and the processing knobs
+// below. The env vars only set the knobs' defaults - see AdminSettingsService.
+const overlayDevice = process.env.OVERLAY_DEVICE?.trim().toUpperCase() || 'CPU';
+const overlayEnabled = process.env.OVERLAY_DETECTOR !== 'off';
+const processingDefaults: ProcessingSettings = {
+  analysisFps: Number(process.env.ANALYSIS_FPS) || 3,
+  overlayFps: Number(process.env.OVERLAY_FPS) || 3,
+  overlayModel: process.env.OVERLAY_MODEL && OPENVINO_MODELS[process.env.OVERLAY_MODEL] ? process.env.OVERLAY_MODEL : DEFAULT_OPENVINO_MODEL,
+  overlayConfidence: Number(process.env.OVERLAY_CONFIDENCE) || DEFAULT_MIN_CONFIDENCE,
+};
 const analysisSettingsStore = new AnalysisSettingsStore(ANALYSIS_SETTINGS_PATH);
+const initialSettings = analysisSettingsStore.load();
+const analysisGrabber = new FrameGrabber({ streamFps: initialSettings.analysisFps ?? processingDefaults.analysisFps });
 const trafficAnalysisService = new TrafficAnalysisService(
   store,
-  new FrameGrabber({ streamFps: ANALYSIS_FPS }),
+  analysisGrabber,
   new TrafficHistoryStore(TRAFFIC_HISTORY_DB_PATH),
   {
-    settings: analysisSettingsStore.load(),
+    enabledCameras: initialSettings.enabledCameras,
     onResult: (result) => trafficStatsService.handleResult(result),
     ...(analysisWorkers ? { createAnalyzer: (cameraId, camera) => analysisWorkers.createAnalyzer(cameraId, camera) } : {}),
   },
@@ -77,21 +89,20 @@ const trafficAnalysisService = new TrafficAnalysisService(
 // Boxes over the camera someone is watching come from an appearance model
 // (YOLO), run only while that camera has viewers - see LiveOverlayService.
 // OVERLAY_DETECTOR=off falls back to drawing the motion-detection boxes;
-// OVERLAY_FPS (default 3) and OVERLAY_THREADS (default 2) trade smoothness
-// against CPU. OVERLAY_DEVICE=GPU runs a larger model on an Intel GPU
-// through OpenVINO (the container needs /dev/dri), falling back to the CPU
-// model if the GPU can't be used. OVERLAY_MODEL picks the GPU model:
-// yolo26s (default), yolo26n (faster, finds fewer distant cars) or yolo26m
-// (larger and ~3x slower). OVERLAY_CPU_MODEL picks the CPU one: yolo26n.
-const overlayDevice = process.env.OVERLAY_DEVICE?.trim().toUpperCase() || 'CPU';
-// OVERLAY_CONFIDENCE (default 0.2): the YOLO score a box needs to be drawn.
-const overlayConfidence = Number(process.env.OVERLAY_CONFIDENCE) || undefined;
+// the overlay frame rate (OVERLAY_FPS, default 3) and OVERLAY_THREADS
+// (default 2) trade smoothness against CPU. OVERLAY_DEVICE=GPU runs a larger
+// model on an Intel GPU through OpenVINO (the container needs /dev/dri),
+// falling back to the CPU model if the GPU can't be used. The GPU model is
+// picked on the Admin page (OVERLAY_MODEL is its default): yolo26s, yolo26n
+// (faster, finds fewer distant cars) or yolo26m (larger and ~3x slower).
+// OVERLAY_CPU_MODEL picks the CPU one: yolo26n. The minimum score a box needs
+// to be drawn is set there too (OVERLAY_CONFIDENCE, default 0.2).
 let overlayModel: Promise<YoloModel> | null = null;
 let overlayModelLabel: string | null = null;
 const loadOverlayModel = (): Promise<YoloModel> =>
   (overlayModel ??= loadYoloModel({
     device: overlayDevice,
-    model: process.env.OVERLAY_MODEL,
+    model: adminSettings.effective().overlayModel,
     cpuModel: process.env.OVERLAY_CPU_MODEL,
     threads: Number(process.env.OVERLAY_THREADS) || 2,
     cacheDir: OPENVINO_CACHE_DIR,
@@ -100,27 +111,29 @@ const loadOverlayModel = (): Promise<YoloModel> =>
     overlayModelLabel = model.label;
     return model;
   }));
-const liveOverlayService =
-  process.env.OVERLAY_DETECTOR === 'off'
+const overlayGrabber = overlayEnabled
+  ? // One queued frame: when the detector is slower than the capture (a
+    // busy host), it always takes the newest frame and skips the rest.
+    // Working through a backlog instead puts it further behind every
+    // second, until the player overtakes it and has no boxes to draw.
+    new FrameGrabber({
+      streamFps: initialSettings.overlayFps ?? processingDefaults.overlayFps,
+      // The GPU model's 960px input is fed a matching frame (the streams
+      // are 704x576, so this upscales; small cars get more pixels).
+      frameWidth: overlayDevice === 'CPU' ? 640 : 960,
+      frameHeight: overlayDevice === 'CPU' ? 480 : 720,
+      maxQueuedFrames: 1,
+    })
+  : null;
+const liveOverlayService = !overlayGrabber
     ? null
     : new LiveOverlayService(
         store,
-        // One queued frame: when the detector is slower than the capture (a
-        // busy host), it always takes the newest frame and skips the rest.
-        // Working through a backlog instead puts it further behind every
-        // second, until the player overtakes it and has no boxes to draw.
-        new FrameGrabber({
-          streamFps: Number(process.env.OVERLAY_FPS) || undefined,
-          // The GPU model's 960px input is fed a matching frame (the streams
-          // are 704x576, so this upscales; small cars get more pixels).
-          frameWidth: overlayDevice === 'CPU' ? 640 : 960,
-          frameHeight: overlayDevice === 'CPU' ? 480 : 720,
-          maxQueuedFrames: 1,
-        }),
+        overlayGrabber,
         (camera) => ({
           detector: new YoloDetector(loadOverlayModel, {
             ignoreZones: camera.ignoreZones?.map((zone) => zone.points),
-            minConfidence: overlayConfidence,
+            minConfidence: () => adminSettings.effective().overlayConfidence,
           }),
           // Every vehicle the model sees is drawn, parked or queued ones
           // included (no travel gate, no confirmation delay, and any detection
@@ -132,6 +145,20 @@ const liveOverlayService =
           tracker: new VehicleTracker({ minHits: 1, minTravel: 0, reportCoastingMs: 1000, maxSpeed: 2, highConfidence: 0 }),
         }),
       );
+const adminSettings = new AdminSettingsService({
+  store: analysisSettingsStore,
+  defaults: processingDefaults,
+  overlay: { enabled: overlayEnabled, device: overlayDevice, models: Object.keys(OPENVINO_MODELS) },
+  listCameras: () => cameraService.listCameras(),
+  analysis: trafficAnalysisService,
+  analysisGrabber,
+  overlayGrabber,
+  // The next frame loads the new model; a model already loading finishes for nobody and is dropped.
+  onOverlayModelChange: () => {
+    overlayModel = null;
+    overlayModelLabel = null;
+  },
+});
 // The Admin page's availability check rewrites camera statuses; the analysis
 // then starts and stops cameras to match, without a restart. (The
 // `cameras:revalidate` CLI runs in its own process, so it still needs one.)
@@ -146,7 +173,7 @@ const serverMetrics = new ServerMetricsService({
   analysis: trafficAnalysisService,
   overlay: liveOverlayService,
   config: {
-    analysisFps: ANALYSIS_FPS ?? 3,
+    analysisFps: () => adminSettings.effective().analysisFps,
     analysisThreads,
     overlayDevice: process.env.OVERLAY_DETECTOR === 'off' ? 'off' : overlayDevice,
     overlayModel: () => overlayModelLabel,
@@ -166,7 +193,7 @@ const app = createApp(
   trafficStatsService,
   liveOverlayService,
   serverMetrics,
-  analysisSettingsStore,
+  adminSettings,
   STATIC_DIR,
 );
 

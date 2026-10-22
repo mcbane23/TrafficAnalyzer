@@ -23,7 +23,7 @@ function makeService(reader: SystemReader, historySize = 120) {
   const service = new ServerMetricsService({
     analysis: { getMetrics: () => ({ activeJobs: 1, queuedJobs: 0, maxConcurrency: 6, cameras: [] }) },
     overlay: null,
-    config: { analysisFps: 3, analysisThreads: 2, overlayDevice: 'GPU', overlayModel: () => 'yolo26s on GPU' },
+    config: { analysisFps: () => 3, analysisThreads: 2, overlayDevice: 'GPU', overlayModel: () => 'yolo26s on GPU' },
     dataDir: __dirname,
     databases: [{ name: 'Missing', path: '/nonexistent/db.sqlite' }],
     historySize,

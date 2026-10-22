@@ -8,16 +8,15 @@ import { SseChannel } from './sseChannel';
 import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { ServerMetricsService } from './serverMetrics';
-import { AnalysisSettingsStore, normalizeAnalysisSettings } from './analysisSettingsStore';
-import { AnalysisSettingsResponse } from '../types/admin';
+import { AdminSettingsService } from './adminSettingsService';
 import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
 
 /**
  * Creates the Express app: read-only camera API routes, a background
  * revalidation trigger/status pair (they don't accept a request body, they
  * just kick off / report on the same check the `cameras:revalidate` CLI
- * performs), the Admin page's analysis switches (the only endpoint that
- * takes a body - two fields, normalized before use), an HLS proxy route for
+ * performs), the Admin page's analysis settings (the only endpoint that
+ * takes a body - normalized and clamped before use), an HLS proxy route for
  * cameras that need special request headers the browser can't send
  * itself, the vehicle-traffic-analysis routes (bootstrap + SSE streams +
  * history), server health metrics for the Admin page, plus (when a built frontend is present) static file serving
@@ -40,7 +39,7 @@ export function createApp(
   trafficStatsService: TrafficStatsService,
   liveOverlayService: LiveOverlayService | null,
   serverMetrics: ServerMetricsService,
-  analysisSettingsStore: AnalysisSettingsStore,
+  adminSettings: AdminSettingsService,
   staticDir?: string,
 ): Express {
   const app = express();
@@ -77,35 +76,18 @@ export function createApp(
     res.json(revalidationService.getStatus());
   });
 
-  // The Admin page's analysis switches: off for the whole fleet, or camera by camera. A change is saved to the
-  // data volume and applied straight away - switched-off cameras stop their ffmpeg, switched-on ones start.
-  const analysisSettingsResponse = async (): Promise<AnalysisSettingsResponse> => {
-    const settings = analysisSettingsStore.load();
-    const disabled = new Set(settings.disabledCameras);
-    const cameras = (await cameraService.listCameras()).map((camera) => ({
-      id: camera.id,
-      name: camera.name,
-      active: camera.status === 'active',
-      enabled: !disabled.has(camera.id),
-    }));
-    return { ...settings, cameras };
-  };
+  // The Admin page's analysis settings: which cameras are analyzed, and the frame rates and YOLO model/threshold.
+  // A change is saved to the data volume and applied straight away - see AdminSettingsService.
   app.get('/api/admin/analysis-settings', async (_req, res) => {
     try {
-      res.set('Cache-Control', 'no-store').json(await analysisSettingsResponse());
+      res.set('Cache-Control', 'no-store').json(await adminSettings.describe());
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load analysis settings' });
     }
   });
   app.put('/api/admin/analysis-settings', express.json({ limit: '64kb' }), async (req, res) => {
     try {
-      const settings = normalizeAnalysisSettings(req.body);
-      analysisSettingsStore.save(settings);
-      const { started, stopped } = await trafficAnalysisService.applySettings(settings);
-      if (started.length || stopped.length) {
-        console.log(`[TrafficAnalysisService] analysis settings changed: started ${started.join(', ') || 'none'}; stopped ${stopped.join(', ') || 'none'}`);
-      }
-      res.json(await analysisSettingsResponse());
+      res.json(await adminSettings.update(req.body));
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save analysis settings' });
     }
