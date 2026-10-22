@@ -39,7 +39,7 @@ export const OPENVINO_MODELS: Readonly<Record<string, { path: string; label: str
   yolo26n: { path: path.resolve(__dirname, '../../models/yolo26n-openvino/yolo26n.xml'), label: 'YOLO26n' },
   yolo26m: { path: path.resolve(__dirname, '../../models/yolo26m-openvino/yolo26m.xml'), label: 'YOLO26m' },
 };
-const DEFAULT_OPENVINO_MODEL = 'yolo26s';
+export const DEFAULT_OPENVINO_MODEL = 'yolo26s';
 
 /** `catalog[name]`, or the default entry with a warning when the name is unknown. */
 function pickModel(
@@ -176,17 +176,20 @@ export interface YoloDetectorOptions {
    * Class score below which a candidate is discarded. Defaults to 0.2: below
    * the usual 0.25, because on these small, compressed cars that drew about
    * half as many boxes again for only a few false ones (Bane tried 0.15 and
-   * 0.20 live).
+   * 0.20 live). A function is asked on every frame, so the Admin page's
+   * setting applies without rebuilding the detector.
    */
-  minConfidence?: number;
+  minConfidence?: number | (() => number);
   /** Overlap (IoU) above which the weaker of two boxes is suppressed. Defaults to 0.5. */
   iouThreshold?: number;
   /** Parts of the view whose detections are dropped (box centre inside) - the same zones the motion detector ignores. */
   ignoreZones?: NormalizedPolygon[];
 }
 
+export const DEFAULT_MIN_CONFIDENCE = 0.2;
+
 const DEFAULTS = {
-  minConfidence: 0.2,
+  minConfidence: DEFAULT_MIN_CONFIDENCE,
   iouThreshold: 0.5,
 };
 
@@ -212,7 +215,7 @@ const ZONE_GRID = 200;
  * someone actually watches a camera; the caller caches it.
  */
 export class YoloDetector {
-  private readonly minConfidence: number;
+  private readonly minConfidence: () => number;
   private readonly iouThreshold: number;
   private readonly ignored: Uint8Array | null;
 
@@ -220,7 +223,8 @@ export class YoloDetector {
     private readonly model: () => Promise<YoloModel>,
     options: YoloDetectorOptions = {},
   ) {
-    this.minConfidence = options.minConfidence ?? DEFAULTS.minConfidence;
+    const minConfidence = options.minConfidence ?? DEFAULTS.minConfidence;
+    this.minConfidence = typeof minConfidence === 'function' ? minConfidence : () => minConfidence;
     this.iouThreshold = options.iouThreshold ?? DEFAULTS.iouThreshold;
     const zones = options.ignoreZones ?? [];
     this.ignored = zones.length > 0 ? rasterizePolygons(zones, ZONE_GRID, ZONE_GRID) : null;
@@ -234,7 +238,7 @@ export class YoloDetector {
       ...letterbox,
       frameWidth: frame.width,
       frameHeight: frame.height,
-      minConfidence: this.minConfidence,
+      minConfidence: this.minConfidence(),
       iouThreshold: this.iouThreshold,
     }).filter((d) => !this.isIgnored(d.box));
     return { detections, warmingUp: false };

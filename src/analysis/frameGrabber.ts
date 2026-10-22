@@ -186,13 +186,15 @@ const SHOWINFO_TIME_BASE_LINE = /Parsed_showinfo.*config in time_base:\s*(\d+)\/
  */
 export class FrameGrabber {
   private readonly timeoutMs: number;
-  private readonly streamFps: number;
+  private streamFps: number;
   private readonly maxQueuedFrames: number;
   private readonly realtime: boolean;
   private readonly frameSize: FrameSize;
   private readonly supervision: CaptureSupervision;
   private readonly ffmpegRunner: FfmpegRunner;
   private readonly ffmpegStreamRunner: FfmpegStreamRunner;
+  /** Captures opened and not yet closed - restarted by `setStreamFps`. */
+  private readonly openCaptures = new Set<FfmpegFrameCapture>();
 
   constructor(options: FrameGrabberOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -245,13 +247,33 @@ export class FrameGrabber {
    * process is leaked.
    */
   openCapture(camera: CameraEntry): FrameCapture {
-    return new FfmpegFrameCapture(
+    const capture = new FfmpegFrameCapture(
       () => this.ffmpegStreamRunner(buildStreamArgs(camera, this.frameSize, this.streamFps, this.realtime)),
       this.frameSize,
       this.timeoutMs,
       this.maxQueuedFrames,
       this.supervision,
+      () => this.openCaptures.delete(capture),
     );
+    this.openCaptures.add(capture);
+    return capture;
+  }
+
+  /** The frame rate captures decode at. */
+  getStreamFps(): number {
+    return this.streamFps;
+  }
+
+  /**
+   * Changes the frame rate (the Admin page's setting) and restarts every
+   * open capture's ffmpeg on it straight away - the rate is part of its
+   * filter graph. Each capture keeps its consumer and queued frames, so the
+   * analysis just sees a few seconds' gap while the stream reconnects.
+   */
+  setStreamFps(fps: number): void {
+    if (fps === this.streamFps) return;
+    this.streamFps = fps;
+    for (const capture of this.openCaptures) capture.restart();
   }
 }
 
@@ -342,6 +364,7 @@ class FfmpegFrameCapture implements FrameCapture {
     private readonly timeoutMs: number,
     private readonly maxQueuedFrames: number,
     private readonly supervision: CaptureSupervision,
+    private readonly onClose: () => void = () => undefined,
   ) {
     this.frameBytes = yuv420pFrameSize(frameSize.width, frameSize.height);
     this.pending = new Uint8Array(this.frameBytes);
@@ -397,6 +420,24 @@ class FfmpegFrameCapture implements FrameCapture {
     this.handle?.kill();
     this.handle = null;
     this.failWaiters('capture closed');
+    this.onClose();
+  }
+
+  /**
+   * Replaces the running ffmpeg with a fresh one (new arguments - see
+   * `FrameGrabber.setStreamFps`). Not a failure: no backoff, nothing logged
+   * as the last error, and a `next()` already waiting is served by the new
+   * process. A capture not started yet, or waiting out a restart delay,
+   * picks the new arguments up on its next start anyway.
+   */
+  restart(): void {
+    if (this.closed || !this.handle) return;
+    const handle = this.handle;
+    this.handle = null;
+    handle.kill();
+    this.clearTimers();
+    this.failedRuns = 0;
+    this.startProcess();
   }
 
   private startProcess(): void {
@@ -617,8 +658,10 @@ function buildCommonArgs(camera: CameraEntry, mode: { realtime?: boolean; stream
   // One decoding thread per process. Every active camera has its own
   // ffmpeg, so there is already one process per stream to spread across
   // cores; ffmpeg's default of a thread per core on top of that only adds
-  // ~20 cameras' worth of contention and per-thread overhead.
-  args.push('-threads', '1');
+  // ~20 cameras' worth of contention and per-thread overhead. The same goes
+  // for the filter graph (fps + scale), which otherwise also starts a thread
+  // per core: with both, each capture runs 8 threads instead of 16.
+  args.push('-threads', '1', '-filter_threads', '1');
 
   if (camera.headers && Object.keys(camera.headers).length > 0) {
     const headerLines = Object.entries(camera.headers)

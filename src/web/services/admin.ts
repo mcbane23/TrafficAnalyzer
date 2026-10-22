@@ -1,10 +1,32 @@
-import type { ServerMetrics } from '../../types/admin';
+import type { AnalysisSettings, AnalysisSettingsResponse, ServerMetrics } from '../../types/admin';
 
 /** Fetches the server's current health metrics (CPU, memory, analysis throughput, storage). */
 export async function fetchServerMetrics(): Promise<ServerMetrics> {
   const res = await fetch('/api/admin/metrics');
   if (!res.ok) {
     throw new Error(`Failed to load server metrics (${res.status})`);
+  }
+  return res.json();
+}
+
+/** The analysis switches and every camera they apply to. */
+export async function fetchAnalysisSettings(): Promise<AnalysisSettingsResponse> {
+  const res = await fetch('/api/admin/analysis-settings');
+  if (!res.ok) {
+    throw new Error(`Failed to load analysis settings (${res.status})`);
+  }
+  return res.json();
+}
+
+/** Saves the analysis switches; the server starts and stops cameras to match before it answers. */
+export async function saveAnalysisSettings(settings: AnalysisSettings): Promise<AnalysisSettingsResponse> {
+  const res = await fetch('/api/admin/analysis-settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to save analysis settings (${res.status})`);
   }
   return res.json();
 }

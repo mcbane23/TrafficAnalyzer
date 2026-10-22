@@ -11,14 +11,12 @@ services:
       # Run the live-view vehicle detector on an Intel GPU (OpenVINO). Needs the
       # `devices` / `group_add` lines below; without them it falls back to the CPU.
       # - OVERLAY_DEVICE=GPU
-      # Live-view model on the GPU: yolo26s (default), yolo26n (~2.4x faster,
-      # misses more distant cars) or yolo26m (larger, ~3x slower).
-      # - OVERLAY_MODEL=yolo26s
+      # Which cameras are analyzed (none until you switch them on), the frame
+      # rates, the GPU YOLO model and the box confidence are set on the Admin
+      # page. ANALYSIS_FPS, OVERLAY_FPS, OVERLAY_MODEL and OVERLAY_CONFIDENCE
+      # only change the defaults shown there.
       # Live-view model on the CPU, also used when the GPU can't be: yolo26n.
       # - OVERLAY_CPU_MODEL=yolo26n
-      # Minimum YOLO score for a live-view box (default 0.2). Lower draws more
-      # boxes on busy views, with a few more false ones.
-      # - OVERLAY_CONFIDENCE=0.2
     # Intel GPU for OVERLAY_DEVICE=GPU. group_add is the host's `render` group id:
     # `stat -c %g /dev/dri/renderD128`.
     # devices:

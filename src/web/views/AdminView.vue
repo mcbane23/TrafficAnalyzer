@@ -4,6 +4,7 @@ import type { CaptureCounters, ServerMetrics } from '../../types/admin';
 import { fetchRevalidationStatus, startRevalidation } from '../services/api';
 import { fetchServerMetrics } from '../services/admin';
 import Sparkline from '../components/charts/Sparkline.vue';
+import AnalysisSwitches from '../components/AnalysisSwitches.vue';
 
 // The server samples CPU every 5 s, so polling faster would only repeat the same reading.
 const REFRESH_MS = 5_000;
@@ -221,7 +222,7 @@ onBeforeUnmount(() => {
           <p class="mt-1 text-2xl font-bold tabular-nums" :class="loadClass(memoryUsedPercent)">{{ fmt(memoryUsedPercent, 0, '%') }}</p>
           <p class="mt-1 text-[11px] text-slate-500">
             {{ formatBytes(metrics.host.memory.availableBytes) }} free of {{ formatBytes(metrics.host.memory.totalBytes) }}<br />
-            Node {{ formatBytes(metrics.process.rssBytes) }} · ffmpeg {{ formatBytes(metrics.process.childrenRssBytes) }}
+            Node {{ formatBytes(metrics.process.rssBytes) }} · ffmpeg {{ formatBytes(metrics.process.childrenMemoryBytes) }}
           </p>
         </div>
         <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
@@ -294,6 +295,9 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <!-- Which cameras are analyzed, frame rates, YOLO model -->
+      <AnalysisSwitches class="mt-6" @changed="load" />
+
       <!-- Fleet analysis -->
       <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-4">
         <div class="flex flex-wrap items-baseline justify-between gap-2">
@@ -305,7 +309,7 @@ onBeforeUnmount(() => {
           </p>
         </div>
         <p class="mt-1 text-[11px] text-slate-500">Rates are over the last 15 s; slowest cameras first. Restarts, stalls and skipped frames count since the server started.</p>
-        <p v-if="analysisCameras.length === 0" class="mt-3 text-sm text-slate-500">No cameras are being analyzed.</p>
+        <p v-if="analysisCameras.length === 0" class="mt-3 text-sm text-slate-500">No cameras are being analyzed - switch some on under Analysis settings above.</p>
         <div v-else class="mt-3 overflow-x-auto">
           <table class="w-full whitespace-nowrap text-left text-sm">
             <thead class="text-xs text-slate-500">

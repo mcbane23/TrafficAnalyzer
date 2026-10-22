@@ -8,13 +8,15 @@ import { SseChannel } from './sseChannel';
 import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { ServerMetricsService } from './serverMetrics';
+import { AdminSettingsService } from './adminSettingsService';
 import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
 
 /**
  * Creates the Express app: read-only camera API routes, a background
- * revalidation trigger/status pair (the only mutating endpoints - they
- * don't accept a request body, they just kick off / report on the same
- * check the `cameras:revalidate` CLI performs), an HLS proxy route for
+ * revalidation trigger/status pair (they don't accept a request body, they
+ * just kick off / report on the same check the `cameras:revalidate` CLI
+ * performs), the Admin page's analysis settings (the only endpoint that
+ * takes a body - normalized and clamped before use), an HLS proxy route for
  * cameras that need special request headers the browser can't send
  * itself, the vehicle-traffic-analysis routes (bootstrap + SSE streams +
  * history), server health metrics for the Admin page, plus (when a built frontend is present) static file serving
@@ -37,6 +39,7 @@ export function createApp(
   trafficStatsService: TrafficStatsService,
   liveOverlayService: LiveOverlayService | null,
   serverMetrics: ServerMetricsService,
+  adminSettings: AdminSettingsService,
   staticDir?: string,
 ): Express {
   const app = express();
@@ -71,6 +74,23 @@ export function createApp(
 
   app.get('/api/cameras/revalidate/status', (_req, res) => {
     res.json(revalidationService.getStatus());
+  });
+
+  // The Admin page's analysis settings: which cameras are analyzed, and the frame rates and YOLO model/threshold.
+  // A change is saved to the data volume and applied straight away - see AdminSettingsService.
+  app.get('/api/admin/analysis-settings', async (_req, res) => {
+    try {
+      res.set('Cache-Control', 'no-store').json(await adminSettings.describe());
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load analysis settings' });
+    }
+  });
+  app.put('/api/admin/analysis-settings', express.json({ limit: '64kb' }), async (req, res) => {
+    try {
+      res.json(await adminSettings.update(req.body));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save analysis settings' });
+    }
   });
 
   // Server health for the Admin page: CPU, memory, analysis/overlay throughput, database sizes.
