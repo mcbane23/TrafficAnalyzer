@@ -61,8 +61,19 @@ export interface CpuSample {
   eventLoopMs: number | null;
 }
 
+/** Which build of the app is running (see `readAppVersion`). */
+export interface AppVersion {
+  /** The git tag the image was built from (e.g. v1.3), else package.json's version. */
+  version: string;
+  /** Full commit SHA the image was built from, or null outside a CI build. */
+  commit: string | null;
+  /** When the image was built (ISO), or null outside a CI build. */
+  builtAt: string | null;
+}
+
 export interface ServerMetrics {
   generatedAt: string;
+  app: AppVersion;
   host: {
     hostname: string;
     platform: string;

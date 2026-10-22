@@ -18,7 +18,8 @@ services:
       # Live-view model on the CPU, also used when the GPU can't be: yolo26n.
       # - OVERLAY_CPU_MODEL=yolo26n
     # Intel GPU for OVERLAY_DEVICE=GPU. group_add is the host's `render` group id:
-    # `stat -c %g /dev/dri/renderD128`.
+    # `stat -c %g /dev/dri/renderD128`. The server runs as the `node` user (not
+    # root); on start it also joins the group of every /dev/dri/render* device.
     # devices:
     #   - /dev/dri:/dev/dri
     # group_add:

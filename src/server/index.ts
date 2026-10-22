@@ -21,6 +21,7 @@ import { CaptureSharing } from '../analysis/captureSharing';
 import { DEFAULT_MIN_CONFIDENCE, DEFAULT_OPENVINO_MODEL, OPENVINO_MODELS, YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
 import { VehicleTracker } from '../analysis/vehicleTracker';
 import { ServerMetricsService } from './serverMetrics';
+import { readAppVersion } from './appVersion';
 import { AnalysisSettingsStore } from './analysisSettingsStore';
 import { AdminSettingsService } from './adminSettingsService';
 import { CameraEditor } from './cameraEditor';
@@ -239,6 +240,7 @@ const accuracyChecks = new AccuracyCheckService({
 });
 // CPU, memory and pipeline throughput for the Admin page, sampled every 5 s.
 const serverMetrics = new ServerMetricsService({
+  app: readAppVersion(process.env, path.resolve(__dirname, '../../package.json')),
   analysis: trafficAnalysisService,
   overlay: liveOverlayService,
   config: {

@@ -184,6 +184,9 @@ onBeforeUnmount(() => {
           {{ t('admin.subtitle', { seconds: REFRESH_MS / 1000 }) }}
           <template v-if="metrics"> · {{ metrics.host.hostname }}</template>
         </p>
+        <p v-if="metrics" class="mt-0.5 text-xs text-slate-500" :title="metrics.app.commit ?? ''">
+          {{ t('admin.version', { version: metrics.app.version }) }}<template v-if="metrics.app.commit"> · {{ metrics.app.commit.slice(0, 7) }}</template><template v-if="metrics.app.builtAt"> · {{ t('admin.builtAt', { when: new Date(metrics.app.builtAt).toLocaleString(intlLocale()) }) }}</template>
+        </p>
       </div>
     </div>
 

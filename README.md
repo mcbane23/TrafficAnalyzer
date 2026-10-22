@@ -9,6 +9,15 @@ Every merge to `main` publishes an image to GitHub Container Registry:
 
 - `ghcr.io/mcbane23/trafficanalyzer:latest` — latest `main`
 - `ghcr.io/mcbane23/trafficanalyzer:<commit sha>` — a specific commit (full 40-character SHA)
+- `ghcr.io/mcbane23/trafficanalyzer:v1.3` (etc.) — a version: pushing a git tag that starts with `v`
+  publishes the image under that tag, so a server can stay on a known version instead of `latest`:
+
+  ```sh
+  git tag v1.3
+  git push origin v1.3
+  ```
+
+The Admin page shows which version, commit and build time is running.
 
 The image is multi-arch: `linux/amd64` and `linux/arm64` (Docker picks the right one). The Intel GPU
 runtime (`OVERLAY_DEVICE=GPU`) is in the amd64 image only; on arm64 YOLO runs on the CPU.
@@ -49,8 +58,15 @@ again.
 Re-probe every camera and update the registry inside the running container:
 
 ```sh
-docker exec trafficanalyzer node dist/cli/revalidate.js
+docker exec -u node trafficanalyzer node dist/cli/revalidate.js
 ```
+
+The server runs as the unprivileged `node` user (uid 1000), not root. The container starts as root
+only to hand `/app/data` to `node` (volumes created by older images were written by root; only files
+not already owned by `node` are changed) and to add `node` to the group of the `/dev/dri/render*`
+devices passed in, then drops root before the server starts. Use `-u node` with `docker exec` as
+above, so files it writes stay `node`'s (a restart fixes them otherwise). A compose `user:` line
+skips all this and runs as that user directly; the data volume must then be writable by it.
 
 ### Docker Compose
 
@@ -133,4 +149,4 @@ npm run build
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs tests, the production build and a Docker
 image build on every branch and pull request, without uploading artifacts, caches or images. Only a
-push to `main` (a merged PR) publishes the image to GHCR.
+push to `main` (a merged PR) or of a `v*` tag publishes the image to GHCR.
