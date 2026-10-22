@@ -24,7 +24,11 @@ services:
     # group_add:
     #   - "107"
     volumes:
-      # Persist registry edits made by `docker compose exec trafficanalyzer node dist/cli/revalidate.js`,
-      # and TrafficHistoryStore's traffic-history.db (created on first run) across container recreation.
-      - ./data:/app/data
+      # Camera registry, settings, thumbnails and the two databases, kept across updates. A named
+      # volume starts with the image's registry; a bind mount such as ./data:/app/data works too
+      # (the server copies the default registry into it when it is empty).
+      - trafficanalyzer-data:/app/data
     restart: unless-stopped
+
+volumes:
+  trafficanalyzer-data:

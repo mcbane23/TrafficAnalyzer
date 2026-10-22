@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import Hls from 'hls.js';
+// Type only: hls.js (~540 KB) is loaded on the first hover preview, not with the dashboard.
+import type Hls from 'hls.js';
 import type { CameraEntry } from '../../types/camera';
 import type { CameraAnalysisOverview } from '../../types/analysis';
 import type { CameraSummary, StatsRange } from '../../types/stats';
 import { cameraSnapshotUrl } from '../services/stats';
 import { RANGES, TRAFFIC_BADGE_STYLES, TRAFFIC_LABELS, formatCount } from '../composables/trafficUi';
 import Sparkline from './charts/Sparkline.vue';
+import { t } from '../i18n';
 
 const props = defineProps<{
   camera: CameraEntry;
+  /** Whether the Admin page switches this camera's analysis on; without it there are no counts or badge to show. */
+  analyzed: boolean;
   overview?: CameraAnalysisOverview;
   summary?: CameraSummary;
   range: StatsRange;
@@ -21,13 +25,16 @@ const props = defineProps<{
 const isActive = computed(() => props.camera.status === 'active');
 const hasTrafficData = computed(() => Boolean(props.overview) && !props.overview?.error);
 const feedError = computed(() => (isActive.value ? props.overview?.error : undefined));
+const analysisOff = computed(() => isActive.value && !props.analyzed);
+/** A camera switched off has counted nothing, so its zero would read as an empty road. */
+const passedLabel = computed(() => (props.summary && !(analysisOff.value && props.summary.total === 0) ? formatCount(props.summary.total) : '–'));
 const rangeLabel = computed(() => RANGES.find((r) => r.value === props.range)?.label ?? props.range);
 
 const locationLabel = computed(() => {
   const { location } = props.camera;
   if (location.address) return location.address;
   if (location.lat != null && location.lon != null) return `${location.lat}, ${location.lon}`;
-  return 'Unknown location';
+  return t('card.unknownLocation');
 });
 
 const snapshotFailed = ref(false);
@@ -49,12 +56,15 @@ const canPreview = computed(() => isActive.value && props.camera.protocol === 'H
 function startPreview() {
   if (!canPreview.value || previewing.value) return;
   // A short delay so sweeping the mouse across the grid doesn't open a stream per card passed over.
-  hoverTimer = setTimeout(() => {
+  hoverTimer = setTimeout(async () => {
     hoverTimer = null;
     previewing.value = true;
+    const { default: Hls } = await import('hls.js');
+    // The pointer may have left while the library loaded.
+    if (!previewing.value) return;
     requestAnimationFrame(() => {
       const video = previewVideo.value;
-      if (!video) return;
+      if (!video || !previewing.value) return;
       // hls.js first, native only without MSE (iOS Safari) - see StreamPlayer's loadSource.
       if (Hls.isSupported()) {
         hls = new Hls({ liveSyncDurationCount: 2 });
@@ -102,13 +112,13 @@ onBeforeUnmount(stopPreview);
       <img
         v-else-if="isActive && !snapshotFailed"
         :src="snapshotSrc"
-        :alt="`Latest frame from ${camera.name}`"
+        :alt="t('card.latestFrame', { name: camera.name })"
         class="absolute inset-0 h-full w-full object-cover"
         loading="lazy"
         @error="snapshotFailed = true"
       />
       <div v-else class="flex h-full items-center justify-center text-xs text-slate-500">
-        {{ isActive ? 'No frame yet' : 'Camera offline' }}
+        {{ isActive ? t('card.noFrame') : t('card.offline') }}
       </div>
       <span
         v-if="hasTrafficData"
@@ -118,10 +128,17 @@ onBeforeUnmount(stopPreview);
         {{ TRAFFIC_LABELS[overview!.trafficLevel] }}
       </span>
       <span v-if="feedError" class="absolute left-2 top-2 rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-300 backdrop-blur" :title="feedError">
-        Feed error
+        {{ t('card.feedError') }}
+      </span>
+      <span
+        v-else-if="analysisOff && !hasTrafficData"
+        class="absolute left-2 top-2 rounded-full bg-slate-900/80 px-2 py-0.5 text-xs font-medium text-slate-300 backdrop-blur"
+        :title="t('card.analysisOffTitle')"
+      >
+        {{ t('card.analysisOff') }}
       </span>
       <span v-if="canPreview && !previewing" class="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-slate-300 opacity-0 transition group-hover:opacity-100">
-        Live preview…
+        {{ t('card.livePreview') }}
       </span>
     </div>
 
@@ -132,17 +149,17 @@ onBeforeUnmount(stopPreview);
           <p class="truncate text-xs text-slate-400">{{ locationLabel }}</p>
         </div>
         <div class="shrink-0 text-right">
-          <p class="text-lg font-semibold tabular-nums text-slate-100">{{ summary ? formatCount(summary.total) : '–' }}</p>
-          <p class="text-[11px] text-slate-500">passed · {{ rangeLabel }}</p>
+          <p class="text-lg font-semibold tabular-nums" :class="passedLabel === '–' ? 'text-slate-500' : 'text-slate-100'">{{ passedLabel }}</p>
+          <p class="text-[11px] text-slate-500">{{ t('card.passed', { range: rangeLabel }) }}</p>
         </div>
       </div>
       <div class="mt-3">
-        <Sparkline v-if="summary" :values="summary.sparkline" />
+        <Sparkline v-if="summary && !analysisOff" :values="summary.sparkline" />
         <div v-else class="h-7"></div>
         <div class="mt-1 flex justify-between text-[10px] text-slate-500">
-          <span>24 h ago</span>
-          <span v-if="hasTrafficData">{{ overview!.totalCount }} in view now</span>
-          <span>now</span>
+          <span>{{ t('card.dayAgo') }}</span>
+          <span v-if="hasTrafficData">{{ t('card.inView', { count: overview!.totalCount }) }}</span>
+          <span>{{ t('card.now') }}</span>
         </div>
       </div>
     </div>
@@ -160,15 +177,16 @@ onBeforeUnmount(stopPreview);
       <p class="truncate text-xs text-slate-400">{{ locationLabel }}</p>
     </div>
     <div class="hidden sm:block">
-      <span v-if="!isActive" class="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">Offline</span>
-      <span v-else-if="feedError" class="rounded-full bg-red-500/20 px-2 py-0.5 text-xs text-red-300" :title="feedError">Feed error</span>
+      <span v-if="!isActive" class="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{{ t('dash.filter.offline') }}</span>
+      <span v-else-if="feedError" class="rounded-full bg-red-500/20 px-2 py-0.5 text-xs text-red-300" :title="feedError">{{ t('card.feedError') }}</span>
+      <span v-else-if="analysisOff && !hasTrafficData" class="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400" :title="t('card.analysisOffTitle')">{{ t('card.analysisOff') }}</span>
       <span v-else-if="hasTrafficData" class="rounded-full px-2 py-0.5 text-xs font-medium" :class="TRAFFIC_BADGE_STYLES[overview!.trafficLevel]">
         {{ TRAFFIC_LABELS[overview!.trafficLevel] }}
       </span>
     </div>
     <div class="hidden sm:block">
-      <Sparkline v-if="summary" :values="summary.sparkline" :height="22" />
+      <Sparkline v-if="summary && !analysisOff" :values="summary.sparkline" :height="22" />
     </div>
-    <p class="text-right font-semibold tabular-nums text-slate-100">{{ summary ? formatCount(summary.total) : '–' }}</p>
+    <p class="text-right font-semibold tabular-nums" :class="passedLabel === '–' ? 'text-slate-500' : 'text-slate-100'">{{ passedLabel }}</p>
   </router-link>
 </template>

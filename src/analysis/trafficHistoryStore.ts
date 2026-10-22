@@ -29,8 +29,10 @@ function rowToResult(row: Row): StoredAnalysisResult {
  * TrafficHistoryStore persists every analysis result to a local SQLite
  * database file (via better-sqlite3), consistent with this project's
  * existing "no separate database server" approach (see
- * `CameraRegistryStore`'s use of a plain JSON file). Results are retained
- * indefinitely - there's no automatic pruning in this feature.
+ * `CameraRegistryStore`'s use of a plain JSON file). Old rows are deleted
+ * by `DataRetentionService` through `pruneBefore` (22 cameras add ~20 MB a
+ * day); every camera's latest row is always kept, since it is what the
+ * dashboard shows right after a restart.
  */
 export const DEFAULT_HISTORY_LIMIT = 100;
 export const MAX_HISTORY_LIMIT = 1000;
@@ -58,6 +60,8 @@ export class TrafficHistoryStore {
   private readonly latestForAllStatement: Database.Statement<[], Row>;
   private readonly historyStatement: Database.Statement<[string, number], Row>;
   private readonly historySinceStatement: Database.Statement<[string, string, number], Row>;
+  private readonly latestIdsStatement: Database.Statement<[], { id: number }>;
+  private readonly pruneStatement: Database.Statement<[{ cutoff: string; keep: string; batch: number }]>;
 
   constructor(dbPath: string = ':memory:') {
     this.db = new Database(dbPath);
@@ -98,6 +102,15 @@ export class TrafficHistoryStore {
       `SELECT * FROM (
          SELECT * FROM traffic_analysis WHERE camera_id = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?
        ) ORDER BY timestamp ASC`,
+    );
+    this.latestIdsStatement = this.db.prepare<[], { id: number }>(`SELECT MAX(id) AS id FROM traffic_analysis GROUP BY camera_id`);
+    // Rows are inserted in time order, so walking by id finds the old ones first.
+    this.pruneStatement = this.db.prepare<[{ cutoff: string; keep: string; batch: number }]>(
+      `DELETE FROM traffic_analysis WHERE id IN (
+         SELECT id FROM traffic_analysis
+         WHERE timestamp < @cutoff AND id NOT IN (SELECT value FROM json_each(@keep))
+         ORDER BY id LIMIT @batch
+       )`,
     );
   }
 
@@ -141,6 +154,20 @@ export class TrafficHistoryStore {
       ? this.historySinceStatement.all(cameraId, options.sinceIso, limit)
       : this.historyStatement.all(cameraId, limit);
     return rows.map(rowToResult);
+  }
+
+  /** Ids of every camera's latest row, which `pruneBefore` must keep. Read once per prune run, not per batch. */
+  latestIds(): number[] {
+    return this.latestIdsStatement.all().map((row) => row.id);
+  }
+
+  /**
+   * Deletes at most `batch` rows older than `cutoffIso`, sparing the ids in
+   * `keep`; returns how many went. Small batches keep each call short, since
+   * it runs on the server's main thread.
+   */
+  pruneBefore(cutoffIso: string, keep: number[], batch: number): number {
+    return this.pruneStatement.run({ cutoff: cutoffIso, keep: JSON.stringify(keep), batch }).changes;
   }
 
   close(): void {

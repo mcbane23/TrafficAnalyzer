@@ -8,6 +8,7 @@ import { fetchCameras } from '../services/api';
 import { fetchCameraStats, fetchStatsSummary } from '../services/stats';
 import { RANGES, formatCount, useStatsRange } from '../composables/trafficUi';
 import { formatBucketLabel } from '../components/charts/chartSetup';
+import { t } from '../i18n';
 
 const range = useStatsRange();
 const cameras = ref<CameraEntry[]>([]);
@@ -32,8 +33,8 @@ const rankingHeight = computed(() => `${Math.max(160, ranked.value.length * 28 +
 const rankingData = computed<ChartData<'bar'>>(() => ({
   labels: ranked.value.map((c) => nameById.value.get(c.cameraId) ?? c.cameraId),
   datasets: [
-    { label: 'Cars', data: ranked.value.map((c) => c.car), backgroundColor: '#38bdf8', stack: 's' },
-    { label: 'Large vehicles (approx.)', data: ranked.value.map((c) => c.large), backgroundColor: '#f59e0b', stack: 's' },
+    { label: t('chart.cars'), data: ranked.value.map((c) => c.car), backgroundColor: '#38bdf8', stack: 's' },
+    { label: t('chart.largeApprox'), data: ranked.value.map((c) => c.large), backgroundColor: '#f59e0b', stack: 's' },
   ],
 }));
 
@@ -67,17 +68,17 @@ const comparisonData = computed<ChartData<'line'>>(() => {
   };
 });
 
-const comparisonOptions: ChartOptions<'line'> = {
+const comparisonOptions = computed<ChartOptions<'line'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
   animation: false,
   interaction: { mode: 'index', intersect: false },
   scales: {
     x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } },
-    y: { beginAtZero: true, title: { display: true, text: 'Vehicles per bucket' }, ticks: { precision: 0 } },
+    y: { beginAtZero: true, title: { display: true, text: t('chart.perBucket') }, ticks: { precision: 0 } },
   },
   plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, boxHeight: 10 } } },
-};
+}));
 
 function toggle(cameraId: string) {
   if (selected.value.includes(cameraId)) selected.value = selected.value.filter((id) => id !== cameraId);
@@ -90,7 +91,7 @@ async function loadSummary() {
     error.value = null;
     if (selected.value.length === 0) selected.value = ranked.value.slice(0, 3).map((c) => c.cameraId);
   } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to load statistics.';
+    error.value = err instanceof Error ? err.message : t('stats.loadFailed');
   }
 }
 
@@ -117,26 +118,26 @@ watch(selected, loadCompared);
 
 <template>
   <main class="mx-auto max-w-7xl px-4 py-6">
-    <h1 class="text-2xl font-bold text-slate-100">Statistics</h1>
+    <h1 class="text-2xl font-bold text-slate-100">{{ t('stats.title') }}</h1>
     <p class="mt-1 text-sm text-slate-400">
-      Vehicles passed per camera · last {{ rangeLabel }}
-      <template v-if="summary"> · {{ formatCount(summary.totals.total) }} in total</template>
+      {{ t('stats.subtitle', { range: rangeLabel }) }}
+      <template v-if="summary"> · {{ t('stats.total', { count: formatCount(summary.totals.total) }) }}</template>
     </p>
     <p v-if="error" class="mt-6 text-sm text-red-400">{{ error }}</p>
 
     <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
-      <h2 class="text-base font-semibold text-slate-100">Busiest cameras</h2>
-      <p v-if="summary && ranked.length === 0" class="mt-3 text-sm text-slate-500">No vehicles counted in this range yet.</p>
+      <h2 class="text-base font-semibold text-slate-100">{{ t('stats.busiest') }}</h2>
+      <p v-if="summary && ranked.length === 0" class="mt-3 text-sm text-slate-500">{{ t('stats.noVehicles') }}</p>
       <div v-else-if="summary" class="mt-4" :style="{ height: rankingHeight }">
         <Bar :data="rankingData" :options="rankingOptions" />
       </div>
-      <p v-else class="mt-3 text-sm text-slate-500">Loading…</p>
+      <p v-else class="mt-3 text-sm text-slate-500">{{ t('cam.loadingShort') }}</p>
     </section>
 
     <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
       <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 class="text-base font-semibold text-slate-100">Compare over time</h2>
-        <p class="text-xs text-slate-500">Pick up to {{ MAX_COMPARED }} cameras.</p>
+        <h2 class="text-base font-semibold text-slate-100">{{ t('stats.compare') }}</h2>
+        <p class="text-xs text-slate-500">{{ t('stats.pick', { max: MAX_COMPARED }) }}</p>
       </div>
       <div class="mt-3 flex flex-wrap gap-1.5">
         <button
@@ -159,7 +160,7 @@ watch(selected, loadCompared);
       <div v-if="compared.length" class="mt-4 h-80">
         <Line :data="comparisonData" :options="comparisonOptions" />
       </div>
-      <p v-else class="mt-4 text-sm text-slate-500">Select cameras to compare.</p>
+      <p v-else class="mt-4 text-sm text-slate-500">{{ t('stats.select') }}</p>
     </section>
   </main>
 </template>

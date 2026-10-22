@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { CameraHeatmap } from '../../../types/stats';
+import { t } from '../../i18n';
 
 const props = defineProps<{ heatmap: CameraHeatmap }>();
 
-const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const max = computed(() => Math.max(1, ...props.heatmap.cells.map((c) => c.vehiclesPerHour ?? 0)));
 
 const rows = computed(() =>
-  DAYS.map((day, weekday) => ({
+  t('heat.days').split(',').map((day, weekday) => ({
     day,
     cells: props.heatmap.cells.filter((c) => c.weekday === weekday).sort((a, b) => a.hour - b.hour),
   })),
@@ -27,7 +27,7 @@ const hasData = computed(() => props.heatmap.cells.some((c) => c.vehiclesPerHour
 
 <template>
   <div>
-    <p v-if="!hasData" class="text-xs text-slate-500">No analyzed hours in the last {{ heatmap.days }} days yet.</p>
+    <p v-if="!hasData" class="text-xs text-slate-500">{{ t('heat.empty', { days: heatmap.days }) }}</p>
     <div v-else class="overflow-x-auto">
       <div class="grid min-w-[560px] gap-0.5" style="grid-template-columns: 2.5rem repeat(24, minmax(0, 1fr))">
         <div></div>
@@ -41,16 +41,16 @@ const hasData = computed(() => props.heatmap.cells.some((c) => c.vehiclesPerHour
             :key="`${row.day}-${cell.hour}`"
             class="h-5 rounded-sm"
             :style="cellStyle(cell.vehiclesPerHour)"
-            :title="`${row.day} ${String(cell.hour).padStart(2, '0')}:00 - ${cell.vehiclesPerHour === null ? 'not analyzed' : `${cell.vehiclesPerHour} vehicles/hour`}`"
+            :title="t('heat.cell', { day: row.day, hour: String(cell.hour).padStart(2, '0'), value: cell.vehiclesPerHour === null ? t('heat.notAnalyzed') : t('heat.cellValue', { value: cell.vehiclesPerHour }) })"
           ></div>
         </template>
       </div>
       <div class="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
-        <span>Fewer</span>
+        <span>{{ t('heat.fewer') }}</span>
         <span class="h-2 w-24 rounded-sm" style="background: linear-gradient(to right, rgba(56,189,248,0.12), rgba(56,189,248,1))"></span>
-        <span>More (peak {{ max }}/h)</span>
+        <span>{{ t('heat.more', { max }) }}</span>
         <span class="ml-3 h-2 w-3 rounded-sm" style="background-color: rgba(30, 41, 59, 0.6)"></span>
-        <span>Not analyzed</span>
+        <span>{{ t('heat.notAnalyzed') }}</span>
       </div>
     </div>
   </div>

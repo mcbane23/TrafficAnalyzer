@@ -176,6 +176,49 @@ describe('AnalysisWorkerPool', () => {
     expect((await analyzer.analyze(FRAME, TIMESTAMP)).error).toBe('Analysis stopped');
   });
 
+  it('starts no worker until a camera is created, and only as many as there are cameras', () => {
+    const { pool, workers } = makePool(2);
+    expect(workers).toHaveLength(0);
+    expect(pool.runningWorkers).toBe(0);
+
+    pool.createAnalyzer('a', camera('a'));
+
+    expect(workers).toHaveLength(1);
+    expect(pool.runningWorkers).toBe(1);
+  });
+
+  it("stops a worker once its last camera is disposed, and starts a new one for the next camera", async () => {
+    const { pool, workers } = makePool(1);
+    const a = pool.createAnalyzer('a', camera('a'));
+    const b = pool.createAnalyzer('b', camera('b'));
+
+    a.dispose();
+    expect(workers[0].terminated).toBe(false);
+    b.dispose();
+    expect(workers[0].terminated).toBe(true);
+    expect(pool.runningWorkers).toBe(0);
+
+    const c = pool.createAnalyzer('c', camera('c'));
+    expect(workers).toHaveLength(2);
+    expect((await c.analyze(FRAME, TIMESTAMP)).totalCount).toBe(1);
+  });
+
+  it('does not restart a dead worker whose cameras were all disposed meanwhile', () => {
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'nextTick', 'setImmediate'] });
+    const { pool, workers } = makePool(1);
+    const analyzer = pool.createAnalyzer('a', camera('a'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    workers[0].emit('exit', 1);
+    analyzer.dispose();
+    jest.advanceTimersByTime(1000);
+
+    expect(workers).toHaveLength(1);
+    expect(pool.runningWorkers).toBe(0);
+    errorSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
   it('resolves in-flight frames as errors and terminates the workers on close', async () => {
     const { pool, workers } = makePool(2);
     const analyzer = pool.createAnalyzer('a', camera('a'));

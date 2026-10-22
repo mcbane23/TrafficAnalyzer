@@ -6,6 +6,7 @@ import type { LiveCounts, PassageCounts } from '../../types/stats';
 import { subscribeCameraAnalysis } from '../services/analysis';
 import { fetchLiveCounts } from '../services/stats';
 import { DIRECTION_COLORS, TRAFFIC_BADGE_STYLES, TRAFFIC_BAR_STYLES, TRAFFIC_LABELS, formatCount } from '../composables/trafficUi';
+import { t } from '../i18n';
 
 /**
  * The "Now" panel on a camera's page: what the camera sees this instant
@@ -46,9 +47,9 @@ const occupancyPct = computed(() => {
 const counters = computed<Array<{ label: string; counts: PassageCounts }>>(() =>
   live.value
     ? [
-        { label: 'Last 5 min', counts: live.value.last5m },
-        { label: 'Last hour', counts: live.value.last1h },
-        { label: 'Today', counts: live.value.today },
+        { label: t('now.last5m'), counts: live.value.last5m },
+        { label: t('now.last1h'), counts: live.value.last1h },
+        { label: t('now.today'), counts: live.value.today },
       ]
     : [],
 );
@@ -101,41 +102,41 @@ onBeforeUnmount(stop);
 <template>
   <div class="flex h-full flex-col rounded-xl border border-slate-800 bg-slate-900 p-5">
     <div class="flex items-center justify-between gap-2">
-      <h2 class="text-sm font-semibold text-slate-100">Now</h2>
+      <h2 class="text-sm font-semibold text-slate-100">{{ t('now.title') }}</h2>
       <span
         v-if="result && !hasResultError && !isWarmingUp"
         class="shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium"
         :class="TRAFFIC_BADGE_STYLES[result.trafficLevel]"
       >
-        {{ TRAFFIC_LABELS[result.trafficLevel] }} traffic
+        {{ t('level.traffic', { level: TRAFFIC_LABELS[result.trafficLevel] }) }}
       </span>
     </div>
 
     <!-- Inactive camera: no analysis is attempted, so say so clearly rather than showing a stale/misleading count. -->
     <div v-if="!isActive" class="mt-6 flex flex-1 flex-col items-center justify-center text-center">
-      <p class="text-sm font-medium text-slate-400">Camera offline</p>
-      <p class="mt-1 text-xs text-slate-500">No traffic analysis is available while this camera is inactive.</p>
+      <p class="text-sm font-medium text-slate-400">{{ t('now.offline') }}</p>
+      <p class="mt-1 text-xs text-slate-500">{{ t('now.offlineBody') }}</p>
     </div>
 
     <template v-else>
       <div v-if="isWarmingUp" class="mt-4 flex items-center gap-3">
         <span class="h-4 w-4 animate-spin rounded-full border-2 border-slate-700 border-t-slate-300"></span>
-        <p class="text-xs text-slate-400">Learning the scene - usually a few seconds after the stream connects.</p>
+        <p class="text-xs text-slate-400">{{ t('now.warming') }}</p>
       </div>
 
       <div v-else-if="hasResultError" class="mt-4 rounded-lg bg-red-500/10 p-3">
-        <p class="text-sm font-medium text-red-400">Analysis unavailable</p>
+        <p class="text-sm font-medium text-red-400">{{ t('now.unavailable') }}</p>
         <p class="mt-0.5 text-xs text-slate-400">{{ result?.error }}</p>
       </div>
 
       <template v-else-if="result">
         <div class="mt-4 grid grid-cols-2 gap-3">
           <div>
-            <p class="text-xs text-slate-500">In view</p>
+            <p class="text-xs text-slate-500">{{ t('now.inView') }}</p>
             <p class="text-3xl font-bold tabular-nums text-slate-100">{{ inViewCount ?? result.totalCount }}</p>
           </div>
           <div>
-            <p class="text-xs text-slate-500">Road occupancy</p>
+            <p class="text-xs text-slate-500">{{ t('now.occupancy') }}</p>
             <p class="text-3xl font-bold tabular-nums text-slate-100">{{ occupancyPct === null ? '–' : `${occupancyPct}%` }}</p>
           </div>
         </div>
@@ -151,15 +152,15 @@ onBeforeUnmount(stop);
       </template>
 
       <div class="mt-6 border-t border-slate-800 pt-4">
-        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Vehicles passed</p>
-        <p v-if="!live" class="mt-2 text-xs text-slate-500">Loading counts…</p>
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">{{ t('now.passed') }}</p>
+        <p v-if="!live" class="mt-2 text-xs text-slate-500">{{ t('now.loadingCounts') }}</p>
         <ul v-else class="mt-3 space-y-4">
           <li v-for="counter in counters" :key="counter.label">
             <div class="flex items-baseline justify-between">
               <span class="text-sm text-slate-400">{{ counter.label }}</span>
               <span class="text-2xl font-semibold tabular-nums text-slate-100">{{ formatCount(counter.counts.total) }}</span>
             </div>
-            <div class="mt-1.5 flex h-1.5 w-full overflow-hidden rounded-full bg-slate-800" :title="`${directionLabels.a}: ${counter.counts.a}, ${directionLabels.b}: ${counter.counts.b}, unclear: ${counter.counts.unknown}`">
+            <div class="mt-1.5 flex h-1.5 w-full overflow-hidden rounded-full bg-slate-800" :title="t('now.split', { a: directionLabels.a, na: counter.counts.a, b: directionLabels.b, nb: counter.counts.b, nu: counter.counts.unknown })">
               <div :style="{ width: share(counter.counts.a, counter.counts.total), backgroundColor: DIRECTION_COLORS.a }"></div>
               <div :style="{ width: share(counter.counts.b, counter.counts.total), backgroundColor: DIRECTION_COLORS.b }"></div>
               <div :style="{ width: share(counter.counts.unknown, counter.counts.total), backgroundColor: DIRECTION_COLORS.unknown }"></div>
@@ -167,16 +168,16 @@ onBeforeUnmount(stop);
             <div class="mt-1 flex flex-wrap justify-between gap-x-3 text-[11px] text-slate-500">
               <span><span :style="{ color: DIRECTION_COLORS.a }">●</span> {{ directionLabels.a }} {{ counter.counts.a }}</span>
               <span><span :style="{ color: DIRECTION_COLORS.b }">●</span> {{ directionLabels.b }} {{ counter.counts.b }}</span>
-              <span title="Approximate, from vehicle size">{{ counter.counts.large }} large*</span>
+              <span :title="t('now.largeTitle')">{{ t('now.large', { count: counter.counts.large }) }}</span>
             </div>
           </li>
         </ul>
         <p class="mt-4 text-[11px] leading-snug text-slate-500">
-          * Bus/truck-sized, estimated from box size - approximate. Directions are learned from how traffic moves on this camera.
+          {{ t('now.footnote') }}
         </p>
       </div>
 
-      <p v-if="streamDisconnected" class="mt-3 text-xs text-amber-400">Live updates disconnected - showing the last known result.</p>
+      <p v-if="streamDisconnected" class="mt-3 text-xs text-amber-400">{{ t('now.disconnected') }}</p>
     </template>
   </div>
 </template>

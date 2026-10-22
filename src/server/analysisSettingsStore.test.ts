@@ -43,6 +43,16 @@ describe('normalizeAnalysisSettings', () => {
     expect(normalizeAnalysisSettings({ enabledCameras: [], analysisFps: 50, overlayConfidence: 2 })).toMatchObject({ analysisFps: 10, overlayConfidence: 0.95 });
   });
 
+  it('keeps passages forever at 0, and otherwise for at least 7 whole days', () => {
+    const days = (value: unknown) => normalizeAnalysisSettings({ enabledCameras: [], passageRetentionDays: value }).passageRetentionDays;
+    expect(days(0)).toBe(0);
+    expect(days(-5)).toBe(0);
+    expect(days(3)).toBe(7);
+    expect(days(30.4)).toBe(30);
+    expect(days(99999)).toBe(3650);
+    expect(days('30')).toBeUndefined();
+  });
+
   it('keeps a model only if it is one of the allowed ones', () => {
     expect(normalizeAnalysisSettings({ enabledCameras: [], overlayModel: 'yolo26m' }, ['yolo26n', 'yolo26m']).overlayModel).toBe('yolo26m');
     expect(normalizeAnalysisSettings({ enabledCameras: [], overlayModel: 'yolov9' }, ['yolo26n', 'yolo26m']).overlayModel).toBeUndefined();

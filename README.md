@@ -61,7 +61,12 @@ docker compose up -d
 ```
 
 Use `docker compose up -d --build` instead to build the image locally from the Dockerfile. Compose
-mounts `./data` into the container.
+keeps `/app/data` in the named volume `trafficanalyzer-data`. A bind mount such as `./data:/app/data`
+works too: when it is empty the server copies the default camera registry into it on start.
+
+The image has a `HEALTHCHECK` against `GET /api/health`, so `docker ps` (and TrueNAS) show the
+container as unhealthy when the server stops answering. Docker itself does not restart an unhealthy
+container.
 
 ### Configuration
 

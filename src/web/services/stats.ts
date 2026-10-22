@@ -1,9 +1,10 @@
 import type { CameraHeatmap, CameraStats, LiveCounts, StatsBucket, StatsRange, StatsSummary } from '../../types/stats';
+import { t } from '../i18n';
 
-async function getJson<T>(url: string, what: string): Promise<T> {
+async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) {
-    let message = `Failed to load ${what} (${res.status})`;
+    let message = t('error.stats', { status: res.status });
     try {
       message = ((await res.json()) as { error?: string }).error ?? message;
     } catch {
@@ -20,22 +21,22 @@ function cameraPath(cameraId: string): string {
 
 /** Per-camera totals and 24-hour sparklines for the dashboard. */
 export function fetchStatsSummary(range: StatsRange): Promise<StatsSummary> {
-  return getJson(`/api/stats/summary?range=${range}`, 'traffic summary');
+  return getJson(`/api/stats/summary?range=${range}`);
 }
 
 /** Bucketed vehicle counts (by direction and size class), occupancy and coverage for one camera. */
 export function fetchCameraStats(cameraId: string, range: StatsRange, bucket?: StatsBucket): Promise<CameraStats> {
   const query = new URLSearchParams({ range });
   if (bucket) query.set('bucket', bucket);
-  return getJson(`${cameraPath(cameraId)}/stats?${query}`, 'traffic statistics');
+  return getJson(`${cameraPath(cameraId)}/stats?${query}`);
 }
 
 export function fetchCameraHeatmap(cameraId: string, days = 7): Promise<CameraHeatmap> {
-  return getJson(`${cameraPath(cameraId)}/stats/heatmap?days=${days}`, 'traffic heatmap');
+  return getJson(`${cameraPath(cameraId)}/stats/heatmap?days=${days}`);
 }
 
 export function fetchLiveCounts(cameraId: string): Promise<LiveCounts> {
-  return getJson(`${cameraPath(cameraId)}/stats/live`, 'live counts');
+  return getJson(`${cameraPath(cameraId)}/stats/live`);
 }
 
 export function cameraStatsCsvUrl(cameraId: string, range: StatsRange, bucket: StatsBucket): string {

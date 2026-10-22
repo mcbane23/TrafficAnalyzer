@@ -11,3 +11,7 @@ README.md
 .github
 *.bat
 docker-compose.yml
+data/*.db*
+data/thumbnails
+data/openvino-cache
+data/analysis-settings.json

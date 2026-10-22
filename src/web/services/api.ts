@@ -1,4 +1,5 @@
 import type { CameraEntry, RevalidationStatus } from '../../types/camera';
+import { t } from '../i18n';
 
 const BASE_URL = '/api/cameras';
 
@@ -14,7 +15,7 @@ async function parseErrorMessage(res: Response, fallback: string): Promise<strin
 export async function fetchCameras(): Promise<CameraEntry[]> {
   const res = await fetch(BASE_URL);
   if (!res.ok) {
-    throw new Error(await parseErrorMessage(res, `Failed to load cameras (${res.status})`));
+    throw new Error(await parseErrorMessage(res, t('error.cameras', { status: res.status })));
   }
   return res.json();
 }
@@ -22,7 +23,7 @@ export async function fetchCameras(): Promise<CameraEntry[]> {
 export async function fetchCameraById(id: string): Promise<CameraEntry> {
   const res = await fetch(`${BASE_URL}/${encodeURIComponent(id)}`);
   if (!res.ok) {
-    throw new Error(await parseErrorMessage(res, `Failed to load camera "${id}" (${res.status})`));
+    throw new Error(await parseErrorMessage(res, t('error.camera', { id, status: res.status })));
   }
   return res.json();
 }
@@ -31,7 +32,7 @@ export async function fetchCameraById(id: string): Promise<CameraEntry> {
 export async function startRevalidation(): Promise<RevalidationStatus> {
   const res = await fetch(`${BASE_URL}/revalidate`, { method: 'POST' });
   if (!res.ok && res.status !== 409) {
-    throw new Error(await parseErrorMessage(res, `Failed to start availability check (${res.status})`));
+    throw new Error(await parseErrorMessage(res, t('error.startCheck', { status: res.status })));
   }
   return res.json();
 }
@@ -40,7 +41,7 @@ export async function startRevalidation(): Promise<RevalidationStatus> {
 export async function fetchRevalidationStatus(): Promise<RevalidationStatus> {
   const res = await fetch(`${BASE_URL}/revalidate/status`);
   if (!res.ok) {
-    throw new Error(await parseErrorMessage(res, `Failed to load availability check status (${res.status})`));
+    throw new Error(await parseErrorMessage(res, t('error.checkStatus', { status: res.status })));
   }
   return res.json();
 }

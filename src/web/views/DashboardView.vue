@@ -4,10 +4,11 @@ import type { CameraEntry } from '../../types/camera';
 import type { CameraAnalysisOverview, TrafficLevel } from '../../types/analysis';
 import type { StatsSummary } from '../../types/stats';
 import { fetchCameras } from '../services/api';
-import { fetchLatestOverview, subscribeOverview } from '../services/analysis';
+import { fetchAnalyzedCameras, fetchLatestOverview, subscribeOverview } from '../services/analysis';
 import { fetchStatsSummary } from '../services/stats';
 import { RANGES, TRAFFIC_LABELS, formatCount, useStatsRange } from '../composables/trafficUi';
 import CameraCard from '../components/CameraCard.vue';
+import { t } from '../i18n';
 
 const range = useStatsRange();
 const cameras = ref<CameraEntry[]>([]);
@@ -19,6 +20,14 @@ const error = ref<string | null>(null);
 // whole dashboard, rather than every CameraCard opening its own stream.
 const overviewByCameraId = shallowRef(new Map<string, CameraAnalysisOverview>());
 let unsubscribeOverview: (() => void) | null = null;
+
+// Cameras the Admin page switches the analysis on for; null until loaded (or when every camera is analyzed).
+// Analysis is off for every camera by default, so a fresh install would otherwise show a dashboard of
+// empty cards and zero counts that looks broken rather than switched off.
+const analyzedIds = ref<Set<string> | null>(null);
+const isAnalyzed = (camera: CameraEntry) => camera.status === 'active' && (analyzedIds.value === null || analyzedIds.value.has(camera.id));
+const analyzedCount = computed(() => cameras.value.filter(isAnalyzed).length);
+const noneAnalyzed = computed(() => !loading.value && analyzedIds.value !== null && cameras.value.length > 0 && analyzedCount.value === 0);
 
 const summary = ref<StatsSummary | null>(null);
 const summaryByCameraId = computed(() => new Map((summary.value?.cameras ?? []).map((c) => [c.cameraId, c])));
@@ -32,7 +41,7 @@ let snapshotHandle: ReturnType<typeof setInterval> | null = null;
 // Toolbar state, persisted per browser - a convenience, never required.
 type SortKey = 'busiest' | 'name' | 'level';
 const search = ref('');
-const statusFilter = ref<'all' | 'active' | 'offline'>('all');
+const statusFilter = ref<'all' | 'active' | 'analyzed' | 'offline'>('all');
 const levelFilter = ref<'all' | TrafficLevel>('all');
 const sortKey = ref<SortKey>('busiest');
 const layout = ref<'grid' | 'list'>('grid');
@@ -58,6 +67,7 @@ const visibleCameras = computed(() => {
   const list = cameras.value.filter((camera) => {
     if (query && !`${camera.name} ${camera.location.address ?? ''}`.toLowerCase().includes(query)) return false;
     if (statusFilter.value === 'active' && camera.status !== 'active') return false;
+    if (statusFilter.value === 'analyzed' && !isAnalyzed(camera)) return false;
     if (statusFilter.value === 'offline' && camera.status === 'active') return false;
     if (levelFilter.value !== 'all') {
       const overview = overviewByCameraId.value.get(camera.id);
@@ -72,6 +82,7 @@ const visibleCameras = computed(() => {
   };
   return [...list].sort((x, y) => {
     if (x.status !== y.status) return x.status === 'active' ? -1 : 1;
+    if (isAnalyzed(x) !== isAnalyzed(y)) return isAnalyzed(x) ? -1 : 1;
     if (sortKey.value === 'busiest') return total(y) - total(x) || x.name.localeCompare(y.name);
     if (sortKey.value === 'level') return level(x) - level(y) || total(y) - total(x);
     return x.name.localeCompare(y.name);
@@ -115,9 +126,16 @@ onMounted(async () => {
   try {
     cameras.value = await fetchCameras();
   } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to load cameras.';
+    error.value = err instanceof Error ? err.message : t('dash.loadFailed');
   } finally {
     loading.value = false;
+  }
+
+  try {
+    const ids = await fetchAnalyzedCameras();
+    analyzedIds.value = ids === null ? null : new Set(ids);
+  } catch {
+    // Unknown: treat every active camera as analyzed, as before.
   }
 
   try {
@@ -147,27 +165,41 @@ onBeforeUnmount(() => {
   <main class="mx-auto max-w-7xl px-4 py-6">
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-bold text-slate-100">Traffic overview</h1>
-        <p class="mt-1 text-sm text-slate-400">Belgrade traffic cameras · last {{ rangeLabel }}</p>
+        <h1 class="text-2xl font-bold text-slate-100">{{ t('dash.title') }}</h1>
+        <p class="mt-1 text-sm text-slate-400">{{ t('dash.subtitle', { range: rangeLabel }) }}</p>
       </div>
+    </div>
+
+    <!-- First run: every camera's analysis is off until switched on in Admin. -->
+    <div v-if="noneAnalyzed" class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3">
+      <div class="min-w-0 max-w-3xl">
+        <p class="font-medium text-sky-200">{{ t('dash.noneAnalyzed.title') }}</p>
+        <p class="mt-0.5 text-sm text-slate-300">{{ t('dash.noneAnalyzed.body') }}</p>
+      </div>
+      <router-link to="/admin" class="shrink-0 rounded-md bg-sky-400 px-3 py-1.5 text-sm font-medium text-slate-950 hover:bg-sky-300">
+        {{ t('dash.noneAnalyzed.action') }}
+      </router-link>
     </div>
 
     <!-- KPI row -->
     <div class="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
       <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-        <p class="text-xs text-slate-500">Vehicles passed · {{ rangeLabel }}</p>
-        <p class="mt-1 text-2xl font-bold tabular-nums text-slate-100">{{ kpis.passed === null ? '–' : formatCount(kpis.passed) }}</p>
+        <p class="text-xs text-slate-500">{{ t('dash.kpi.passed', { range: rangeLabel }) }}</p>
+        <p v-if="noneAnalyzed && !kpis.passed" class="mt-1 text-2xl font-bold text-slate-500" :title="t('dash.kpi.passedOff')">–</p>
+        <p v-else class="mt-1 text-2xl font-bold tabular-nums text-slate-100">{{ kpis.passed === null ? '–' : formatCount(kpis.passed) }}</p>
+        <p v-if="noneAnalyzed" class="mt-0.5 text-[11px] text-slate-500">{{ t('dash.kpi.passedOff') }}</p>
       </div>
       <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-        <p class="text-xs text-slate-500">Active cameras</p>
+        <p class="text-xs text-slate-500">{{ t('dash.kpi.active') }}</p>
         <p class="mt-1 text-2xl font-bold tabular-nums text-slate-100">{{ kpis.active }}<span class="text-base font-medium text-slate-500"> / {{ kpis.total }}</span></p>
+        <p v-if="analyzedIds !== null" class="mt-0.5 text-[11px] text-slate-500">{{ t('dash.kpi.analyzed', { count: analyzedCount }) }}</p>
       </div>
-      <button type="button" class="rounded-xl border border-slate-800 bg-slate-900 p-4 text-left hover:border-slate-600" @click="levelFilter = levelFilter === 'heavy' ? 'all' : 'heavy'">
-        <p class="text-xs text-slate-500">Heavy traffic now</p>
+      <button type="button" class="rounded-xl border border-slate-800 bg-slate-900 p-4 text-left hover:border-slate-600" :aria-pressed="levelFilter === 'heavy'" @click="levelFilter = levelFilter === 'heavy' ? 'all' : 'heavy'">
+        <p class="text-xs text-slate-500">{{ t('dash.kpi.heavy') }}</p>
         <p class="mt-1 text-2xl font-bold tabular-nums" :class="kpis.heavy > 0 ? 'text-red-400' : 'text-slate-100'">{{ kpis.heavy }}</p>
       </button>
-      <button type="button" class="rounded-xl border border-slate-800 bg-slate-900 p-4 text-left hover:border-slate-600" @click="statusFilter = statusFilter === 'offline' ? 'all' : 'offline'">
-        <p class="text-xs text-slate-500">Offline or failing</p>
+      <button type="button" class="rounded-xl border border-slate-800 bg-slate-900 p-4 text-left hover:border-slate-600" :aria-pressed="statusFilter === 'offline'" @click="statusFilter = statusFilter === 'offline' ? 'all' : 'offline'">
+        <p class="text-xs text-slate-500">{{ t('dash.kpi.offline') }}</p>
         <p class="mt-1 text-2xl font-bold tabular-nums" :class="kpis.offline > 0 ? 'text-amber-400' : 'text-slate-100'">{{ kpis.offline }}</p>
       </button>
     </div>
@@ -175,47 +207,52 @@ onBeforeUnmount(() => {
     <!-- Toolbar -->
     <div class="mt-5 flex flex-wrap items-center gap-2 text-sm">
       <input
+        id="dashboard-search"
         v-model="search"
         type="search"
-        placeholder="Search by name or address"
+        :placeholder="t('dash.search')"
+        :aria-label="t('dash.search')"
         class="min-w-[14rem] flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
       />
-      <select v-model="statusFilter" class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200" aria-label="Status">
-        <option value="all">All cameras</option>
-        <option value="active">Active</option>
-        <option value="offline">Offline</option>
+      <select v-model="statusFilter" class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200" :aria-label="t('dash.filter.status')">
+        <option value="all">{{ t('dash.filter.all') }}</option>
+        <option value="active">{{ t('dash.filter.active') }}</option>
+        <option value="analyzed">{{ t('dash.filter.analyzed') }}</option>
+        <option value="offline">{{ t('dash.filter.offline') }}</option>
       </select>
-      <select v-model="levelFilter" class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200" aria-label="Traffic level">
-        <option value="all">Any traffic</option>
+      <select v-model="levelFilter" class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200" :aria-label="t('dash.filter.level')">
+        <option value="all">{{ t('dash.filter.anyLevel') }}</option>
         <option v-for="(label, level) in TRAFFIC_LABELS" :key="level" :value="level">{{ label }}</option>
       </select>
-      <select v-model="sortKey" class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200" aria-label="Sort">
-        <option value="busiest">Busiest first</option>
-        <option value="level">Traffic level</option>
-        <option value="name">Name</option>
+      <select v-model="sortKey" class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200" :aria-label="t('dash.sort')">
+        <option value="busiest">{{ t('dash.sort.busiest') }}</option>
+        <option value="level">{{ t('dash.sort.level') }}</option>
+        <option value="name">{{ t('dash.sort.name') }}</option>
       </select>
-      <div class="flex gap-1 rounded-lg bg-slate-900 p-1" role="group" aria-label="Layout">
+      <div class="flex gap-1 rounded-lg bg-slate-900 p-1" role="group" :aria-label="t('dash.layout')">
         <button
           v-for="option in ['grid', 'list'] as const"
           :key="option"
           type="button"
-          class="rounded-md px-2.5 py-1 text-xs font-medium capitalize"
+          class="rounded-md px-2.5 py-1 text-xs font-medium"
           :class="layout === option ? 'bg-slate-700 text-slate-100' : 'text-slate-400 hover:text-slate-200'"
+          :aria-pressed="layout === option"
           @click="layout = option"
         >
-          {{ option }}
+          {{ t(option === 'grid' ? 'dash.layout.grid' : 'dash.layout.list') }}
         </button>
       </div>
     </div>
 
-    <p v-if="loading" class="mt-8 text-sm text-slate-400">Loading cameras…</p>
+    <p v-if="loading" class="mt-8 text-sm text-slate-400">{{ t('dash.loading') }}</p>
     <p v-else-if="error" class="mt-8 text-sm text-red-400">{{ error }}</p>
-    <p v-else-if="visibleCameras.length === 0" class="mt-8 text-sm text-slate-400">No cameras match these filters.</p>
+    <p v-else-if="visibleCameras.length === 0" class="mt-8 text-sm text-slate-400">{{ t('dash.empty') }}</p>
     <div v-else :class="layout === 'grid' ? 'mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4' : 'mt-4 space-y-2'">
       <CameraCard
         v-for="camera in visibleCameras"
         :key="camera.id"
         :camera="camera"
+        :analyzed="isAnalyzed(camera)"
         :overview="overviewByCameraId.get(camera.id)"
         :summary="summaryByCameraId.get(camera.id)"
         :range="range"

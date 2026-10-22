@@ -6,6 +6,8 @@ import { AnalysisSettings } from '../types/admin';
 export const SETTING_LIMITS = {
   fps: { min: 0.5, max: 10 },
   confidence: { min: 0.05, max: 0.95 },
+  /** 0 keeps passages forever; otherwise at least 7 days, since a camera's road axis is re-learned from its last 7 days. */
+  retentionDays: { min: 7, max: 3650 },
 } as const;
 
 /**
@@ -49,6 +51,11 @@ export function normalizeAnalysisSettings(value: unknown, models?: readonly stri
   if (overlayFps !== undefined) settings.overlayFps = overlayFps;
   const confidence = clampStep(input.overlayConfidence, SETTING_LIMITS.confidence, 0.01);
   if (confidence !== undefined) settings.overlayConfidence = confidence;
+  const retention = input.passageRetentionDays;
+  if (typeof retention === 'number' && Number.isFinite(retention)) {
+    settings.passageRetentionDays =
+      retention <= 0 ? 0 : Math.round(Math.min(SETTING_LIMITS.retentionDays.max, Math.max(SETTING_LIMITS.retentionDays.min, retention)));
+  }
   if (typeof input.overlayModel === 'string' && (!models || models.includes(input.overlayModel))) settings.overlayModel = input.overlayModel;
   return settings;
 }

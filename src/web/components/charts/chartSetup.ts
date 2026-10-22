@@ -12,6 +12,7 @@ import {
   Tooltip,
   type Plugin,
 } from 'chart.js';
+import { intlLocale } from '../../i18n';
 
 // Only the pieces the charts here use, so the bundle doesn't carry all of Chart.js.
 Chart.register(BarController, BarElement, CategoryScale, Filler, Legend, LineController, LineElement, LinearScale, PointElement, Tooltip);
@@ -48,11 +49,11 @@ export const noDataPlugin: Plugin<'bar'> = {
 export function formatBucketLabel(iso: string, bucket: string, range: string, timeZone: string): string {
   const date = new Date(iso);
   if (bucket === '1d') {
-    return date.toLocaleDateString(undefined, { timeZone, weekday: 'short', day: 'numeric', month: 'short' });
+    return date.toLocaleDateString(intlLocale(), { timeZone, weekday: 'short', day: 'numeric', month: 'short' });
   }
-  const time = date.toLocaleTimeString(undefined, { timeZone, hour: '2-digit', minute: '2-digit', hour12: false });
+  const time = date.toLocaleTimeString(intlLocale(), { timeZone, hour: '2-digit', minute: '2-digit', hour12: false });
   if (range === '7d') {
-    return `${date.toLocaleDateString(undefined, { timeZone, weekday: 'short' })} ${time}`;
+    return `${date.toLocaleDateString(intlLocale(), { timeZone, weekday: 'short' })} ${time}`;
   }
   return time;
 }

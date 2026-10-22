@@ -383,6 +383,11 @@ export class TrafficAnalysisService {
     await Promise.all(Array.from(this.loops));
   }
 
+  /** Cameras the settings switch on, or null when no setting limits them (every active camera is analyzed). */
+  getEnabledCameras(): string[] | null {
+    return this.enabledCameras ? Array.from(this.enabledCameras) : null;
+  }
+
   /** Latest known overview (count + traffic level) for every camera analyzed so far - used to bootstrap the dashboard before its SSE connection delivers the first live update. */
   getLatestOverview(): CameraAnalysisOverview[] {
     // A camera the settings leave out keeps its last stored row, which would show as a stale live badge.

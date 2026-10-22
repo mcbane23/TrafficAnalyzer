@@ -75,7 +75,8 @@ export interface AnalysisWorkerPoolOptions {
 }
 
 interface PoolWorker {
-  worker: AnalysisWorkerLike;
+  /** Null while the worker has no cameras: it is started on its first one and stopped after its last. */
+  worker: AnalysisWorkerLike | null;
   /** Cameras assigned to this worker, with what it needs to rebuild them after a crash. */
   cameras: Map<string, NormalizedPolygon[] | undefined>;
   pending: Map<number, { resolve: (result: CameraAnalysisResult) => void; cameraId: string; timestamp: string }>;
@@ -101,6 +102,11 @@ interface PoolWorker {
  * `CameraAnalyzerLike`, so `TrafficAnalysisService` doesn't know the
  * difference. A worker that dies fails its in-flight frames as error results
  * and is replaced; its cameras start learning their background again.
+ *
+ * Workers only run while they have cameras: each is started when it is given
+ * its first camera and stopped when its last one is disposed. With the
+ * analysis switched off for every camera (the default), the two idle workers
+ * would otherwise hold ~34 MB for nothing (128 MB vs 94 MB measured).
  */
 export class AnalysisWorkerPool {
   private readonly workers: PoolWorker[] = [];
@@ -115,9 +121,7 @@ export class AnalysisWorkerPool {
     this.restartDelayMs = options.restartDelayMs ?? 1000;
     const size = Math.max(1, Math.floor(options.size ?? 2));
     for (let i = 0; i < size; i++) {
-      const entry: PoolWorker = { worker: null as unknown as AnalysisWorkerLike, cameras: new Map(), pending: new Map(), down: null };
-      this.workers.push(entry);
-      this.spawn(entry);
+      this.workers.push({ worker: null, cameras: new Map(), pending: new Map(), down: null });
     }
   }
 
@@ -127,7 +131,8 @@ export class AnalysisWorkerPool {
     this.nextWorker = (this.nextWorker + 1) % this.workers.length;
     const ignoreZones = camera.ignoreZones?.map((zone) => zone.points);
     entry.cameras.set(cameraId, ignoreZones);
-    entry.worker.postMessage({ type: 'create', cameraId, ignoreZones });
+    if (!entry.worker) this.spawn(entry);
+    entry.worker?.postMessage({ type: 'create', cameraId, ignoreZones });
 
     return {
       analyze: (frame, timestamp) =>
@@ -144,7 +149,7 @@ export class AnalysisWorkerPool {
           entry.pending.set(id, { resolve, cameraId, timestamp });
           // Only the picture crosses over: the frame object also carries
           // capture metadata the analyzer doesn't use.
-          entry.worker.postMessage({
+          entry.worker?.postMessage({
             type: 'analyze',
             id,
             cameraId,
@@ -155,7 +160,8 @@ export class AnalysisWorkerPool {
       errorResult: (timestamp, error) => errorAnalysisResult(cameraId, timestamp, error),
       dispose: () => {
         if (!entry.cameras.delete(cameraId) || this.closed) return;
-        entry.worker.postMessage({ type: 'dispose', cameraId });
+        entry.worker?.postMessage({ type: 'dispose', cameraId });
+        if (entry.cameras.size === 0) this.retire(entry);
       },
     };
   }
@@ -164,7 +170,21 @@ export class AnalysisWorkerPool {
   async close(): Promise<void> {
     this.closed = true;
     for (const entry of this.workers) this.failPending(entry, 'Analysis stopped');
-    await Promise.all(this.workers.map((entry) => entry.worker.terminate()));
+    await Promise.all(this.workers.map((entry) => entry.worker?.terminate()));
+  }
+
+  /** Number of worker threads running now (for tests and metrics). */
+  get runningWorkers(): number {
+    return this.workers.filter((entry) => entry.worker !== null).length;
+  }
+
+  /** Stops a worker that has no cameras left. Clearing `entry.worker` first keeps its exit from looking like a crash. */
+  private retire(entry: PoolWorker): void {
+    const worker = entry.worker;
+    entry.worker = null;
+    entry.down = null;
+    this.failPending(entry, 'Analysis stopped');
+    void worker?.terminate();
   }
 
   private spawn(entry: PoolWorker): void {
@@ -188,9 +208,14 @@ export class AnalysisWorkerPool {
       // Frames meanwhile get `reason` as their error. The delay keeps a
       // worker that dies on startup from restarting in a tight loop.
       setTimeout(() => {
-        if (this.closed) return;
+        if (this.closed || entry.worker !== worker) return;
+        if (entry.cameras.size === 0) {
+          entry.worker = null;
+          entry.down = null;
+          return;
+        }
         this.spawn(entry);
-        for (const [cameraId, ignoreZones] of entry.cameras) entry.worker.postMessage({ type: 'create', cameraId, ignoreZones });
+        for (const [cameraId, ignoreZones] of entry.cameras) entry.worker?.postMessage({ type: 'create', cameraId, ignoreZones });
       }, this.restartDelayMs).unref();
     };
     worker.on('error', (err) => replace(`analysis worker failed: ${err.message}`));

@@ -129,6 +129,8 @@ export interface AnalysisSettings {
   overlayModel?: string;
   /** Minimum YOLO score for a box to be drawn (OVERLAY_CONFIDENCE). */
   overlayConfidence?: number;
+  /** Days individual vehicle passages are kept (0 = forever); their hourly counts are always kept. */
+  passageRetentionDays?: number;
 }
 
 /** The processing knobs with every value filled in - the defaults, or what is in effect. */
@@ -137,6 +139,7 @@ export interface ProcessingSettings {
   overlayFps: number;
   overlayModel: string;
   overlayConfidence: number;
+  passageRetentionDays: number;
 }
 
 /** One camera's row in the Admin page's analysis switches. */

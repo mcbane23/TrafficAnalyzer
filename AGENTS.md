@@ -279,11 +279,17 @@ precedent for Vue components.
   `?limit=` through uncoerced on purpose — bounding it is `TrafficHistoryStore.normalizeLimit`'s
   job, and it has to do it for any other caller anyway.
 - Persistence: `TrafficHistoryStore` (better-sqlite3) writes every result to
-  `data/traffic-history.db` (gitignored, runtime-generated, retained indefinitely — no pruning in
-  this PRD), consistent with the project's "no separate database server" approach already used for
+  `data/traffic-history.db` (gitignored, runtime-generated), consistent with the project's "no separate database server" approach already used for
   `data/cameras/belgrade.json`. `TrafficAnalysisService` seeds its in-memory "latest overview" map
   from `historyStore.getLatestForAllCameras()` on construction, so a server restart doesn't blank
-  the dashboard until the next tick lands.
+  the dashboard until the next tick lands. Nothing in the UI reads older history, so
+  `DataRetentionService` ([src/analysis/dataRetention.ts](src/analysis/dataRetention.ts)) deletes rows
+  older than 2 days every hour (22 cameras wrote ~20 MB a day), always keeping each camera's latest
+  row. It also deletes individual `vehicle_passages` older than the Admin page's "keep individual
+  passages" setting (`passageRetentionDays`, default 30, 0 = forever, minimum 7 because a camera's
+  road axis is re-learned from its last 7 days); `passage_hours` and `analysis_minutes` are kept, so
+  every hour-or-coarser count survives. Deletes run in batches of 5000 with a yield between them,
+  and the files are not VACUUMed (SQLite reuses the freed pages).
 - Frontend: `src/web/services/analysis.ts` wraps the REST + SSE calls above (used by both
   `DashboardView.vue` and `CameraDetailView.vue`). `DashboardView.vue` opens exactly **one** shared
   `subscribeOverview` connection for the whole dashboard and passes each camera's
@@ -407,4 +413,23 @@ precedent for Vue components.
   URL (`?range=`, via `useStatsRange`). Dashboard cards show the snapshot thumbnail and only open a
   live HLS preview on hover — never one video per card. Chart views (`CameraDetailView`,
   `StatisticsView`) are lazy-loaded routes so Chart.js stays out of the dashboard bundle; shared
-  colors/labels live in `trafficUi.ts`.
+  colors/labels live in `trafficUi.ts`. hls.js (~510 KB) is likewise loaded with a dynamic `import()`
+  on the first hover preview (`CameraCard`) or with the camera page, never with the dashboard: keep
+  `CameraCard`'s import of it type-only. The built frontend is served gzipped (`compression`,
+  registered after every API route so SSE is never buffered) with a year-long immutable cache on the
+  hashed `assets/` and `no-cache` on `index.html`.
+- **The UI is in Serbian (Latin) by default, with an English switch** in the top bar
+  ([src/web/i18n.ts](src/web/i18n.ts), remembered per browser). Every user-visible string goes through
+  `t('key')`, with the key in both the `sr` and `en` dictionaries (`en` is typed against `sr`'s keys, so
+  a missing translation fails `npx tsc -p src/web/tsconfig.json`). Dates and numbers use `intlLocale()` / `formatNumber`,
+  never the browser's default locale. Labels that live in constants (`RANGES`, `TRAFFIC_LABELS`,
+  `ALLOWED_BUCKETS_UI`) are getters over `t`, so they follow a language switch.
+- **The dashboard says when analysis is off.** `GET /api/analysis/enabled` returns the Admin page's
+  switched-on cameras (null = every active camera). With none, the dashboard shows a banner linking
+  to Admin and "–" instead of a zero count; a switched-off camera's card shows "Analysis off"
+  instead of a traffic badge or a zero.
+- `AnalysisWorkerPool` starts a worker on its first camera and stops it after its last, so with
+  every camera switched off (the default) no worker runs (measured 128 MB -> 87 MB idle RSS).
+- Docker: the image keeps a second copy of `data/cameras` in `/app/defaults/cameras`; on start
+  `seedMissingFiles` copies whatever `data/cameras` lacks, so an empty bind mount still starts.
+  `GET /api/health` (registry loads, event loop answers) backs the Dockerfile's `HEALTHCHECK`.

@@ -5,6 +5,7 @@ import type { ChartData, ChartOptions } from 'chart.js';
 import type { CameraStats } from '../../../types/stats';
 import { DIRECTION_COLORS, OCCUPANCY_COLOR } from '../../composables/trafficUi';
 import { formatBucketLabel, noDataPlugin } from './chartSetup';
+import { t } from '../../i18n';
 
 const props = defineProps<{ stats: CameraStats; labels: { a: string; b: string } }>();
 
@@ -24,10 +25,10 @@ const chartData = computed<ChartData<'bar' | 'line', Array<number | null>, strin
     datasets: [
       { type: 'bar', label: props.labels.a, data: value((b) => b.a), backgroundColor: DIRECTION_COLORS.a, stack: 'v', yAxisID: 'y' },
       { type: 'bar', label: props.labels.b, data: value((b) => b.b), backgroundColor: DIRECTION_COLORS.b, stack: 'v', yAxisID: 'y' },
-      { type: 'bar', label: 'Direction unclear', data: value((b) => b.unknown), backgroundColor: DIRECTION_COLORS.unknown, stack: 'v', yAxisID: 'y' },
+      { type: 'bar', label: t('direction.unclear'), data: value((b) => b.unknown), backgroundColor: DIRECTION_COLORS.unknown, stack: 'v', yAxisID: 'y' },
       {
         type: 'line',
-        label: 'Road occupancy %',
+        label: t('chart.occupancyLine'),
         data: buckets.map((b) => (b.occupancy === null ? null : Math.round(b.occupancy * 100))),
         borderColor: OCCUPANCY_COLOR,
         backgroundColor: OCCUPANCY_COLOR,
@@ -48,13 +49,13 @@ const chartOptions = computed<ChartOptions<'bar'>>(() => ({
   interaction: { mode: 'index', intersect: false },
   scales: {
     x: { stacked: true, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } },
-    y: { stacked: true, beginAtZero: true, title: { display: true, text: 'Vehicles' }, ticks: { precision: 0 } },
+    y: { stacked: true, beginAtZero: true, title: { display: true, text: t('chart.vehicles') }, ticks: { precision: 0 } },
     y1: {
       position: 'right',
       min: 0,
       max: 100,
       grid: { display: false },
-      title: { display: true, text: 'Occupancy %' },
+      title: { display: true, text: t('chart.occupancy') },
     },
   },
   plugins: {
@@ -64,8 +65,8 @@ const chartOptions = computed<ChartOptions<'bar'>>(() => ({
         footer: (items) => {
           const bucket = props.stats.buckets[items[0]?.dataIndex ?? 0];
           if (!bucket) return '';
-          if (bucket.coverage < MIN_COVERAGE) return 'Not analyzed in this period';
-          return `Total ${bucket.total} · ${bucket.large} large · analyzed ${Math.round(bucket.coverage * 100)}%`;
+          if (bucket.coverage < MIN_COVERAGE) return t('chart.notAnalyzed');
+          return t('chart.tooltip', { total: bucket.total, large: bucket.large, pct: Math.round(bucket.coverage * 100) });
         },
       },
     },
