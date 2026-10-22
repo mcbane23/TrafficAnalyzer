@@ -13,5 +13,6 @@ README.md
 docker-compose.yml
 data/*.db*
 data/thumbnails
+data/accuracy-checks
 data/openvino-cache
 data/analysis-settings.json
