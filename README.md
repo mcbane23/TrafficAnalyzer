@@ -10,7 +10,8 @@ Every merge to `main` publishes an image to GitHub Container Registry:
 - `ghcr.io/mcbane23/trafficanalyzer:latest` — latest `main`
 - `ghcr.io/mcbane23/trafficanalyzer:<commit sha>` — a specific commit (full 40-character SHA)
 
-The image is `linux/amd64`.
+The image is multi-arch: `linux/amd64` and `linux/arm64` (Docker picks the right one). The Intel GPU
+runtime (`OVERLAY_DEVICE=GPU`) is in the amd64 image only; on arm64 YOLO runs on the CPU.
 
 ### Log in (private package)
 
@@ -67,6 +68,49 @@ works too: when it is empty the server copies the default camera registry into i
 The image has a `HEALTHCHECK` against `GET /api/health`, so `docker ps` (and TrueNAS) show the
 container as unhealthy when the server stops answering. Docker itself does not restart an unhealthy
 container.
+
+### Oracle Cloud (Always Free, ARM)
+
+An Always Free `VM.Standard.A1.Flex` instance (Ampere, arm64) runs the arm64 image. Render's free plan
+(0.1 CPU, 512 MB) is too small: all cameras run out of memory within a minute, three already use the
+whole CPU, and it sleeps after 15 minutes without visitors and has no persistent disk.
+
+1. Create the instance: image **Ubuntu 24.04** (or 22.04), shape **VM.Standard.A1.Flex** with as many
+   OCPUs and GB of memory as the free allowance leaves (2 OCPU / 12 GB is plenty for a few cameras
+   with YOLO on the CPU). Add your SSH key.
+2. In the instance's subnet → **Security List** → add an ingress rule: source `0.0.0.0/0`, TCP,
+   destination port `3001`. (Or skip this and reach it through Cloudflare Tunnel / Tailscale.)
+3. SSH in (`ssh ubuntu@<public IP>`) and run:
+
+```sh
+sudo iptables -I INPUT 6 -p tcp --dport 3001 -j ACCEPT
+sudo netfilter-persistent save
+curl -fsSL https://get.docker.com | sudo sh
+sudo docker run -d --name trafficanalyzer -p 3001:3001 \
+  -v trafficanalyzer-data:/app/data \
+  --restart unless-stopped \
+  ghcr.io/mcbane23/trafficanalyzer:latest
+```
+
+Oracle's Ubuntu images reject incoming traffic in iptables except SSH, hence the first two lines.
+
+On an **Oracle Linux** image the user is `opc` (not `ubuntu`), the firewall is firewalld and
+get.docker.com doesn't support it, so instead of the first three commands run:
+
+```sh
+sudo firewall-cmd --permanent --add-port=3001/tcp
+sudo firewall-cmd --reload
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf install -y --allowerasing docker-ce docker-ce-cli containerd.io
+sudo systemctl enable --now docker
+```
+
+If SSH hangs, the subnet's route table is missing a `0.0.0.0/0` rule to an Internet Gateway (or the
+instance is on a private subnet). Without SSH, Cloud Shell in the Oracle console works too: upload the
+private key there and `ssh` from it.
+Then open `http://<public IP>:3001`, go to **Admin** and switch on the cameras to analyze (none is by
+default). Start with a few and watch CPU and memory on the same page before adding more.
 
 ### Configuration
 

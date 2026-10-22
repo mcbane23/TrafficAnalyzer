@@ -27,21 +27,25 @@ COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 
 COPY . .
-# After pruning, delete what the amd64 Linux runtime never loads:
+# After pruning, delete what the Linux runtime never loads:
 # - the bundled ffmpeg/ffprobe (~140 MB): FFMPEG_PATH/FFPROBE_PATH point at
 #   the ffmpeg stage's, and ffmpegRunner.ts/probeRunner.ts only require the packages
 #   when those are unset;
 # - other platforms' native binaries (onnxruntime-node, sharp, better-sqlite3)
-#   and better-sqlite3's SQLite sources (it loads prebuilds/linux-x64.node);
+#   and better-sqlite3's SQLite sources (it loads prebuilds/linux-<arch>.node);
 # - openvino-node's unused frontends and NPU plugin. The IR frontend (the
 #   model format) and the CPU and GPU plugins stay.
-RUN npm run build \
+# The image is built for amd64 and arm64 (e.g. an Oracle Cloud Ampere VM);
+# TARGETARCH picks which architecture's binaries are kept.
+ARG TARGETARCH
+RUN case "$TARGETARCH" in arm64) ARCH=arm64 OTHER=x64 ;; *) ARCH=x64 OTHER=arm64 ;; esac \
+ && npm run build \
  && npm prune --omit=dev \
  && rm -rf node_modules/@ffmpeg-installer node_modules/@ffprobe-installer \
- && rm -rf node_modules/onnxruntime-node/bin/napi-v*/darwin node_modules/onnxruntime-node/bin/napi-v*/win32 node_modules/onnxruntime-node/bin/napi-v*/linux/arm64 \
- && rm -rf node_modules/@img/sharp-wasm32 node_modules/@img/sharp-linuxmusl-x64 node_modules/@img/sharp-libvips-linuxmusl-x64 \
- && (cd node_modules/better-sqlite3 && rm -rf deps src && find prebuilds -type f ! -name linux-x64.node -delete) \
- && ls node_modules/onnxruntime-node/bin/napi-v*/linux/x64/onnxruntime_binding.node node_modules/better-sqlite3/prebuilds/linux-x64.node >/dev/null \
+ && rm -rf node_modules/onnxruntime-node/bin/napi-v*/darwin node_modules/onnxruntime-node/bin/napi-v*/win32 node_modules/onnxruntime-node/bin/napi-v*/linux/$OTHER \
+ && rm -rf node_modules/@img/sharp-wasm32 node_modules/@img/sharp-linuxmusl-* node_modules/@img/sharp-libvips-linuxmusl-* \
+ && (cd node_modules/better-sqlite3 && rm -rf deps src && find prebuilds -type f ! -name linux-$ARCH.node -delete) \
+ && ls node_modules/onnxruntime-node/bin/napi-v*/linux/$ARCH/onnxruntime_binding.node node_modules/better-sqlite3/prebuilds/linux-$ARCH.node >/dev/null \
  && (cd node_modules/openvino-node/bin && rm -f libopenvino_onnx_frontend.so* libopenvino_paddle_frontend.so* libopenvino_pytorch_frontend.so* libopenvino_tensorflow_frontend.so* libopenvino_tensorflow_lite_frontend.so* libopenvino_gguf_frontend.so* libopenvino_intel_npu_plugin.so) \
  && ls node_modules/openvino-node/bin/libopenvino_ir_frontend.so* >/dev/null
 
@@ -95,16 +99,20 @@ ENV PORT=3001
 #
 # intel-opencl-icd (Intel's compute runtime) is what OpenVINO's GPU plugin
 # talks to when OVERLAY_DEVICE=GPU; it only does anything if the host's
-# /dev/dri is passed into the container.
+# /dev/dri is passed into the container. Intel ships it for amd64 only, so the
+# arm64 image runs YOLO on the CPU (OVERLAY_DEVICE=CPU, the default).
+ARG TARGETARCH
 COPY --from=build /intel-graphics.gpg /usr/share/keyrings/intel-graphics.gpg
 # ca-certificates goes in first: the slim image has none, and Intel's
 # repository is HTTPS-only.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
- && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble unified" \
-      > /etc/apt/sources.list.d/intel-gpu.list \
- && apt-get update \
- && apt-get install -y --no-install-recommends libssl3t64 intel-opencl-icd \
+ && apt-get install -y --no-install-recommends ca-certificates libssl3t64 \
+ && if [ "$TARGETARCH" != "arm64" ]; then \
+      echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble unified" \
+        > /etc/apt/sources.list.d/intel-gpu.list \
+      && apt-get update \
+      && apt-get install -y --no-install-recommends intel-opencl-icd; \
+    fi \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
 ENV FFMPEG_PATH=/usr/local/bin/ffmpeg
