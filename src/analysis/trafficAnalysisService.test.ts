@@ -197,17 +197,58 @@ describe('TrafficAnalysisService', () => {
     ctx.service.stop();
   });
 
-  it('analyzes only the cameras switched on and tells viewers of the others why', async () => {
+  it('analyzes only the cameras switched on', async () => {
     const cameras = ['a', 'b', 'c'].map((id) => makeCamera({ id }));
     const ctx = setup(cameras, { enabledCameras: ['a', 'c'] });
     await ctx.service.start();
     ctx.fireAll();
     expect(ctx.grabber.openCapture.mock.calls.map(([c]) => c.id)).toEqual(['a', 'c']);
+    ctx.service.stop();
+  });
 
-    const received: Array<{ id: string; error?: string }> = [];
-    for (const id of ['a', 'b']) ctx.service.subscribeCameraDetail(id, (r) => received.push({ id, error: r.error }));
-    await settle();
-    expect(received).toEqual([{ id: 'b', error: expect.stringContaining('not switched on for this camera') }]);
+  it('analyzes a switched-off camera while its page is open, and stops it a while after the last viewer leaves', async () => {
+    const cameras = ['a', 'b'].map((id) => makeCamera({ id }));
+    const ctx = setup(cameras, { enabledCameras: ['a'] });
+    await ctx.service.start();
+    ctx.fireAll();
+
+    const first = ctx.service.subscribeCameraDetail('b', () => undefined);
+    const second = ctx.service.subscribeCameraDetail('b', () => undefined);
+    ctx.fireAll();
+    expect(ctx.grabber.openCapture.mock.calls.map(([c]) => c.id)).toEqual(['a', 'b']);
+    const captureB = ctx.captures.get('b')!;
+
+    // A viewer coming back within the linger keeps the same capture running.
+    first();
+    second();
+    expect(ctx.scheduled.map((s) => s.ms)).toEqual([15_000]);
+    const back = ctx.service.subscribeCameraDetail('b', () => undefined);
+    expect(ctx.scheduled).toEqual([]);
+    expect(ctx.grabber.openCapture).toHaveBeenCalledTimes(2);
+
+    // A reload (settings change, availability check) while it is watched keeps it too.
+    await ctx.service.reload();
+    expect(captureB.closed).toBe(false);
+
+    back();
+    ctx.fireAll();
+    expect(captureB.closed).toBe(true);
+    expect(ctx.service.getMetrics().cameras.map((c) => c.cameraId)).toEqual(['a']);
+
+    // A switched-on camera's viewers come and go without stopping it.
+    ctx.service.subscribeCameraDetail('a', () => undefined)();
+    expect(ctx.scheduled).toEqual([]);
+    expect(ctx.captures.get('a')!.closed).toBe(false);
+    ctx.service.stop();
+  });
+
+  it('a viewer on an inactive or unknown camera starts nothing', async () => {
+    const ctx = setup([makeCamera({ id: 'a', status: 'inactive' })], { enabledCameras: [] });
+    await ctx.service.start();
+    ctx.service.subscribeCameraDetail('a', () => undefined);
+    ctx.service.subscribeCameraDetail('nope', () => undefined);
+    ctx.fireAll();
+    expect(ctx.grabber.openCapture).not.toHaveBeenCalled();
     ctx.service.stop();
   });
 
