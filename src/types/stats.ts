@@ -62,6 +62,12 @@ export interface StatsBucketEntry extends PassageCounts {
    * not "no traffic" - the UI draws it as a gap.
    */
   coverage: number;
+  /**
+   * Vehicles this bucket usually has, from the same hour on the same kind of
+   * day (working day or weekend) over the last two weeks; null without
+   * enough analyzed history for it.
+   */
+  usual: number | null;
 }
 
 export interface CameraStats {
@@ -99,6 +105,12 @@ export interface CameraSummary extends PassageCounts {
   coverage: number;
   /** Hourly passage counts for the last 24 hours, oldest first (24 entries); null for an hour with no coverage. */
   sparkline: Array<number | null>;
+  /**
+   * Traffic over about the last hour against the usual for those hours
+   * (see `StatsBucketEntry.usual`): 0.35 is 35% more than usual. Null
+   * without enough analyzed time now or history to compare with.
+   */
+  vsUsual: number | null;
 }
 
 export interface StatsSummary {

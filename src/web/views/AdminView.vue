@@ -7,6 +7,9 @@ import Sparkline from '../components/charts/Sparkline.vue';
 import AnalysisSwitches from '../components/AnalysisSwitches.vue';
 import CameraManager from '../components/CameraManager.vue';
 import { formatNumber, intlLocale, t, tDynamic } from '../i18n';
+import { useRouter } from 'vue-router';
+import AppIcon from '../components/AppIcon.vue';
+import { authStatus, signOut } from '../services/auth';
 
 // The server samples CPU every 5 s, so polling faster would only repeat the same reading.
 const REFRESH_MS = 5_000;
@@ -15,6 +18,12 @@ const metrics = ref<ServerMetrics | null>(null);
 const error = ref<string | null>(null);
 /** Bumped when the camera list changes, so the analysis switches reload it. */
 const camerasVersion = ref(0);
+const router = useRouter();
+
+async function leave() {
+  await signOut();
+  void router.push({ name: 'dashboard' });
+}
 let refreshHandle: ReturnType<typeof setInterval> | null = null;
 
 async function load() {
@@ -188,7 +197,20 @@ onBeforeUnmount(() => {
           {{ t('admin.version', { version: metrics.app.version }) }}<template v-if="metrics.app.commit"> · {{ metrics.app.commit.slice(0, 7) }}</template><template v-if="metrics.app.builtAt"> · {{ t('admin.builtAt', { when: new Date(metrics.app.builtAt).toLocaleString(intlLocale()) }) }}</template>
         </p>
       </div>
+      <button
+        v-if="authStatus?.required && authStatus.signedIn"
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:border-slate-500 hover:text-slate-100"
+        @click="leave"
+      >
+        <AppIcon name="lock" class="h-4 w-4" />
+        {{ t('admin.signOut') }}
+      </button>
     </div>
+
+    <p v-if="authStatus && !authStatus.required" class="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+      {{ t('admin.noPassword') }}
+    </p>
 
     <p v-if="error" class="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{{ error }}</p>
     <p v-if="!metrics && !error" class="mt-8 text-sm text-slate-400">{{ t('admin.loading') }}</p>

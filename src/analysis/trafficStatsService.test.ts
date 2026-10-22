@@ -154,6 +154,39 @@ describe('TrafficStatsService', () => {
     expect(busy.coverage).toBeCloseTo(2 / 24, 2);
   });
 
+  it('compares traffic with the usual for the same hour on the same kind of day', () => {
+    /** `count` vehicles evenly spread over [from, to), with the camera analyzed throughout. */
+    const traffic = (from: number, to: number, count: number) => {
+      analyze(service, 'cam', from, to);
+      for (let i = 0; i < count; i++) {
+        const at = from + Math.floor(((i + 0.5) * (to - from)) / count);
+        service.handleResult(result('cam', at, { finishedTracks: [finished(i, at)] }));
+      }
+    };
+    // Working days before today (Mon 19, Fri 16, Thu 15): 20 vehicles an hour, 08:00-11:00 local (06:00-09:00 UTC).
+    // A weekend day at the same hours is far busier and must not count.
+    for (const day of ['2026-10-19', '2026-10-16', '2026-10-15']) traffic(Date.parse(`${day}T06:00:00Z`), Date.parse(`${day}T09:00:00Z`), 60);
+    traffic(Date.parse('2026-10-18T06:00:00Z'), Date.parse('2026-10-18T09:00:00Z'), 600);
+    // Today, 09:00-10:30: twice the usual.
+    traffic(NOW - 90 * MINUTE, NOW, 60);
+    service.flush();
+
+    const summary = service.getSummary('24h').cameras.find((c) => c.cameraId === 'cam')!;
+    expect(summary.vsUsual).toBeCloseTo(1, 1);
+
+    const stats = service.getCameraStats('cam', '24h', '1h');
+    const at = (iso: string) => stats.buckets.find((b) => b.start === iso)!;
+    expect(at('2026-10-20T07:00:00.000Z').usual).toBe(20);
+    expect(at('2026-10-20T03:00:00.000Z').usual).toBeNull(); // never analyzed at 05:00 local
+  });
+
+  it('has no usual without history', () => {
+    analyze(service, 'cam', NOW - HOUR, NOW);
+    service.flush();
+    expect(service.getSummary('24h').cameras[0].vsUsual).toBeNull();
+    expect(service.getCameraStats('cam', '1h', '15m').buckets.every((b) => b.usual === null)).toBe(true);
+  });
+
   it('re-seeds a camera road axis from persisted passages after a restart', () => {
     for (let i = 0; i < 6; i++) {
       const at = NOW - (i + 1) * MINUTE;

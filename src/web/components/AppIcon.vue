@@ -4,9 +4,9 @@
  * text color), so they look the same on every platform instead of depending
  * on which font has a glyph like "⛶".
  */
-export type IconName = 'dashboard' | 'chart' | 'settings' | 'fullscreen' | 'close' | 'back' | 'grid' | 'list' | 'camera';
+export type IconName = 'dashboard' | 'chart' | 'settings' | 'fullscreen' | 'close' | 'back' | 'grid' | 'list' | 'camera' | 'star' | 'lock';
 
-defineProps<{ name: IconName; size?: number }>();
+defineProps<{ name: IconName; size?: number; filled?: boolean }>();
 
 const PATHS: Record<IconName, string[]> = {
   dashboard: ['M3 3h7v7H3z', 'M14 3h7v7h-7z', 'M14 14h7v7h-7z', 'M3 14h7v7H3z'],
@@ -21,6 +21,8 @@ const PATHS: Record<IconName, string[]> = {
   grid: ['M3 3h7v7H3z', 'M14 3h7v7h-7z', 'M14 14h7v7h-7z', 'M3 14h7v7H3z'],
   list: ['M8 6h13', 'M8 12h13', 'M8 18h13', 'M3 6h.01', 'M3 12h.01', 'M3 18h.01'],
   camera: ['M23 7l-7 5 7 5V7z', 'M3 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z'],
+  star: ['M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z'],
+  lock: ['M5 11h14v10H5z', 'M8 11V7a4 4 0 0 1 8 0v4'],
 };
 </script>
 
@@ -29,7 +31,7 @@ const PATHS: Record<IconName, string[]> = {
     :width="size ?? 16"
     :height="size ?? 16"
     viewBox="0 0 24 24"
-    fill="none"
+    :fill="filled ? 'currentColor' : 'none'"
     stroke="currentColor"
     stroke-width="2"
     stroke-linecap="round"

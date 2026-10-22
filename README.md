@@ -22,18 +22,7 @@ The Admin page shows which version, commit and build time is running.
 The image is multi-arch: `linux/amd64` and `linux/arm64` (Docker picks the right one). The Intel GPU
 runtime (`OVERLAY_DEVICE=GPU`) is in the amd64 image only; on arm64 YOLO runs on the CPU.
 
-### Log in (private package)
-
-While the package is private, log in once with a GitHub
-[personal access token (classic)](https://github.com/settings/tokens) that has the `read:packages`
-scope:
-
-```sh
-echo <TOKEN> | docker login ghcr.io -u mcbane23 --password-stdin
-```
-
-Skip this if you make the package public (GitHub → your profile → Packages → `trafficanalyzer` →
-Package settings → Change visibility).
+The package is public: `docker pull` needs no login.
 
 ### Pull and run
 
@@ -128,11 +117,61 @@ private key there and `ssh` from it.
 Then open `http://<public IP>:3001`, go to **Admin** and switch on the cameras to analyze (none is by
 default). Start with a few and watch CPU and memory on the same page before adding more.
 
+### Intel GPU (TrueNAS and other Linux hosts)
+
+The live vehicle boxes run YOLO, by default on the CPU. On an Intel CPU with integrated graphics (e.g.
+an N100/N150) the amd64 image can run it on the GPU instead, which allows a bigger, more accurate
+model. Pass the GPU into the container and set `OVERLAY_DEVICE=GPU`:
+
+```yaml
+services:
+  trafficanalyzer:
+    image: ghcr.io/mcbane23/trafficanalyzer:latest
+    container_name: trafficanalyzer
+    ports:
+      - "3041:3001"           # host port 3041, if 3001 is taken
+    environment:
+      - PORT=3001
+      - OVERLAY_DEVICE=GPU
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "107"                 # the host's render group: stat -c %g /dev/dri/renderD128
+    volumes:
+      - trafficanalyzer-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  trafficanalyzer-data:
+```
+
+On TrueNAS SCALE this goes into **Apps → Discover Apps → Install via YAML** (or a custom app). Use a
+named volume as above, or a host path for `/app/data`; the server copies the default camera registry
+into an empty one. The first start on the GPU compiles the model (tens of seconds); the result is
+cached in the data volume. The Admin page shows which model and device draw the boxes, and the
+camera page shows it under the video.
+
 ### Configuration
+
+Most settings are on the **Admin** page (which cameras are analyzed, frame rates, YOLO model, box
+confidence) and are kept in the data volume. The variables below that also appear there only set
+their defaults.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `3001` | HTTP port the server listens on inside the container |
+| `ADMIN_PASSWORD` | none | Password for the Admin pages and every change (cameras, settings, accuracy checks). The dashboard, statistics and live video stay open. A sign-in lasts 30 days; changing the password signs everyone out. Without it, Admin is open to anyone and says so |
+| `OVERLAY_DEVICE` | `CPU` | `GPU` runs the live-box model on an Intel GPU (needs `/dev/dri`, amd64 image only) |
+| `OVERLAY_MODEL` | `yolo26s` on GPU, `yolo26n` on CPU | Default live-box model: `yolo26n`, `yolo26s` or `yolo26m` (Admin can change it) |
+| `OVERLAY_CPU_MODEL` | `yolo26n` | Model used on the CPU, and when the GPU can't be used |
+| `OVERLAY_CONFIDENCE` | `0.2` | Default minimum score for a box to be drawn (Admin can change it) |
+| `OVERLAY_FPS` | `3` | Default frames per second for the live boxes (Admin can change it) |
+| `OVERLAY_THREADS` | `2` | CPU threads for the live-box model |
+| `OVERLAY_DETECTOR` | on | `off` switches the live boxes off entirely |
+| `ANALYSIS_FPS` | `3` | Default frames per second the counting analysis reads (Admin can change it) |
+| `ANALYSIS_THREADS` | `2` | Worker threads for the counting analysis; `0` runs it on the main thread |
+| `STATS_TIMEZONE` | `Europe/Belgrade` | Time zone for days, hours and the heatmap in the statistics |
+| `FFMPEG_PATH`, `FFPROBE_PATH` | set in the image | ffmpeg/ffprobe binaries; outside Docker the bundled npm ones are used |
 
 ## Development
 

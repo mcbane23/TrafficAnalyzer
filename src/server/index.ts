@@ -22,6 +22,7 @@ import { DEFAULT_MIN_CONFIDENCE, DEFAULT_OPENVINO_MODEL, OPENVINO_MODELS, YoloDe
 import { VehicleTracker } from '../analysis/vehicleTracker';
 import { ServerMetricsService } from './serverMetrics';
 import { readAppVersion } from './appVersion';
+import { AdminAuth } from './adminAuth';
 import { AnalysisSettingsStore } from './analysisSettingsStore';
 import { AdminSettingsService } from './adminSettingsService';
 import { CameraEditor } from './cameraEditor';
@@ -284,6 +285,7 @@ const app = createApp(
   adminSettings,
   cameraEditor,
   accuracyChecks,
+  new AdminAuth(process.env.ADMIN_PASSWORD),
   STATIC_DIR,
 );
 

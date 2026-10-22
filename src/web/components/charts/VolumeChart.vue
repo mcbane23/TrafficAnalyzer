@@ -28,6 +28,20 @@ const chartData = computed<ChartData<'bar' | 'line', Array<number | null>, strin
       { type: 'bar', label: t('direction.unclear'), data: value((b) => b.unknown), backgroundColor: DIRECTION_COLORS.unknown, stack: 'v', yAxisID: 'y' },
       {
         type: 'line',
+        label: t('chart.usualLine'),
+        data: buckets.map((b) => b.usual),
+        borderColor: '#94a3b8',
+        backgroundColor: '#94a3b8',
+        borderWidth: 1.5,
+        borderDash: [5, 4],
+        pointRadius: 0,
+        tension: 0.3,
+        spanGaps: false,
+        stack: 'usual',
+        yAxisID: 'y',
+      },
+      {
+        type: 'line',
         label: t('chart.occupancyLine'),
         data: buckets.map((b) => (b.occupancy === null ? null : Math.round(b.occupancy * 100))),
         borderColor: OCCUPANCY_COLOR,
@@ -66,7 +80,8 @@ const chartOptions = computed<ChartOptions<'bar'>>(() => ({
           const bucket = props.stats.buckets[items[0]?.dataIndex ?? 0];
           if (!bucket) return '';
           if (bucket.coverage < MIN_COVERAGE) return t('chart.notAnalyzed');
-          return t('chart.tooltip', { total: bucket.total, large: bucket.large, pct: Math.round(bucket.coverage * 100) });
+          const line = t('chart.tooltip', { total: bucket.total, large: bucket.large, pct: Math.round(bucket.coverage * 100) });
+          return bucket.usual === null ? line : `${line}\n${t('chart.usualTooltip', { usual: Math.round(bucket.usual) })}`;
         },
       },
     },
