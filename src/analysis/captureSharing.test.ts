@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { CaptureSharing, SharedSource, SharingCapture, shrinkFactor } from './captureSharing';
+import { CaptureSharing, SharedSource, SharingCapture, canShrinkTo } from './captureSharing';
 import { FrameCapture, FrameGrabber, GrabFrameResult, GrabFrameSuccess } from './frameGrabber';
 import { FfmpegStreamHandle } from './ffmpegRunner';
 import { yuv420pFrameSize } from './videoFrame';
@@ -84,13 +84,12 @@ function setup(options: { fps?: number; now?: number } = {}) {
   return { sharing, owns, capture };
 }
 
-describe('shrinkFactor', () => {
-  it('is the whole multiple the source is of the target size, chroma included', () => {
-    expect(shrinkFactor({ width: 960, height: 720 }, 320, 240)).toBe(3);
-    expect(shrinkFactor({ width: 640, height: 480 }, 320, 240)).toBe(2);
-    expect(shrinkFactor({ width: 320, height: 240 }, 320, 240)).toBe(1);
-    expect(shrinkFactor({ width: 704, height: 576 }, 320, 240)).toBeNull();
-    expect(shrinkFactor({ width: 960, height: 540 }, 320, 240)).toBeNull();
+describe('canShrinkTo', () => {
+  it('takes any source at least as large as the target, whole multiple or not', () => {
+    expect(canShrinkTo({ width: 704, height: 576 }, 320, 240)).toBe(true);
+    expect(canShrinkTo({ width: 960, height: 720 }, 320, 240)).toBe(true);
+    expect(canShrinkTo({ width: 320, height: 240 }, 320, 240)).toBe(true);
+    expect(canShrinkTo({ width: 320, height: 200 }, 320, 240)).toBe(false);
   });
 });
 
@@ -149,10 +148,10 @@ describe('SharingCapture', () => {
     slow.emit(flatFrame(960, 720, 1, 1, 1));
     expect(owns[0].closed).toBe(false);
 
-    const odd = makeSource(704, 576, 3);
-    sharing.publish('cam-1', odd.source);
+    const small = makeSource(160, 120, 3);
+    sharing.publish('cam-1', small.source);
     expect(slow.listeners.size).toBe(0);
-    odd.emit(flatFrame(704, 576, 1, 2, 2));
+    small.emit(flatFrame(160, 120, 1, 2, 2));
     expect(owns[0].closed).toBe(false);
     capture.close();
   });

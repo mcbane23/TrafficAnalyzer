@@ -164,6 +164,18 @@ describe('CameraEditor', () => {
     expect(t.validator.validate).not.toHaveBeenCalled();
   });
 
+  it('deletes a camera and reports it as removed', async () => {
+    const t = setup([makeCamera(), makeCamera({ id: 'cam-2', url: 'https://example.com/cam-2.m3u8' })]);
+
+    const removed = await t.editor.remove('cam-1');
+
+    expect(removed.id).toBe('cam-1');
+    expect(t.saved().map((c) => c.id)).toEqual(['cam-2']);
+    expect(t.changes[0].change.removed).toBe(true);
+    await expect(t.editor.remove('cam-1')).rejects.toMatchObject({ status: 404, code: 'not-found' });
+    await expect(setup([makeCamera()], { revalidating: true }).editor.remove('cam-1')).rejects.toMatchObject({ status: 409, code: 'revalidating' });
+  });
+
   it('runs edits one after another so a quick second edit keeps the first', async () => {
     const t = setup();
     await Promise.all([t.editor.update('cam-1', { name: 'First' }), t.editor.update('cam-1', { address: 'Second' })]);

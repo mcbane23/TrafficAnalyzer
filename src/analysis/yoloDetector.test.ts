@@ -124,7 +124,7 @@ describe('loadYoloModel', () => {
     const model = await loadYoloModel({ threads: 3 }, { openVino, onnx });
     expect(openVino).not.toHaveBeenCalled();
     expect(onnx).toHaveBeenCalledWith(expect.stringMatching(/models\/yolo26n\.onnx$/), 3);
-    expect(model).toMatchObject({ inputWidth: 640, inputHeight: 480, label: 'YOLO26n on CPU' });
+    expect(model).toMatchObject({ inputWidth: 704, inputHeight: 576, label: 'YOLO26n on CPU' });
   });
 
   it('runs the CPU model picked by name', async () => {
@@ -138,14 +138,14 @@ describe('loadYoloModel', () => {
     const openVino = jest.fn(async () => session);
     const model = await loadYoloModel({ device: 'gpu', cacheDir: '/cache' }, { openVino, onnx: jest.fn() });
     expect(openVino).toHaveBeenCalledWith(expect.stringMatching(/yolo26s\.xml$/), 'GPU', '/cache');
-    expect(model).toMatchObject({ inputWidth: 960, inputHeight: 736, label: 'YOLO26s on OpenVINO GPU' });
+    expect(model).toMatchObject({ inputWidth: 704, inputHeight: 576, label: 'YOLO26s on OpenVINO GPU' });
   });
 
   it('runs the OpenVINO model picked by name', async () => {
     const openVino = jest.fn(async () => session);
     const model = await loadYoloModel({ device: 'GPU', model: ' YOLO26m ' }, { openVino, onnx: jest.fn() });
     expect(openVino).toHaveBeenCalledWith(expect.stringMatching(/yolo26m-openvino\/yolo26m\.xml$/), 'GPU', undefined);
-    expect(model).toMatchObject({ inputWidth: 960, inputHeight: 736, label: 'YOLO26m on OpenVINO GPU' });
+    expect(model).toMatchObject({ inputWidth: 704, inputHeight: 576, label: 'YOLO26m on OpenVINO GPU' });
   });
 
   it('falls back to YOLO26s for an unknown model name', async () => {
@@ -181,7 +181,7 @@ describe('loadYoloModel', () => {
     const model = await loadYoloModel({ device: 'CPU', model: 'yolo26s', threads: 4, cacheDir: '/cache' }, { openVino, onnx });
     expect(openVino).toHaveBeenCalledWith(expect.stringMatching(/yolo26s\.xml$/), 'CPU', '/cache', { threads: 4 });
     expect(onnx).not.toHaveBeenCalled();
-    expect(model).toMatchObject({ inputWidth: 960, inputHeight: 736, label: 'YOLO26s on OpenVINO CPU' });
+    expect(model).toMatchObject({ inputWidth: 704, inputHeight: 576, label: 'YOLO26s on OpenVINO CPU' });
   });
 
   it('falls back to YOLO26n when the larger CPU model fails to load', async () => {

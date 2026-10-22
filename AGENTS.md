@@ -50,7 +50,7 @@ colocated `*.test.ts`:
 | `TrafficStatsStore` | [src/analysis/trafficStatsStore.ts](src/analysis/trafficStatsStore.ts) | Through `TrafficStatsService`'s tests, against a real `:memory:` DB |
 | `TrafficStatsService` | [src/analysis/trafficStatsService.ts](src/analysis/trafficStatsService.ts) | Yes — real `:memory:` `TrafficStatsStore` plus an injected `now` |
 | `StillThumbnailService` | [src/analysis/stillThumbnailService.ts](src/analysis/stillThumbnailService.ts) | Yes — fake `StillGrabber`/scheduler/clock; `FileThumbnailStore` against a temp dir. Serves `/api/cameras/:id/snapshot.jpg`: the analysis' live thumbnail, else a still from a one-off ffmpeg (one camera at a time, refreshed every 30 min, kept in `data/thumbnails/`) |
-| `CameraEditor` | [src/server/cameraEditor.ts](src/server/cameraEditor.ts) | Yes — fake registry store/validator; the Admin page's camera list (`GET/PATCH/POST /api/admin/cameras`) |
+| `CameraEditor` | [src/server/cameraEditor.ts](src/server/cameraEditor.ts) | Yes — fake registry store/validator; the Admin page's camera list (`GET/PATCH/POST/DELETE /api/admin/cameras`) |
 | `AccuracyCheckService` | [src/analysis/accuracyCheck.ts](src/analysis/accuracyCheck.ts) | Yes — fake recorder/decoder/analyzer against a temp dir, plus one end-to-end run of the real decoder ([clipFfmpeg.ts](src/analysis/clipFfmpeg.ts)) and `CameraAnalyzer` on the synthetic clip |
 | `ThroughputWindow` | [src/analysis/throughputWindow.ts](src/analysis/throughputWindow.ts) | Yes — rolling fps / ms per frame / stream-vs-wall-clock ratio over an injected clock |
 | `ServerMetricsService` | [src/server/serverMetrics.ts](src/server/serverMetrics.ts) | Yes — CPU delta arithmetic through the `SystemReader` seam (fake `/proc` counters); backs the Admin page (`GET /api/admin/metrics`) |
@@ -152,11 +152,11 @@ precedent for Vue components.
   `GIT_SHA` and `BUILD_DATE` as build args; [appVersion.ts](src/server/appVersion.ts) reads them for
   the Admin page. Pushing a `v*` tag publishes `:<tag>` (and `:<sha>`, not `:latest`).
 - **Capture sharing** ([captureSharing.ts](src/analysis/captureSharing.ts)): while a camera is
-  watched, its overlay capture (960x720 GPU / 640x480 CPU) publishes its frames to a
+  watched, its overlay capture (704x576) publishes its frames to a
   `CaptureSharing`, and that camera's analysis capture (`SharingCapture`) stops its own ffmpeg and
-  area-averages them down to 320x240 (`downscaleYuv420p`), thinned to the analysis fps. It switches
-  on the overlay's first frame and starts its own ffmpeg again when the overlay closes. Only when
-  the overlay size is a whole multiple of the analysis size and the overlay fps is at least the
+  area-averages them down to 320x240 (`resampleYuv420p`, any ratio), thinned to the analysis fps. It
+  switches on the overlay's first frame and starts its own ffmpeg again when the overlay closes. Only
+  when the overlay frames are at least the analysis size and the overlay fps is at least the
   analysis fps; otherwise both keep their own ffmpeg. The analysis grabber (and the accuracy
   check's `decodeClip`) scale with `flags=area` so their own frames match the shrunk ones
   (bicubic differed by ~2.3 grey levels on average, area by ~0.9). Admin shows a "shared" badge.
@@ -357,7 +357,7 @@ precedent for Vue components.
   /api/cameras/:id/analysis/recent`, last 45s) and `LiveOverlayService`'s replay-on-subscribe are for.
 - **The watched camera gets YOLO boxes; statistics stay on motion detection** (Bane's call: YOLO11n
   costs ~110-185ms per 640px frame per core, far too much for 22 cameras). `LiveOverlayService`
-  starts a 640x480 capture plus `YoloDetector` and its own `VehicleTracker` per camera on its first
+  starts a 704x576 capture plus `YoloDetector` and its own `VehicleTracker` per camera on its first
   viewer (`GET /api/cameras/:id/overlay/stream`, SSE), lingers 15s after the last one, and serves at
   most `maxCameras` (2). The player never draws motion-analysis boxes (too imprecise, Bane
   2026-10-21): while the overlay starts (up to ~30s: it starts on the first viewer and its first
@@ -365,15 +365,15 @@ precedent for Vue components.
   loads" notice over the video, and when the overlay is refused, busy or keeps failing
   (`subscribeCameraOverlay`) a "boxes unavailable" notice. Env: `OVERLAY_DETECTOR=off`,
   `OVERLAY_FPS` (3), `OVERLAY_THREADS` (2). The CPU model is `models/yolo26n.onnx` (Ultralytics YOLO26n,
-  AGPL-3.0, exported with a 640x480 input to match the capture - a square 640 input wasted a quarter
-  of each inference on padding). `onnxruntime-node` is loaded lazily, and `.npmrc` skips its CUDA
+  AGPL-3.0, exported with a 704x576 input to match the capture - see the input size note below). `onnxruntime-node` is loaded lazily, and `.npmrc` skips its CUDA
   download. The Dockerfile drops its darwin/win32 binaries.
 - **`OVERLAY_DEVICE=GPU` runs the overlay on an Intel iGPU via OpenVINO** (Bane's call after
   measuring recall: YOLO11n at 640px saw 3 of ~100 cars on Gazela, YOLO11s at 960px ~25-40, at ~4x
-  the compute). `loadYoloModel` compiles the `OVERLAY_MODEL` IR (now YOLO26s by default; FP16, 960x736
-  input, output tensor renamed `output0` - an unnamed output makes `openvino-node` throw) on that
-  device, caching kernels in `data/openvino-cache`, and falls back to the CPU model on onnxruntime if
-  it fails; the overlay capture is 960x720 in GPU mode. `YoloDetector` takes a `() =>
+  the compute). `loadYoloModel` compiles the `OVERLAY_MODEL` IR (now YOLO26s by default; FP16, 704x576
+  input, output tensor named `output0` - an unnamed output makes `openvino-node` throw, so convert
+  the ONNX export with `openvino.convert_model` + `save_model(compress_to_fp16=True)` rather than
+  ultralytics' own `format=openvino`) on that device, caching kernels in `data/openvino-cache`, and
+  falls back to the CPU model on onnxruntime if it fails. `YoloDetector` takes a `() =>
   Promise<YoloModel>` so the CPU-or-GPU choice is made lazily on the first viewer. The container
   needs `/dev/dri` and the host's `render` GID in `group_add`. The runtime image is Debian trixie
   with Intel's Ubuntu 24.04 `intel-opencl-icd` (bookworm's 2022 driver predates the N150 iGPU);
@@ -382,13 +382,20 @@ precedent for Vue components.
   the same IR).
 - **`OVERLAY_MODEL` picks the GPU model, `OVERLAY_CPU_MODEL` the CPU one, `OVERLAY_CONFIDENCE` the minimum score (0.2)** (`OPENVINO_MODELS` /
   `ONNX_MODELS` in `yoloDetector.ts`). GPU: `yolo26s` (default), `yolo26n`, `yolo26m`, all FP16 IR,
-  960x736, output renamed `output0`. CPU (also the GPU's fallback): `yolo26n`, ONNX 640x480.
+  704x576, output `output0`. CPU (also the GPU's fallback): `yolo26n`, ONNX 704x576.
   Ultralytics exports YOLO26 with the same `[1, 84, anchors]` one-to-many head, so the same decoder
   and NMS apply. On six camera frames (960px, conf 0.25, OpenVINO CPU): YOLO26s 98 vehicles at
   139 ms, YOLO26n 77 at 59 ms; on Brankov most at rush hour YOLO26m found no more than 26s at ~3x the
   time. Bane chose the YOLO26 defaults after trying them live on the N150 (26s misses mostly
   motorcycles and distant cars) and had the YOLO11 models removed; 0.2 is the score threshold he
   settled on live (0.15 drew more boxes with a few false ones).
+- **Every model's input, and the overlay capture, is 704x576** (`MODEL_INPUT`, 2026-10-22): the
+  streams' own size for 19 of 22 cameras (ffprobe; okradio's are 1920x1080 / 2688x1520 and are
+  shrunk to it), both sides divide by 32, so no scaling and no padding. On 14 camera frames (conf
+  0.2, 4 threads) YOLO26s found 280 vehicles at 704x576 (79 ms onnxruntime, 44 ms OpenVINO CPU), 259
+  at 640x480, 230 at 960x736 upscaled from native (122 ms) and 175 at 960x736 upscaled from a
+  640x480 capture (124 ms; the old CPU path for s/m). Upscaling adds no detail, and s finds fewer
+  cars on it. YOLO26n gains a little from upscaling (189 -> 228 at 960) but stays below s.
 - **The overlay must never fall behind the player** (regression found on Bane's N150: boxes only
   flickered on now and then). Its capture uses `maxQueuedFrames: 1`, so a detector slower than
   `OVERLAY_FPS` skips frames instead of working through a growing backlog that the player soon

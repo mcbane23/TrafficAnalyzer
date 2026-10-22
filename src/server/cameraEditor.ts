@@ -10,6 +10,8 @@ export interface CameraChange {
   hidden: boolean;
   /** A new camera. */
   added: boolean;
+  /** Deleted from the registry: its analysis and live boxes must stop. */
+  removed?: boolean;
 }
 
 export interface CameraEditorDeps {
@@ -165,8 +167,8 @@ const sameJson = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.
 
 /**
  * Edits the camera registry from the Admin page: a camera's name, address,
- * direction names, ignore zones and whether it is hidden, and adding a new
- * camera (probed first, like the availability check). Every write goes
+ * direction names, ignore zones and whether it is hidden, adding a new
+ * camera (probed first, like the availability check), and deleting one. Every write goes
  * through `CameraRegistryStore`, so the schema still guards the file, and
  * writes are queued one after another so two quick edits can't lose one.
  * `onChanged` tells the caller what changed, so it can apply it without a
@@ -248,6 +250,20 @@ export class CameraEditor {
       latest.push(camera);
       await this.deps.store.save(latest);
       await this.deps.onChanged(camera, { details: false, zones: false, hidden: false, added: true });
+      return camera;
+    });
+  }
+
+  /** Deletes a camera from the registry; its recorded statistics stay in the database. */
+  remove(cameraId: string): Promise<CameraEntry> {
+    return this.serialize(async () => {
+      this.assertNotRevalidating();
+      const entries = await this.deps.store.load();
+      const index = entries.findIndex((entry) => entry.id === cameraId);
+      if (index === -1) throw new CameraEditError(`Camera not found: ${cameraId}`, 404, 'not-found');
+      const [camera] = entries.splice(index, 1);
+      await this.deps.store.save(entries);
+      await this.deps.onChanged(camera, { details: false, zones: false, hidden: false, added: false, removed: true });
       return camera;
     });
   }
