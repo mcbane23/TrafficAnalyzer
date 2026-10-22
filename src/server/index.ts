@@ -17,9 +17,11 @@ import { TrafficStatsService } from '../analysis/trafficStatsService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { FileThumbnailStore, StillThumbnailService } from '../analysis/stillThumbnailService';
 import { AnalysisWorkerPool } from '../analysis/analysisWorkerPool';
+import { CaptureSharing } from '../analysis/captureSharing';
 import { DEFAULT_MIN_CONFIDENCE, DEFAULT_OPENVINO_MODEL, OPENVINO_MODELS, YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
 import { VehicleTracker } from '../analysis/vehicleTracker';
 import { ServerMetricsService } from './serverMetrics';
+import { readAppVersion } from './appVersion';
 import { AnalysisSettingsStore } from './analysisSettingsStore';
 import { AdminSettingsService } from './adminSettingsService';
 import { CameraEditor } from './cameraEditor';
@@ -102,7 +104,15 @@ const processingDefaults: ProcessingSettings = {
 };
 const analysisSettingsStore = new AnalysisSettingsStore(ANALYSIS_SETTINGS_PATH);
 const initialSettings = analysisSettingsStore.load();
-const analysisGrabber = new FrameGrabber({ streamFps: initialSettings.analysisFps ?? processingDefaults.analysisFps });
+// A watched camera's analysis takes its frames from the live-box capture
+// (shrunk to 320x240) instead of decoding the same stream a second time - see
+// CaptureSharing. Area scaling keeps its own frames matching the shrunk ones.
+const captureSharing = new CaptureSharing();
+const analysisGrabber = new FrameGrabber({
+  streamFps: initialSettings.analysisFps ?? processingDefaults.analysisFps,
+  scaleFlags: 'area',
+  shareFrom: captureSharing,
+});
 const trafficAnalysisService = new TrafficAnalysisService(
   store,
   analysisGrabber,
@@ -159,6 +169,7 @@ const overlayGrabber = overlayEnabled
       frameWidth: overlayDevice === 'CPU' ? 640 : 960,
       frameHeight: overlayDevice === 'CPU' ? 480 : 720,
       maxQueuedFrames: 1,
+      shareTo: captureSharing,
     })
   : null;
 const liveOverlayService = !overlayGrabber
@@ -235,6 +246,7 @@ const accuracyChecks = new AccuracyCheckService({
 });
 // CPU, memory and pipeline throughput for the Admin page, sampled every 5 s.
 const serverMetrics = new ServerMetricsService({
+  app: readAppVersion(process.env, path.resolve(__dirname, '../../package.json')),
   analysis: trafficAnalysisService,
   overlay: liveOverlayService,
   config: {

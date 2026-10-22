@@ -21,6 +21,7 @@ function makeReader() {
 function makeService(reader: SystemReader, historySize = 120) {
   let now = Date.parse('2026-10-21T10:00:00Z');
   const service = new ServerMetricsService({
+    app: { version: '1.0.0', commit: null, builtAt: null },
     analysis: { getMetrics: () => ({ activeJobs: 1, queuedJobs: 0, maxConcurrency: 6, cameras: [] }) },
     overlay: null,
     config: { analysisFps: () => 3, analysisThreads: 2, overlayDevice: 'GPU', overlayModel: () => 'yolo26s on GPU' },

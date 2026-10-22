@@ -184,6 +184,9 @@ onBeforeUnmount(() => {
           {{ t('admin.subtitle', { seconds: REFRESH_MS / 1000 }) }}
           <template v-if="metrics"> · {{ metrics.host.hostname }}</template>
         </p>
+        <p v-if="metrics" class="mt-0.5 text-xs text-slate-500" :title="metrics.app.commit ?? ''">
+          {{ t('admin.version', { version: metrics.app.version }) }}<template v-if="metrics.app.commit"> · {{ metrics.app.commit.slice(0, 7) }}</template><template v-if="metrics.app.builtAt"> · {{ t('admin.builtAt', { when: new Date(metrics.app.builtAt).toLocaleString(intlLocale()) }) }}</template>
+        </p>
       </div>
     </div>
 
@@ -347,6 +350,7 @@ onBeforeUnmount(() => {
               <tr v-for="camera in analysisCameras" :key="camera.cameraId" class="border-t border-slate-800">
                 <td class="py-1.5 pr-4">
                   <router-link :to="`/cameras/${camera.cameraId}`" class="hover:text-sky-400">{{ camera.name }}</router-link>
+                  <span v-if="camera.capture?.shared" class="ml-2 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-300" :title="t('admin.sharedTitle')">{{ t('admin.shared') }}</span>
                 </td>
                 <td class="py-1.5 pr-4 text-right" :class="fpsClass(camera.fps)">{{ fmt(camera.fps, 1) }}</td>
                 <td class="py-1.5 pr-4 text-right">{{ fmt(camera.avgMs, 0, ' ms') }}</td>

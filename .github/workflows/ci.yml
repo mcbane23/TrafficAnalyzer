@@ -5,15 +5,20 @@ name: CI
 # Push to main (i.e. a merged PR): same, then the image is pushed to GHCR as
 # ghcr.io/mcbane23/trafficanalyzer:latest and :<commit sha>, for linux/amd64
 # and linux/arm64 (each built natively on its own runner, no emulation).
+# Push of a version tag (v1.3, v2.0.1...): the image is also pushed as
+# :<tag>, so a server can stay on a known version instead of :latest. The
+# Admin page shows the tag, commit and build time (APP_VERSION, GIT_SHA,
+# BUILD_DATE build args).
 on:
   push:
     branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref_type != 'tag' }}
 
 permissions:
   contents: read
@@ -60,7 +65,7 @@ jobs:
       contents: read
       packages: write
     env:
-      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') }}
     outputs:
       # Each leg sets only its own output, so both survive the matrix.
       digest-amd64: ${{ steps.digest.outputs.digest-amd64 }}
@@ -78,14 +83,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build time
+        id: date
+        run: echo "now=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       # Branches only read the layer cache that main builds write, so they
       # don't add cache entries of their own.
-      - name: Build (and push by digest on main)
+      - name: Build (and push by digest on main and tags)
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/${{ matrix.arch }}
+          build-args: |
+            APP_VERSION=${{ github.ref_type == 'tag' && github.ref_name || '' }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.date.outputs.now }}
           provenance: false
           outputs: ${{ env.PUBLISH == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_NAME) || 'type=cacheonly' }}
           cache-from: type=gha,scope=${{ matrix.arch }}
@@ -99,7 +112,7 @@ jobs:
   publish:
     name: Publish multi-arch image
     needs: docker
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -118,9 +131,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          # :latest only follows main; a tag push adds :<tag> (e.g. :v1.3).
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
             type=sha,format=long,prefix=
+          flavor: latest=false
 
       - name: Tag the amd64 + arm64 image
         env:
@@ -130,4 +146,4 @@ jobs:
         run: |
           test -n "$AMD64" && test -n "$ARM64"
           docker buildx imagetools create $(printf -- '-t %s ' $TAGS) "$IMAGE_NAME@$AMD64" "$IMAGE_NAME@$ARM64"
-          docker buildx imagetools inspect "$IMAGE_NAME:latest"
+          docker buildx imagetools inspect "$IMAGE_NAME:${{ github.sha }}"

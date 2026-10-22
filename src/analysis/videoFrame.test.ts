@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { VideoFrame, encodeJpeg, resampleLuma, yuv420pFrameSize } from './videoFrame';
+import { VideoFrame, downscaleYuv420p, encodeJpeg, resampleLuma, yuv420pFrameSize } from './videoFrame';
 
 /** A yuv420p frame with the given luma plane and neutral (grey) chroma. */
 function greyFrame(width: number, height: number, luma: (x: number, y: number) => number): VideoFrame {
@@ -12,6 +12,24 @@ describe('yuv420pFrameSize', () => {
   it('is a full luma plane plus two quarter-size chroma planes, rounding odd sizes up', () => {
     expect(yuv420pFrameSize(320, 240)).toBe(320 * 240 * 1.5);
     expect(yuv420pFrameSize(3, 3)).toBe(9 + 2 * 4);
+  });
+});
+
+describe('downscaleYuv420p', () => {
+  it('averages each block of every plane', () => {
+    // 4x4 luma, 2x2 chroma planes; shrink by 2 -> 2x2 luma, 1x1 chroma.
+    const luma = [10, 20, 100, 100, 30, 40, 100, 100, 0, 0, 255, 255, 0, 2, 255, 255];
+    const frame = { width: 4, height: 4, data: Uint8Array.from([...luma, 1, 2, 3, 4, 200, 200, 200, 201]) };
+    const small = downscaleYuv420p(frame, 2);
+    expect(small.width).toBe(2);
+    expect(small.height).toBe(2);
+    expect(Array.from(small.data)).toEqual([25, 100, 1, 255, 3, 200]);
+  });
+
+  it('returns the frame as is for a factor of 1, and refuses a size the factor does not divide', () => {
+    const frame = { width: 4, height: 4, data: new Uint8Array(yuv420pFrameSize(4, 4)) };
+    expect(downscaleYuv420p(frame, 1)).toBe(frame);
+    expect(() => downscaleYuv420p(frame, 3)).toThrow('Cannot shrink');
   });
 });
 

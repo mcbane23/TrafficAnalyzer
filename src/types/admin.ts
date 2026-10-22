@@ -29,6 +29,8 @@ export interface CaptureCounters {
   /** When the last frame was decoded (ISO), or null if none yet. */
   lastFrameAt: string | null;
   lastError: string | null;
+  /** Taking its frames from the camera's live-box capture instead of running its own ffmpeg (see CaptureSharing). */
+  shared?: boolean;
 }
 
 export interface CameraAnalysisMetrics extends ThroughputSnapshot {
@@ -59,8 +61,19 @@ export interface CpuSample {
   eventLoopMs: number | null;
 }
 
+/** Which build of the app is running (see `readAppVersion`). */
+export interface AppVersion {
+  /** The git tag the image was built from (e.g. v1.3), else package.json's version. */
+  version: string;
+  /** Full commit SHA the image was built from, or null outside a CI build. */
+  commit: string | null;
+  /** When the image was built (ISO), or null outside a CI build. */
+  builtAt: string | null;
+}
+
 export interface ServerMetrics {
   generatedAt: string;
+  app: AppVersion;
   host: {
     hostname: string;
     platform: string;

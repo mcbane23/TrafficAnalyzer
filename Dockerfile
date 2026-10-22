@@ -131,7 +131,9 @@ COPY --from=build /app/dist ./dist
 # mount this as a volume (see docker-compose.yml) to persist edits made by
 # `npm run cameras:revalidate`. Also holds traffic-history.db, the SQLite
 # file TrafficHistoryStore creates on first run - persisted the same way.
-COPY data ./data
+#
+# Owned by `node`, the user the server runs as (see docker/entrypoint.sh).
+COPY --chown=node:node data ./data
 # A second copy outside data/, which a mount hides: on start the server copies
 # whatever data/cameras lacks from here, so an empty bind mount (./data) gets
 # the default registry instead of a server that can't start.
@@ -141,9 +143,23 @@ COPY data/cameras ./defaults/cameras
 # LiveOverlayService. Resolved relative to dist/, i.e. /app/models.
 COPY models ./models
 
+# Which build this is, shown on the Admin page (see src/server/appVersion.ts).
+# CI passes the git tag (or nothing, for package.json's version), the commit
+# and the build time; a local `docker build` leaves them empty. Last, so a new
+# commit doesn't invalidate the layers above.
+ARG APP_VERSION=""
+ARG GIT_SHA=""
+ARG BUILD_DATE=""
+ENV APP_VERSION=$APP_VERSION GIT_SHA=$GIT_SHA BUILD_DATE=$BUILD_DATE
+
+# Runs as root only long enough to hand an older volume's files to `node`
+# and keep the GPU's group, then starts the server as `node`.
+COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/trafficanalyzer-entrypoint.sh
+
 EXPOSE 3001
 # Marks the container unhealthy when the server stops answering (TrueNAS and
 # `docker ps` show it). The slim image has no curl, so Node's own fetch asks.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+ENTRYPOINT ["trafficanalyzer-entrypoint.sh"]
 CMD ["node", "dist/server/index.js"]

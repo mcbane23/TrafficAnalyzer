@@ -142,7 +142,25 @@ precedent for Vue components.
   `-filter_threads 1` halves the threads, while probesize, `-fflags nobuffer`, thread queue size,
   `MALLOC_ARENA_MAX` and a lower `ANALYSIS_FPS`/resolution save ~0-2 MB each (the stream is always
   decoded at full size). The Admin page reports the children's PSS, not RSS: summed RSS counts the
-  shared libraries once per process and overstated it ~2x. - **Admin "Analysis settings"** (`AdminSettingsService`, saved by `AnalysisSettingsStore` to
+  shared libraries once per process and overstated it ~2x.
+- **Non-root container**: [docker/entrypoint.sh](docker/entrypoint.sh) starts as root, chowns
+  whatever under `/app/data` isn't `node`'s (old volumes were root's), collects the groups of
+  `/dev/dri/render*` plus any `group_add` ones, and `setpriv`s to `node` (uid 1000) with no
+  capabilities. Anything the server writes must live under `/app/data` (models, defaults and dist are
+  root-owned, read-only to it). A container started with `user:` skips the script's root part.
+- **Version**: CI passes `APP_VERSION` (the `v*` git tag, else empty → package.json's version),
+  `GIT_SHA` and `BUILD_DATE` as build args; [appVersion.ts](src/server/appVersion.ts) reads them for
+  the Admin page. Pushing a `v*` tag publishes `:<tag>` (and `:<sha>`, not `:latest`).
+- **Capture sharing** ([captureSharing.ts](src/analysis/captureSharing.ts)): while a camera is
+  watched, its overlay capture (960x720 GPU / 640x480 CPU) publishes its frames to a
+  `CaptureSharing`, and that camera's analysis capture (`SharingCapture`) stops its own ffmpeg and
+  area-averages them down to 320x240 (`downscaleYuv420p`), thinned to the analysis fps. It switches
+  on the overlay's first frame and starts its own ffmpeg again when the overlay closes. Only when
+  the overlay size is a whole multiple of the analysis size and the overlay fps is at least the
+  analysis fps; otherwise both keep their own ffmpeg. The analysis grabber (and the accuracy
+  check's `decodeClip`) scale with `flags=area` so their own frames match the shrunk ones
+  (bicubic differed by ~2.3 grey levels on average, area by ~0.9). Admin shows a "shared" badge.
+- **Admin "Analysis settings"** (`AdminSettingsService`, saved by `AnalysisSettingsStore` to
   `data/analysis-settings.json`): which cameras the fleet analysis runs on — **none by default**, the
   user switches each one on (Bane's call: weaker servers analyze a few, stronger ones switch all on) —
   plus the analysis frame rate, live-box frame rate, GPU YOLO model and box confidence. Everything

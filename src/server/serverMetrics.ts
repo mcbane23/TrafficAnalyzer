@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { CameraAnalysisMetrics, CpuSample, OverlayCameraMetrics, ServerMetrics } from '../types/admin';
+import { AppVersion, CameraAnalysisMetrics, CpuSample, OverlayCameraMetrics, ServerMetrics } from '../types/admin';
 
 /** One child process of this server, as read from `/proc`. */
 export interface ChildProcessInfo {
@@ -44,6 +44,8 @@ export interface OverlayMetricsSource {
 }
 
 export interface ServerMetricsOptions {
+  /** The running build, shown on the Admin page. */
+  app: AppVersion;
   analysis: AnalysisMetricsSource;
   overlay: OverlayMetricsSource | null;
   config: {
@@ -165,6 +167,7 @@ export class ServerMetricsService {
     const { analysis, overlay, config } = this.options;
     return {
       generatedAt: this.now().toISOString(),
+      app: this.options.app,
       host: {
         hostname: os.hostname(),
         platform: `${os.type()} ${os.release()} (${os.arch()})`,

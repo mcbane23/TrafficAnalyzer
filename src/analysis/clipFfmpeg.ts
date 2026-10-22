@@ -49,7 +49,7 @@ export function recordClip(camera: CameraEntry, file: string, seconds: number, f
 
 /**
  * Decodes a clip at `fps` into the same frames the live analysis gets
- * (`FrameGrabber`'s size, yuv420p), calling `onFrame` with each one in
+ * (`FrameGrabber`'s size and area scaling, yuv420p), calling `onFrame` with each one in
  * order. ffmpeg is paused while `onFrame` runs, so a slow analysis never
  * piles frames up in memory.
  */
@@ -65,7 +65,7 @@ export function decodeClip(
   const args = [
     '-hide_banner', '-nostats', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1',
     '-i', file,
-    '-vf', `fps=${fps},scale=${width}:${height},format=yuv420p`,
+    '-vf', `fps=${fps},scale=${width}:${height}:flags=area,format=yuv420p`,
     '-f', 'rawvideo', '-pix_fmt', 'yuv420p', 'pipe:1',
   ];
   let failure: unknown = null;
