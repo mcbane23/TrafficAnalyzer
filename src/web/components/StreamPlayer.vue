@@ -4,7 +4,7 @@ import Hls from 'hls.js';
 import type { CameraEntry } from '../../types/camera';
 import type { BoundingBox, VehicleDetection } from '../../types/analysis';
 import { fetchOverlayModel, subscribeCameraOverlay } from '../services/analysis';
-import { planResume } from '../services/playerResume';
+import { planResume, reconnectDelayMs } from '../services/playerResume';
 import { t } from '../i18n';
 
 /**
@@ -31,6 +31,15 @@ const canvasRef = ref<HTMLCanvasElement | null>(null);
 const error = ref<string | null>(null);
 const usingAlternate = ref(false);
 let hls: Hls | null = null;
+/**
+ * Set while a failed stream is being reloaded (see `scheduleReconnect`): a
+ * notice over the video says so instead of the error.
+ */
+const reconnecting = ref(false);
+let reconnectAttempt = 0;
+let reconnectHandle: ReturnType<typeof setTimeout> | null = null;
+/** hls.js gets one `recoverMediaError` per load before a decode error counts as a failure. */
+let mediaRecoveryTried = false;
 /**
  * Where the vehicle boxes stand, for the notice over the video: `starting`
  * until the first overlay result covers the picture (the overlay only starts
@@ -373,9 +382,10 @@ function destroy() {
  * `onFailure` rather than directly setting `error`, so the caller can
  * decide whether to fall back to `camera.alternateUrl` first.
  */
-function loadSource(url: string, onFailure: (message: string) => void) {
+function loadSource(url: string, onFailure: (message: string, retryable?: boolean) => void) {
   const video = videoRef.value;
   if (!video) return;
+  mediaRecoveryTried = false;
 
   if (Hls.isSupported()) {
     hls = new Hls({
@@ -401,9 +411,13 @@ function loadSource(url: string, onFailure: (message: string) => void) {
       playingCc = data.frag.cc;
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal) {
-        onFailure(t('player.streamError', { details: data.details }));
+      if (!data.fatal) return;
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !mediaRecoveryTried && hls) {
+        mediaRecoveryTried = true;
+        hls.recoverMediaError();
+        return;
       }
+      onFailure(t('player.streamError', { details: data.details }));
     });
     hls.loadSource(url);
     hls.attachMedia(video);
@@ -421,7 +435,7 @@ function loadSource(url: string, onFailure: (message: string) => void) {
     return;
   }
 
-  onFailure(t('player.unsupported'));
+  onFailure(t('player.unsupported'), false);
 }
 
 function handleNativeError() {
@@ -431,21 +445,77 @@ function handleNativeError() {
 /**
  * Called whenever the currently loaded stream fails. If the camera has a
  * configured `alternateUrl` and we haven't already switched to it, retry
- * once with the alternate before surfacing an error to the user.
+ * once with the alternate; after that the stream is reloaded from the start
+ * (see `scheduleReconnect`) rather than leaving the error on screen.
  */
-function handleFailure(message: string) {
-  if (!usingAlternate.value && props.camera.alternateUrl) {
+function handleFailure(message: string, retryable = true) {
+  if (retryable && !usingAlternate.value && props.camera.alternateUrl) {
     usingAlternate.value = true;
     destroy();
-    loadSource(props.camera.alternateUrl, (fallbackMessage) => {
-      error.value = fallbackMessage;
+    loadSource(props.camera.alternateUrl, (fallbackMessage, fallbackRetryable = true) => {
+      if (fallbackRetryable) scheduleReconnect();
+      else error.value = fallbackMessage;
     });
     return;
   }
-  error.value = message;
+  if (retryable) scheduleReconnect();
+  else error.value = message;
+}
+
+function cancelReconnect() {
+  if (reconnectHandle !== null) clearTimeout(reconnectHandle);
+  reconnectHandle = null;
+  reconnecting.value = false;
+  reconnectAttempt = 0;
+}
+
+/**
+ * Reloads a failed stream after a growing wait (`reconnectDelayMs`), for as
+ * long as the player is open. Nothing is tried while the page is hidden (a
+ * sleeping phone has no network anyway); coming back to it, or the network
+ * coming back, reconnects at once (see `reconnectNow`).
+ */
+function scheduleReconnect() {
+  destroy();
+  reconnecting.value = true;
+  if (reconnectHandle !== null) clearTimeout(reconnectHandle);
+  reconnectHandle = null;
+  if (document.visibilityState === 'hidden') return;
+  reconnectAttempt += 1;
+  reconnectHandle = setTimeout(() => {
+    reconnectHandle = null;
+    if (document.visibilityState === 'hidden') return;
+    load();
+  }, reconnectDelayMs(reconnectAttempt));
+}
+
+/** Retries a failed stream right away, with the backoff started over. */
+function reconnectNow() {
+  if (!reconnecting.value) return;
+  if (reconnectHandle !== null) clearTimeout(reconnectHandle);
+  reconnectHandle = null;
+  reconnectAttempt = 0;
+  load();
+}
+
+/** The picture is moving again: the reconnect, if any, worked. */
+function handlePlaying() {
+  if (!reconnecting.value) return;
+  cancelReconnect();
+  // The video jumped ahead to the live picture: the boxes for it come from
+  // the overlay's replay, as after a background tab.
+  if (unsubscribeOverlay) {
+    if (overlayState.value === 'ready') restartingOverlay();
+    openOverlay();
+  }
 }
 
 function attach() {
+  cancelReconnect();
+  load();
+}
+
+function load() {
   destroy();
   error.value = null;
   usingAlternate.value = false;
@@ -668,6 +738,11 @@ function handleVisibilityChange() {
     hiddenSince = performance.now();
     return;
   }
+  if (reconnecting.value) {
+    hiddenSince = null;
+    reconnectNow();
+    return;
+  }
   if (hiddenSince === null) return;
   const hiddenForMs = performance.now() - hiddenSince;
   hiddenSince = null;
@@ -706,9 +781,14 @@ onMounted(() => {
   resizeCanvas();
   animationFrameHandle = requestAnimationFrame(animationLoop);
   document.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('online', reconnectNow);
+  videoRef.value?.addEventListener('playing', handlePlaying);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibilityChange);
+  window.removeEventListener('online', reconnectNow);
+  videoRef.value?.removeEventListener('playing', handlePlaying);
+  cancelReconnect();
   destroy();
   unsubscribeOverlay?.();
   stopStartingClock();
@@ -730,7 +810,14 @@ watch(
       <video v-show="!error" ref="videoRef" class="aspect-video h-full w-full" muted autoplay playsinline></video>
       <canvas v-show="!error" ref="canvasRef" class="pointer-events-none absolute inset-0 h-full w-full"></canvas>
       <div
-        v-if="!error && showBoxes && camera.status === 'active' && overlayState === 'starting'"
+        v-if="!error && reconnecting"
+        class="pointer-events-none absolute left-1/2 top-1/2 max-w-[90%] -translate-x-1/2 -translate-y-1/2 rounded-md bg-slate-900/85 px-3 py-2 text-center text-xs font-medium text-slate-200"
+        role="status"
+      >
+        {{ t('player.reconnecting') }}
+      </div>
+      <div
+        v-else-if="!error && showBoxes && camera.status === 'active' && overlayState === 'starting'"
         class="pointer-events-none absolute left-1/2 top-3 w-64 max-w-[90%] -translate-x-1/2 rounded-md bg-slate-900/85 px-3 py-2 text-xs font-medium text-slate-200"
         role="status"
       >
