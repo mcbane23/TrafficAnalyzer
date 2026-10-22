@@ -173,7 +173,7 @@ onMounted(load);
         </div>
       </div>
       <p class="mt-1 max-w-3xl text-xs text-slate-400">
-        Statistics, dashboard badges and thumbnails come from cameras switched on here. Each one keeps an ffmpeg running (~{{ MB_PER_CAMERA }} MB of
+        Statistics, dashboard badges and live thumbnails come from cameras switched on here (the others get a still refreshed every 30 minutes). Each one keeps an ffmpeg running (~{{ MB_PER_CAMERA }} MB of
         memory and part of a CPU core). A camera switched off is still analyzed while its page is open, and stops ~15 s after it is closed.
       </p>
 

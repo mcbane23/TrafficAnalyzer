@@ -12,6 +12,7 @@ import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
 import { TrafficStatsStore } from '../analysis/trafficStatsStore';
 import { TrafficStatsService } from '../analysis/trafficStatsService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
+import { FileThumbnailStore, StillThumbnailService } from '../analysis/stillThumbnailService';
 import { AnalysisWorkerPool } from '../analysis/analysisWorkerPool';
 import { DEFAULT_MIN_CONFIDENCE, DEFAULT_OPENVINO_MODEL, OPENVINO_MODELS, YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
 import { VehicleTracker } from '../analysis/vehicleTracker';
@@ -27,6 +28,7 @@ const TRAFFIC_HISTORY_DB_PATH = path.resolve(__dirname, '../../data/traffic-hist
 const TRAFFIC_STATS_DB_PATH = path.resolve(__dirname, '../../data/traffic-stats.db');
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const ANALYSIS_SETTINGS_PATH = path.join(DATA_DIR, 'analysis-settings.json');
+const THUMBNAILS_DIR = path.join(DATA_DIR, 'thumbnails');
 // Runtime-generated as well: OpenVINO's compiled GPU kernels for the overlay model.
 const OPENVINO_CACHE_DIR = path.resolve(__dirname, '../../data/openvino-cache');
 // Resolved from the working directory, not `__dirname` like the paths above:
@@ -86,6 +88,13 @@ const trafficAnalysisService = new TrafficAnalysisService(
     ...(analysisWorkers ? { createAnalyzer: (cameraId, camera) => analysisWorkers.createAnalyzer(cameraId, camera) } : {}),
   },
 );
+// A dashboard thumbnail for every camera, analyzed or not: cameras left out
+// of the analysis get a still from a one-off ffmpeg, one camera at a time,
+// refreshed every 30 minutes - see StillThumbnailService.
+const stillThumbnails = new StillThumbnailService(store, new FrameGrabber(), {
+  liveFrame: (cameraId) => trafficAnalysisService.getLatestFrame(cameraId),
+  store: new FileThumbnailStore(THUMBNAILS_DIR),
+});
 // Boxes over the camera someone is watching come from an appearance model
 // (YOLO), run only while that camera has viewers - see LiveOverlayService.
 // OVERLAY_DETECTOR=off falls back to drawing the motion-detection boxes;
@@ -190,6 +199,7 @@ const app = createApp(
   revalidationService,
   hlsProxyService,
   trafficAnalysisService,
+  stillThumbnails,
   trafficStatsService,
   liveOverlayService,
   serverMetrics,
@@ -208,6 +218,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 trafficAnalysisService.start().catch((err) => {
   console.error('Failed to start traffic analysis service:', err);
 });
+stillThumbnails.start();
 
 app.listen(PORT, () => {
   console.log(`TrafficAnalyzer server listening on http://localhost:${PORT}`);
