@@ -10,3 +10,4 @@ data/traffic-stats.db-*
 data/openvino-cache/
 data/analysis-settings.json
 data/analysis-settings.json.tmp
+data/thumbnails/

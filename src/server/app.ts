@@ -6,6 +6,7 @@ import { RevalidationService } from './revalidationService';
 import { HlsProxyService } from './hlsProxyService';
 import { SseChannel } from './sseChannel';
 import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
+import { StillThumbnailService } from '../analysis/stillThumbnailService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { ServerMetricsService } from './serverMetrics';
 import { AdminSettingsService } from './adminSettingsService';
@@ -36,6 +37,7 @@ export function createApp(
   revalidationService: RevalidationService,
   hlsProxyService: HlsProxyService,
   trafficAnalysisService: TrafficAnalysisService,
+  stillThumbnails: StillThumbnailService,
   trafficStatsService: TrafficStatsService,
   liveOverlayService: LiveOverlayService | null,
   serverMetrics: ServerMetricsService,
@@ -176,9 +178,9 @@ export function createApp(
     res.json(trafficAnalysisService.getHistory(req.params.id, { limit, sinceIso }));
   });
 
-  // Latest analyzed frame as a still thumbnail, so the dashboard doesn't need a live video per card.
+  // Latest analyzed frame (or, for a camera not analyzed, its periodic still) as a thumbnail, so the dashboard doesn't need a live video per card.
   app.get('/api/cameras/:id/snapshot.jpg', (req, res) => {
-    const frame = trafficAnalysisService.getLatestFrame(req.params.id);
+    const frame = stillThumbnails.getThumbnail(req.params.id);
     if (!frame) {
       res.status(404).json({ error: 'No frame captured yet for this camera.' });
       return;
