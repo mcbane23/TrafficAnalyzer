@@ -3,37 +3,30 @@ import { useRoute, useRouter } from 'vue-router';
 import type { TrafficLevel } from '../../types/analysis';
 import type { CameraEntry } from '../../types/camera';
 import type { RoadAxis, StatsBucket, StatsRange } from '../../types/stats';
+import { formatNumber, t } from '../i18n';
 
-/** Shared look for traffic levels, directions and ranges, so every view uses the same colors and words. */
+/**
+ * Shared look for traffic levels, directions and ranges, so every view uses the same colors and words.
+ * Labels are getters over `t`, so they follow the selected language wherever they are rendered.
+ */
 
-export const RANGES: Array<{ value: StatsRange; label: string }> = [
-  { value: '1h', label: '1 hour' },
-  { value: '24h', label: '24 hours' },
-  { value: '7d', label: '7 days' },
-  { value: '30d', label: '30 days' },
-];
+const range = (value: StatsRange) => ({ value, get label() { return t(`range.${value}`); } });
+const bucket = (value: StatsBucket) => ({ value, get label() { return t(`bucket.${value}`); } });
+
+export const RANGES: Array<{ value: StatsRange; label: string }> = [range('1h'), range('24h'), range('7d'), range('30d')];
 
 /** Bucket sizes offered per range, default first - mirrors the server's ALLOWED_BUCKETS. */
 export const ALLOWED_BUCKETS_UI: Record<StatsRange, Array<{ value: StatsBucket; label: string }>> = {
-  '1h': [
-    { value: '5m', label: '5 min' },
-    { value: '15m', label: '15 min' },
-  ],
-  '24h': [
-    { value: '1h', label: 'hour' },
-    { value: '15m', label: '15 min' },
-  ],
-  '7d': [
-    { value: '1h', label: 'hour' },
-    { value: '1d', label: 'day' },
-  ],
-  '30d': [{ value: '1d', label: 'day' }],
+  '1h': [bucket('5m'), bucket('15m')],
+  '24h': [bucket('1h'), bucket('15m')],
+  '7d': [bucket('1h'), bucket('1d')],
+  '30d': [bucket('1d')],
 };
 
 export const TRAFFIC_LABELS: Record<TrafficLevel, string> = {
-  light: 'Light',
-  moderate: 'Moderate',
-  heavy: 'Heavy',
+  get light() { return t('level.light'); },
+  get moderate() { return t('level.moderate'); },
+  get heavy() { return t('level.heavy'); },
 };
 
 export const TRAFFIC_BADGE_STYLES: Record<TrafficLevel, string> = {
@@ -66,18 +59,18 @@ export function arrowFor(x: number, y: number): string {
   return ARROWS[(index + 8) % 8];
 }
 
-/** Display names for a camera's two directions: the registry's names if set, else "Direction A/B" with an arrow showing which way it is on screen. */
+/** Display names for a camera's two directions: the registry's names if set, else "Direction A/B" (translated) with an arrow showing which way it is on screen. */
 export function directionLabels(camera: CameraEntry | null | undefined, axis: RoadAxis | null | undefined) {
   const arrowA = axis ? ` ${arrowFor(axis.x, axis.y)}` : '';
   const arrowB = axis ? ` ${arrowFor(-axis.x, -axis.y)}` : '';
   return {
-    a: camera?.directions?.a ? `${camera.directions.a}${arrowA}` : `Direction A${arrowA}`,
-    b: camera?.directions?.b ? `${camera.directions.b}${arrowB}` : `Direction B${arrowB}`,
+    a: camera?.directions?.a ? `${camera.directions.a}${arrowA}` : `${t('direction.a')}${arrowA}`,
+    b: camera?.directions?.b ? `${camera.directions.b}${arrowB}` : `${t('direction.b')}${arrowB}`,
   };
 }
 
 export function formatCount(value: number): string {
-  return value.toLocaleString();
+  return formatNumber(value);
 }
 
 /** The globally selected time range, kept in the URL (`?range=`) so it survives navigation and reloads. */

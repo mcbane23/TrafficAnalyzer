@@ -5,7 +5,7 @@ import { AdminSettingsService } from './adminSettingsService';
 import { AnalysisSettingsStore } from './analysisSettingsStore';
 import { CameraEntry } from '../types/camera';
 
-const DEFAULTS = { analysisFps: 3, overlayFps: 3, overlayModel: 'yolo26s', overlayConfidence: 0.2 };
+const DEFAULTS = { analysisFps: 3, overlayFps: 3, overlayModel: 'yolo26s', overlayConfidence: 0.2, passageRetentionDays: 30 };
 
 function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-settings-'));

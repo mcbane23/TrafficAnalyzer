@@ -4,6 +4,7 @@ import Hls from 'hls.js';
 import type { CameraEntry } from '../../types/camera';
 import type { BoundingBox, VehicleDetection } from '../../types/analysis';
 import { subscribeCameraOverlay } from '../services/analysis';
+import { t } from '../i18n';
 
 /**
  * `inView`: how many vehicle boxes belong on the picture on screen right now
@@ -371,7 +372,7 @@ function loadSource(url: string, onFailure: (message: string) => void) {
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (data.fatal) {
-        onFailure(`Stream error: ${data.details}`);
+        onFailure(t('player.streamError', { details: data.details }));
       }
     });
     hls.loadSource(url);
@@ -390,11 +391,11 @@ function loadSource(url: string, onFailure: (message: string) => void) {
     return;
   }
 
-  onFailure('HLS playback is not supported in this browser.');
+  onFailure(t('player.unsupported'));
 }
 
 function handleNativeError() {
-  handleFailure('Stream error: failed to load video.');
+  handleFailure(t('player.loadFailed'));
 }
 
 /**
@@ -641,15 +642,15 @@ watch(
         v-if="!error && showBoxes && camera.status === 'active' && overlayState !== 'ready'"
         class="pointer-events-none absolute left-1/2 top-3 max-w-[90%] -translate-x-1/2 rounded-md bg-slate-900/80 px-3 py-1.5 text-center text-xs font-medium text-slate-200"
       >
-        <template v-if="overlayState === 'starting'">Vehicle detection is starting - boxes appear about 30 seconds after the stream loads.</template>
-        <template v-else>Vehicle boxes are unavailable for this camera right now.</template>
+        <template v-if="overlayState === 'starting'">{{ t('player.starting') }}</template>
+        <template v-else>{{ t('player.unavailable') }}</template>
       </div>
     </div>
     <div
       v-if="usingAlternate && !error"
       class="bg-amber-500/90 px-3 py-1 text-center text-xs font-medium text-slate-900"
     >
-      Primary feed unavailable - showing backup feed{{ camera.alternateSource ? ` (${camera.alternateSource})` : '' }}
+      {{ t('player.backup') }}{{ camera.alternateSource ? ` (${camera.alternateSource})` : '' }}
     </div>
     <div v-if="error" class="flex aspect-video w-full items-center justify-center p-6 text-center text-sm text-slate-300">
       {{ error }}

@@ -1,4 +1,5 @@
 import express, { Express } from 'express';
+import compression from 'compression';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CameraService } from './cameraService';
@@ -46,6 +47,17 @@ export function createApp(
 ): Express {
   const app = express();
 
+
+  // Liveness for Docker's HEALTHCHECK: answers only while the event loop is free, and checks the camera
+  // registry still loads (the one file the server can't run without).
+  app.get('/api/health', async (_req, res) => {
+    try {
+      const cameras = await cameraService.listCameras();
+      res.set('Cache-Control', 'no-store').json({ status: 'ok', cameras: cameras.length, uptimeSec: Math.round(process.uptime()) });
+    } catch (err) {
+      res.status(503).json({ status: 'error', error: err instanceof Error ? err.message : 'Camera registry unavailable' });
+    }
+  });
 
   app.get('/api/cameras', async (_req, res) => {
     try {
@@ -135,6 +147,12 @@ export function createApp(
   // Bootstrap snapshot for the dashboard, so cards have a count/badge to show before their SSE connection delivers the first live update.
   app.get('/api/analysis/latest', (_req, res) => {
     res.json(trafficAnalysisService.getLatestOverview());
+  });
+
+  // Which cameras the fleet analysis runs on (the Admin page's switches), so the dashboard can tell a camera
+  // that is switched off from one that is broken. Null means every active camera.
+  app.get('/api/analysis/enabled', (_req, res) => {
+    res.set('Cache-Control', 'no-store').json({ cameraIds: trafficAnalysisService.getEnabledCameras() });
   });
 
   // Dashboard-wide SSE stream: lightweight count + traffic-level overview for every analyzed camera.
@@ -228,7 +246,20 @@ export function createApp(
   }));
 
   if (staticDir && fs.existsSync(staticDir)) {
-    app.use(express.static(staticDir));
+    // Registered after every API route, so it only ever compresses the built frontend - never an SSE
+    // stream, which compression would hold back until a buffer fills. The dashboard's JavaScript went
+    // out uncompressed before (619 KB, 198 KB gzipped).
+    app.use(compression());
+    app.use(
+      express.static(staticDir, {
+        // Vite puts a content hash in every file name under assets/, so a cached copy can never be stale.
+        // index.html is not hashed and points at the current ones, so it is revalidated on every load.
+        setHeaders: (res, filePath) => {
+          if (filePath.includes(`${path.sep}assets${path.sep}`)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          else res.setHeader('Cache-Control', 'no-cache');
+        },
+      }),
+    );
     // SPA fallback for Vue Router history mode - use middleware (not a route
     // pattern) so it works across Express versions regardless of their
     // wildcard-route syntax.
@@ -237,6 +268,7 @@ export function createApp(
         next();
         return;
       }
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(staticDir, 'index.html'));
     });
   }

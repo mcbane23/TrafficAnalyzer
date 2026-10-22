@@ -90,6 +90,7 @@ export class TrafficStatsStore {
   private readonly insertPassageStatement: Database.Statement;
   private readonly upsertHourStatement: Database.Statement;
   private readonly upsertMinuteStatement: Database.Statement;
+  private readonly prunePassagesStatement: Database.Statement<[number, number]>;
 
   constructor(dbPath: string = ':memory:') {
     this.db = new Database(dbPath);
@@ -154,6 +155,9 @@ export class TrafficStatsStore {
          frames = frames + excluded.frames,
          occupancy_sum = occupancy_sum + excluded.occupancy_sum,
          occupancy_frames = occupancy_frames + excluded.occupancy_frames`,
+    );
+    this.prunePassagesStatement = this.db.prepare<[number, number]>(
+      `DELETE FROM vehicle_passages WHERE rowid IN (SELECT rowid FROM vehicle_passages WHERE ts_ms < ? LIMIT ?)`,
     );
   }
 
@@ -278,6 +282,16 @@ export class TrafficStatsStore {
       )
       .get(cameraId, sinceMs, minDisplacement * minDisplacement) as AxisMoments;
     return row;
+  }
+
+  /**
+   * Deletes at most `batch` individual passages from before `cutoffMs` and
+   * returns how many went. Their counts stay in `passage_hours`, which every
+   * hour-or-coarser query reads, so only 5/15-minute buckets that far back
+   * lose their detail.
+   */
+  prunePassagesBefore(cutoffMs: number, batch: number): number {
+    return this.prunePassagesStatement.run(cutoffMs, batch).changes;
   }
 
   close(): void {

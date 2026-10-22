@@ -41,6 +41,7 @@ export class AdminSettingsService {
       overlayFps: this.settings.overlayFps ?? defaults.overlayFps,
       overlayModel: this.settings.overlayModel ?? defaults.overlayModel,
       overlayConfidence: this.settings.overlayConfidence ?? defaults.overlayConfidence,
+      passageRetentionDays: this.settings.passageRetentionDays ?? defaults.passageRetentionDays,
     };
   }
 
@@ -82,6 +83,7 @@ export class AdminSettingsService {
       changes.push(`overlay model ${after.overlayModel}`);
     }
     if (after.overlayConfidence !== before.overlayConfidence) changes.push(`overlay confidence ${after.overlayConfidence}`);
+    if (after.passageRetentionDays !== before.passageRetentionDays) changes.push(`passages kept ${after.passageRetentionDays || 'forever'} days`);
     if (changes.length > 0) console.log(`[AdminSettings] ${changes.join('; ')}`);
     return this.describe();
   }

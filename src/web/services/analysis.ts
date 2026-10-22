@@ -1,4 +1,5 @@
 import type { CameraAnalysisOverview, CameraAnalysisResult, LiveOverlayResult, StoredAnalysisResult } from '../../types/analysis';
+import { t } from '../i18n';
 
 const CAMERAS_BASE_URL = '/api/cameras';
 const ANALYSIS_BASE_URL = '/api/analysis';
@@ -16,7 +17,7 @@ async function parseErrorMessage(res: Response, fallback: string): Promise<strin
 export async function fetchLatestOverview(): Promise<CameraAnalysisOverview[]> {
   const res = await fetch(`${ANALYSIS_BASE_URL}/latest`);
   if (!res.ok) {
-    throw new Error(await parseErrorMessage(res, `Failed to load traffic overview (${res.status})`));
+    throw new Error(await parseErrorMessage(res, t('error.overview', { status: res.status })));
   }
   return res.json();
 }
@@ -27,9 +28,18 @@ export async function fetchCameraHistory(cameraId: string, limit?: number): Prom
   if (limit != null) url.searchParams.set('limit', String(limit));
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(await parseErrorMessage(res, `Failed to load traffic history (${res.status})`));
+    throw new Error(await parseErrorMessage(res, t('error.history', { status: res.status })));
   }
   return res.json();
+}
+
+/** Cameras the fleet analysis runs on (the Admin page's switches), or null when every active camera is. */
+export async function fetchAnalyzedCameras(): Promise<string[] | null> {
+  const res = await fetch(`${ANALYSIS_BASE_URL}/enabled`);
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res, t('error.overview', { status: res.status })));
+  }
+  return ((await res.json()) as { cameraIds: string[] | null }).cameraIds;
 }
 
 /**

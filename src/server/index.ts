@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { CameraRegistryStore } from '../registry/cameraRegistryStore';
+import { seedMissingFiles } from '../registry/seedRegistry';
 import { CameraValidator } from '../validator/cameraValidator';
 import { CameraService } from './cameraService';
 import { RevalidationService } from './revalidationService';
@@ -10,6 +11,7 @@ import { FrameGrabber } from '../analysis/frameGrabber';
 import { TrafficHistoryStore } from '../analysis/trafficHistoryStore';
 import { TrafficAnalysisService } from '../analysis/trafficAnalysisService';
 import { TrafficStatsStore } from '../analysis/trafficStatsStore';
+import { DataRetentionService } from '../analysis/dataRetention';
 import { TrafficStatsService } from '../analysis/trafficStatsService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { FileThumbnailStore, StillThumbnailService } from '../analysis/stillThumbnailService';
@@ -43,6 +45,13 @@ const OPENVINO_CACHE_DIR = path.resolve(__dirname, '../../data/openvino-cache');
 const STATIC_DIR = path.resolve(process.cwd(), 'dist/web');
 const PORT = Number(process.env.PORT) || 3001;
 
+// The image keeps a copy of the camera registry outside data/, so an empty data
+// mount (e.g. `./data`) gets the default registry instead of a server that
+// can't start.
+const REGISTRY_DEFAULTS_DIR = path.resolve(__dirname, '../../defaults/cameras');
+const seeded = seedMissingFiles(REGISTRY_DEFAULTS_DIR, path.dirname(REGISTRY_PATH));
+if (seeded.length) console.log(`[CameraRegistry] data/cameras was missing ${seeded.join(', ')}; copied the image's defaults`);
+
 const store = new CameraRegistryStore(REGISTRY_PATH, SCHEMA_PATH);
 const cameraService = new CameraService(store);
 const hlsProxyService = new HlsProxyService(store);
@@ -54,7 +63,9 @@ const hlsProxyService = new HlsProxyService(store);
 // Vehicle passages and analysis coverage for the statistics views, fed from
 // every usable analysis result. STATS_TIMEZONE sets what "today" and the
 // hour-of-day heatmap mean (the container itself usually runs in UTC).
-const trafficStatsService = new TrafficStatsService(new TrafficStatsStore(TRAFFIC_STATS_DB_PATH), {
+const trafficStatsStore = new TrafficStatsStore(TRAFFIC_STATS_DB_PATH);
+const trafficHistoryStore = new TrafficHistoryStore(TRAFFIC_HISTORY_DB_PATH);
+const trafficStatsService = new TrafficStatsService(trafficStatsStore, {
   timeZone: process.env.STATS_TIMEZONE || undefined,
 });
 // The fleet's motion analysis runs on ANALYSIS_THREADS worker threads
@@ -74,6 +85,8 @@ const processingDefaults: ProcessingSettings = {
   overlayFps: Number(process.env.OVERLAY_FPS) || 3,
   overlayModel: process.env.OVERLAY_MODEL && OPENVINO_MODELS[process.env.OVERLAY_MODEL] ? process.env.OVERLAY_MODEL : DEFAULT_OPENVINO_MODEL,
   overlayConfidence: Number(process.env.OVERLAY_CONFIDENCE) || DEFAULT_MIN_CONFIDENCE,
+  // Individual passages; their hourly counts, which the statistics views read, are kept forever.
+  passageRetentionDays: 30,
 };
 const analysisSettingsStore = new AnalysisSettingsStore(ANALYSIS_SETTINGS_PATH);
 const initialSettings = analysisSettingsStore.load();
@@ -81,7 +94,7 @@ const analysisGrabber = new FrameGrabber({ streamFps: initialSettings.analysisFp
 const trafficAnalysisService = new TrafficAnalysisService(
   store,
   analysisGrabber,
-  new TrafficHistoryStore(TRAFFIC_HISTORY_DB_PATH),
+  trafficHistoryStore,
   {
     enabledCameras: initialSettings.enabledCameras,
     onResult: (result) => trafficStatsService.handleResult(result),
@@ -194,6 +207,15 @@ const serverMetrics = new ServerMetricsService({
   ],
 });
 serverMetrics.start();
+// Old rows out of both databases, hourly: history after 2 days, individual
+// passages after the Admin page's retention (30 days by default).
+const dataRetention = new DataRetentionService({
+  history: trafficHistoryStore,
+  passages: trafficStatsStore,
+  historyDays: 2,
+  passageDays: () => adminSettings.effective().passageRetentionDays,
+});
+dataRetention.start();
 const app = createApp(
   cameraService,
   revalidationService,

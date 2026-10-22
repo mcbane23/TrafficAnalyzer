@@ -123,10 +123,18 @@ COPY --from=build /app/dist ./dist
 # `npm run cameras:revalidate`. Also holds traffic-history.db, the SQLite
 # file TrafficHistoryStore creates on first run - persisted the same way.
 COPY data ./data
+# A second copy outside data/, which a mount hides: on start the server copies
+# whatever data/cameras lacks from here, so an empty bind mount (./data) gets
+# the default registry instead of a server that can't start.
+COPY data/cameras ./defaults/cameras
 # YOLO26 models (COCO; ONNX for the CPU, OpenVINO IR for an Intel GPU) for the
 # boxes drawn over a watched camera - see
 # LiveOverlayService. Resolved relative to dist/, i.e. /app/models.
 COPY models ./models
 
 EXPOSE 3001
+# Marks the container unhealthy when the server stops answering (TrueNAS and
+# `docker ps` show it). The slim image has no curl, so Node's own fetch asks.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 CMD ["node", "dist/server/index.js"]

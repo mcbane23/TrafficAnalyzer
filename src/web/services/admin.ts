@@ -1,10 +1,11 @@
 import type { AnalysisSettings, AnalysisSettingsResponse, ServerMetrics } from '../../types/admin';
+import { t } from '../i18n';
 
 /** Fetches the server's current health metrics (CPU, memory, analysis throughput, storage). */
 export async function fetchServerMetrics(): Promise<ServerMetrics> {
   const res = await fetch('/api/admin/metrics');
   if (!res.ok) {
-    throw new Error(`Failed to load server metrics (${res.status})`);
+    throw new Error(t('error.metrics', { status: res.status }));
   }
   return res.json();
 }
@@ -13,7 +14,7 @@ export async function fetchServerMetrics(): Promise<ServerMetrics> {
 export async function fetchAnalysisSettings(): Promise<AnalysisSettingsResponse> {
   const res = await fetch('/api/admin/analysis-settings');
   if (!res.ok) {
-    throw new Error(`Failed to load analysis settings (${res.status})`);
+    throw new Error(t('error.settings', { status: res.status }));
   }
   return res.json();
 }
@@ -26,7 +27,7 @@ export async function saveAnalysisSettings(settings: AnalysisSettings): Promise<
     body: JSON.stringify(settings),
   });
   if (!res.ok) {
-    throw new Error(`Failed to save analysis settings (${res.status})`);
+    throw new Error(t('error.saveSettings', { status: res.status }));
   }
   return res.json();
 }

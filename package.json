@@ -30,6 +30,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^26.1.1",
@@ -55,6 +56,7 @@
     "ajv-formats": "^3.0.1",
     "better-sqlite3": "^13.0.2",
     "commander": "^15.0.0",
+    "compression": "^1.8.2",
     "express": "^5.2.1",
     "onnxruntime-node": "^1.30.0",
     "openvino-node": "^2026.4.1",
