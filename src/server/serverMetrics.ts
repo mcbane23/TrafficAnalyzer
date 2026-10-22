@@ -10,7 +10,12 @@ export interface ChildProcessInfo {
   command: string;
   /** User + system CPU time since the process started, in ms. */
   cpuMs: number;
-  rssBytes: number;
+  /**
+   * Proportional set size (`/proc/<pid>/smaps_rollup`): pages shared with
+   * other processes, such as the libraries every ffmpeg maps, are split
+   * between them. Falls back to RSS where that file can't be read.
+   */
+  memoryBytes: number;
 }
 
 /** Narrow seam over the OS counters a sample is computed from, so the delta arithmetic is testable without real load. */
@@ -86,11 +91,11 @@ export class ServerMetricsService {
   private readonly cpuLimit: number | null;
   private baseline: Baseline | null = null;
   private history: CpuSample[] = [];
-  private latest: { nodeCpu: number | null; childrenCpu: number | null; ffmpeg: number | null; childrenRss: number | null } = {
+  private latest: { nodeCpu: number | null; childrenCpu: number | null; ffmpeg: number | null; childrenMemory: number | null } = {
     nodeCpu: null,
     childrenCpu: null,
     ffmpeg: null,
-    childrenRss: null,
+    childrenMemory: null,
   };
   private timer: NodeJS.Timeout | null = null;
 
@@ -139,7 +144,7 @@ export class ServerMetricsService {
       nodeCpu,
       childrenCpu,
       ffmpeg: childList ? childList.filter((c) => c.command === 'ffmpeg').length : null,
-      childrenRss: childList ? childList.reduce((sum, c) => sum + c.rssBytes, 0) : null,
+      childrenMemory: childList ? childList.reduce((sum, c) => sum + c.memoryBytes, 0) : null,
     };
 
     const entry: CpuSample = {
@@ -177,7 +182,7 @@ export class ServerMetricsService {
         uptimeSec: Math.round(process.uptime()),
         rssBytes: memory.rss,
         heapUsedBytes: memory.heapUsed,
-        childrenRssBytes: this.latest.childrenRss,
+        childrenMemoryBytes: this.latest.childrenMemory,
         ffmpegProcesses: this.latest.ffmpeg,
         nodeCpu: this.latest.nodeCpu === null ? null : round1(this.latest.nodeCpu),
         childrenCpu: this.latest.childrenCpu === null ? null : round1(this.latest.childrenCpu),
@@ -254,6 +259,21 @@ function readGpuFrequency(): { freqMhz: number | null; maxFreqMhz: number | null
   return { freqMhz: null, maxFreqMhz: null };
 }
 
+/** A process's proportional set size in bytes, from `/proc/<pid>/smaps_rollup`, or null if it can't be read. */
+export function readPss(pid: string | number): number | null {
+  try {
+    return parsePss(fs.readFileSync(`/proc/${pid}/smaps_rollup`, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** The `Pss:` line of an smaps_rollup file, in bytes. */
+export function parsePss(text: string): number | null {
+  const match = /^Pss:\s+(\d+) kB/m.exec(text);
+  return match ? Number(match[1]) * 1024 : null;
+}
+
 /** Clock ticks per second in `/proc/<pid>/stat` - USER_HZ, 100 on every mainstream Linux build. */
 const CLOCK_TICKS_PER_SEC = 100;
 const PAGE_SIZE = 4096;
@@ -319,7 +339,7 @@ function createSystemReader(): SystemReader {
         if (!/^\d+$/.test(entry)) continue;
         try {
           const stat = parseProcStat(fs.readFileSync(`/proc/${entry}/stat`, 'utf8'));
-          if (stat && stat.ppid === process.pid) result.push({ pid: Number(entry), command: stat.command, cpuMs: stat.cpuMs, rssBytes: stat.rssBytes });
+          if (stat && stat.ppid === process.pid) result.push({ pid: Number(entry), command: stat.command, cpuMs: stat.cpuMs, memoryBytes: readPss(entry) ?? stat.rssBytes });
         } catch {
           // The process exited between listing and reading.
         }

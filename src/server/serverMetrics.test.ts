@@ -1,4 +1,4 @@
-import { ChildProcessInfo, ServerMetricsService, SystemReader, parseProcStat } from './serverMetrics';
+import { ChildProcessInfo, ServerMetricsService, SystemReader, parsePss, parseProcStat } from './serverMetrics';
 
 /** A reader whose counters the test sets before each sample. */
 function makeReader() {
@@ -33,7 +33,7 @@ function makeService(reader: SystemReader, historySize = 120) {
   return { service, advance: (ms: number) => (now += ms) };
 }
 
-const ffmpeg = (pid: number, cpuMs: number): ChildProcessInfo => ({ pid, command: 'ffmpeg', cpuMs, rssBytes: 10_000_000 });
+const ffmpeg = (pid: number, cpuMs: number): ChildProcessInfo => ({ pid, command: 'ffmpeg', cpuMs, memoryBytes: 10_000_000 });
 
 describe('ServerMetricsService', () => {
   it('needs two readings before it reports CPU', () => {
@@ -62,7 +62,7 @@ describe('ServerMetricsService', () => {
 
     expect(sample).toEqual({ at: '2026-10-21T10:00:05.000Z', system: 75, process: 100, eventLoopMs: 2 });
     const metrics = service.getMetrics();
-    expect(metrics.process).toMatchObject({ nodeCpu: 50, childrenCpu: 50, ffmpegProcesses: 2, childrenRssBytes: 20_000_000 });
+    expect(metrics.process).toMatchObject({ nodeCpu: 50, childrenCpu: 50, ffmpegProcesses: 2, childrenMemoryBytes: 20_000_000 });
     expect(metrics.host.gpu).toMatchObject({ device: 'GPU', model: 'yolo26s on GPU' });
     expect(metrics.analysis).toMatchObject({ fpsTarget: 3, threads: 2, activeJobs: 1, maxConcurrency: 6 });
     expect(metrics.overlay).toEqual({ enabled: false, maxCameras: 0, cameras: [] });
@@ -103,5 +103,21 @@ describe('parseProcStat', () => {
       reapedChildrenCpuMs: 500,
       rssBytes: 256 * 4096,
     });
+  });
+});
+
+describe('parsePss', () => {
+  it('reads the proportional set size from smaps_rollup, not the RSS', () => {
+    const rollup = [
+      '55d0c0000000-7ffd00000000 ---p 00000000 00:00 0                          [rollup]',
+      'Rss:               76832 kB',
+      'Pss:               36800 kB',
+      'Pss_Anon:          35892 kB',
+    ].join('\n');
+    expect(parsePss(rollup)).toBe(36800 * 1024);
+  });
+
+  it('returns null when there is no Pss line', () => {
+    expect(parsePss('Rss: 100 kB')).toBeNull();
   });
 });

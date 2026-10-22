@@ -221,7 +221,7 @@ onBeforeUnmount(() => {
           <p class="mt-1 text-2xl font-bold tabular-nums" :class="loadClass(memoryUsedPercent)">{{ fmt(memoryUsedPercent, 0, '%') }}</p>
           <p class="mt-1 text-[11px] text-slate-500">
             {{ formatBytes(metrics.host.memory.availableBytes) }} free of {{ formatBytes(metrics.host.memory.totalBytes) }}<br />
-            Node {{ formatBytes(metrics.process.rssBytes) }} · ffmpeg {{ formatBytes(metrics.process.childrenRssBytes) }}
+            Node {{ formatBytes(metrics.process.rssBytes) }} · ffmpeg {{ formatBytes(metrics.process.childrenMemoryBytes) }}
           </p>
         </div>
         <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">

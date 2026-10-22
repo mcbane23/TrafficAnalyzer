@@ -2,7 +2,7 @@ import { CameraEntry } from '../types/camera';
 import { CameraSource } from '../server/cameraService';
 import { CameraAnalysisOverview, CameraAnalysisResult, StoredAnalysisResult } from '../types/analysis';
 import { FrameCapture, GrabFrameResult } from './frameGrabber';
-import { CameraAnalyzer } from './cameraAnalyzer';
+import { CameraAnalyzer, errorAnalysisResult } from './cameraAnalyzer';
 import { VideoFrame, encodeJpeg } from './videoFrame';
 import { ThroughputWindow } from './throughputWindow';
 import { CameraAnalysisMetrics } from '../types/admin';
@@ -99,6 +99,24 @@ export interface TrafficAnalysisServiceOptions {
    * `getRecentResults`.
    */
   recentResultsMs?: number;
+  /**
+   * False analyzes no camera at all (ANALYSIS_ENABLED=false): no capture is
+   * started, so no ffmpeg runs for the fleet and there are no statistics,
+   * dashboard badges or thumbnails. Defaults to true.
+   */
+  enabled?: boolean;
+  /**
+   * Only these camera ids are analyzed (ANALYSIS_CAMERAS), if they are
+   * active. Unset analyzes every active camera.
+   */
+  cameraIds?: string[];
+  /**
+   * At most this many cameras are analyzed (ANALYSIS_MAX_CAMERAS), the first
+   * ones in registry order after `cameraIds` is applied. Each analyzed camera
+   * keeps an ffmpeg capture running (~17 MB of memory and a share of a CPU
+   * core), so this is the knob for a smaller host. Unset means no limit.
+   */
+  maxCameras?: number;
   /** Encodes a thumbnail. Defaults to `encodeJpeg`. */
   encodeThumbnail?: (frame: VideoFrame) => Promise<Buffer>;
   now?: () => Date;
@@ -190,6 +208,9 @@ const METRICS_WINDOW_MS = 15_000;
 export class TrafficAnalysisService {
   private readonly options: {
     maxConcurrency: number;
+    enabled: boolean;
+    cameraIds: Set<string> | null;
+    maxCameras: number;
     historyIntervalMs: number;
     overviewIntervalMs: number;
     createAnalyzer: (cameraId: string, camera: CameraEntry) => CameraAnalyzerLike;
@@ -206,6 +227,8 @@ export class TrafficAnalysisService {
   private readonly overviewSubscribers = new Set<OverviewSubscriber>();
   private readonly latestOverview = new Map<string, CameraAnalysisOverview>();
   private readonly loops = new Set<Promise<void>>();
+  /** Active cameras left out by `enabled`/`cameraIds`/`maxCameras`, with the reason shown to their viewers. */
+  private readonly excluded = new Map<string, string>();
 
   private running = false;
   private activeJobs = 0;
@@ -219,6 +242,9 @@ export class TrafficAnalysisService {
   ) {
     this.options = {
       maxConcurrency: options.maxConcurrency ?? DEFAULTS.maxConcurrency,
+      enabled: options.enabled ?? true,
+      cameraIds: options.cameraIds && options.cameraIds.length > 0 ? new Set(options.cameraIds) : null,
+      maxCameras: options.maxCameras !== undefined && options.maxCameras >= 0 ? options.maxCameras : Infinity,
       historyIntervalMs: options.historyIntervalMs ?? DEFAULTS.historyIntervalMs,
       overviewIntervalMs: options.overviewIntervalMs ?? DEFAULTS.overviewIntervalMs,
       createAnalyzer:
@@ -242,18 +268,40 @@ export class TrafficAnalysisService {
     }
   }
 
-  /** Loads the camera registry and starts continuous analysis of every active camera, staggered. Inactive cameras are skipped entirely. */
+  /**
+   * Loads the camera registry and starts continuous analysis of every active
+   * camera (or those `enabled`/`cameraIds`/`maxCameras` leave in), staggered.
+   * Inactive cameras are skipped entirely.
+   */
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
 
     const entries = await this.source.load();
-    let activeIndex = 0;
+    this.selectCameras(entries).forEach((camera, index) => this.addCamera(camera, index * STARTUP_STAGGER_STEP_MS));
+  }
+
+  /**
+   * The active cameras to analyze, in registry order, after the
+   * `enabled`/`cameraIds`/`maxCameras` settings; records why each other
+   * active camera was left out.
+   */
+  private selectCameras(entries: CameraEntry[]): CameraEntry[] {
+    this.excluded.clear();
+    const selected: CameraEntry[] = [];
     for (const camera of entries) {
       if (camera.status !== 'active') continue;
-      this.addCamera(camera, activeIndex * STARTUP_STAGGER_STEP_MS);
-      activeIndex += 1;
+      if (!this.options.enabled) {
+        this.excluded.set(camera.id, 'Traffic analysis is turned off on this server (ANALYSIS_ENABLED=false).');
+      } else if (this.options.cameraIds && !this.options.cameraIds.has(camera.id)) {
+        this.excluded.set(camera.id, 'This camera is not in the analyzed set on this server (ANALYSIS_CAMERAS).');
+      } else if (selected.length >= this.options.maxCameras) {
+        this.excluded.set(camera.id, `This server analyzes at most ${this.options.maxCameras} cameras (ANALYSIS_MAX_CAMERAS).`);
+      } else {
+        selected.push(camera);
+      }
     }
+    return selected;
   }
 
   /**
@@ -267,7 +315,7 @@ export class TrafficAnalysisService {
     if (!this.running) return { started: [], stopped: [] };
     const entries = await this.source.load();
     if (!this.running) return { started: [], stopped: [] };
-    const active = new Map(entries.filter((camera) => camera.status === 'active').map((camera) => [camera.id, camera]));
+    const active = new Map(this.selectCameras(entries).map((camera) => [camera.id, camera]));
 
     const stopped: string[] = [];
     for (const [cameraId, state] of Array.from(this.cameraStates)) {
@@ -331,7 +379,8 @@ export class TrafficAnalysisService {
 
   /** Latest known overview (count + traffic level) for every camera analyzed so far - used to bootstrap the dashboard before its SSE connection delivers the first live update. */
   getLatestOverview(): CameraAnalysisOverview[] {
-    return Array.from(this.latestOverview.values());
+    // A camera the settings leave out keeps its last stored row, which would show as a stale live badge.
+    return Array.from(this.latestOverview.values()).filter((overview) => !this.excluded.has(overview.cameraId));
   }
 
   /**
@@ -388,6 +437,14 @@ export class TrafficAnalysisService {
     const subs = existing ?? new Set<ResultSubscriber>();
     if (!existing) this.resultSubscribers.set(cameraId, subs);
     subs.add(callback);
+    // A camera that is never analyzed would otherwise look like it is still
+    // warming up forever: tell its viewer why there are no results instead.
+    const excludedReason = this.excluded.get(cameraId);
+    if (excludedReason !== undefined) {
+      queueMicrotask(() => {
+        if (subs.has(callback)) callback(errorAnalysisResult(cameraId, this.options.now().toISOString(), excludedReason));
+      });
+    }
 
     let unsubscribed = false;
     return () => {

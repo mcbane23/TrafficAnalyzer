@@ -81,8 +81,13 @@ export interface ServerMetrics {
     uptimeSec: number;
     rssBytes: number;
     heapUsedBytes: number;
-    /** Memory held by the ffmpeg children, or null where it can't be read. */
-    childrenRssBytes: number | null;
+    /**
+     * Memory held by the ffmpeg children, or null where it can't be read:
+     * their proportional set size, so the shared libraries every capture maps
+     * are counted once between them rather than once per process (summed RSS
+     * overstated it about 2x with 22 cameras).
+     */
+    childrenMemoryBytes: number | null;
     /** Running ffmpeg processes started by this server. */
     ffmpegProcesses: number | null;
     /** Node's own CPU and its children's, as % of one core, from the latest sample. */

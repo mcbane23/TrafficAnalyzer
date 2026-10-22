@@ -197,6 +197,39 @@ describe('TrafficAnalysisService', () => {
     ctx.service.stop();
   });
 
+  it('analyzes only ANALYSIS_CAMERAS, at most maxCameras of them, and tells viewers of the others why', async () => {
+    const cameras = ['a', 'b', 'c', 'd'].map((id) => makeCamera({ id }));
+    const ctx = setup(cameras, { cameraIds: ['b', 'c', 'd'], maxCameras: 2 });
+    await ctx.service.start();
+    ctx.fireAll();
+    expect(ctx.grabber.openCapture.mock.calls.map(([c]) => c.id)).toEqual(['b', 'c']);
+
+    const received: Array<{ id: string; error?: string }> = [];
+    for (const id of ['a', 'b', 'd']) ctx.service.subscribeCameraDetail(id, (r) => received.push({ id, error: r.error }));
+    await settle();
+    expect(received).toEqual([
+      { id: 'a', error: expect.stringContaining('ANALYSIS_CAMERAS') },
+      { id: 'd', error: expect.stringContaining('at most 2 cameras') },
+    ]);
+
+    // The limit holds on reload too: a slot freed by an inactive camera goes to the next one.
+    cameras[1].status = 'inactive';
+    expect(await ctx.service.reload()).toEqual({ started: ['d'], stopped: ['b'] });
+    ctx.service.stop();
+  });
+
+  it('starts no capture when analysis is disabled', async () => {
+    const ctx = setup([makeCamera({ id: 'a' })], { enabled: false });
+    await ctx.service.start();
+    ctx.fireAll();
+    expect(ctx.grabber.openCapture).not.toHaveBeenCalled();
+    const errors: Array<string | undefined> = [];
+    ctx.service.subscribeCameraDetail('a', (r) => errors.push(r.error));
+    await settle();
+    expect(errors).toEqual([expect.stringContaining('ANALYSIS_ENABLED=false')]);
+    ctx.service.stop();
+  });
+
   it('analyzes every frame continuously, stamped with the frame capture time', async () => {
     const ctx = setup();
     await ctx.service.start();

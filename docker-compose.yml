@@ -19,6 +19,13 @@ services:
       # Minimum YOLO score for a live-view box (default 0.2). Lower draws more
       # boxes on busy views, with a few more false ones.
       # - OVERLAY_CONFIDENCE=0.2
+      # Smaller host: every analyzed camera keeps an ffmpeg running (~17 MB of
+      # memory and a share of a CPU core). Turn the fleet analysis off entirely
+      # (no statistics, badges or thumbnails; the live view still works), limit
+      # it to some cameras by id, or cap how many are analyzed.
+      # - ANALYSIS_ENABLED=false
+      # - ANALYSIS_CAMERAS=brankov,ada
+      # - ANALYSIS_MAX_CAMERAS=10
     # Intel GPU for OVERLAY_DEVICE=GPU. group_add is the host's `render` group id:
     # `stat -c %g /dev/dri/renderD128`.
     # devices:

@@ -29,7 +29,7 @@ RUN npm ci
 COPY . .
 # After pruning, delete what the amd64 Linux runtime never loads:
 # - the bundled ffmpeg/ffprobe (~140 MB): FFMPEG_PATH/FFPROBE_PATH point at
-#   Debian's, and ffmpegRunner.ts/probeRunner.ts only require the packages
+#   the ffmpeg stage's, and ffmpegRunner.ts/probeRunner.ts only require the packages
 #   when those are unset;
 # - other platforms' native binaries (onnxruntime-node, sharp, better-sqlite3)
 #   and better-sqlite3's SQLite sources (it loads prebuilds/linux-x64.node);
@@ -45,19 +45,53 @@ RUN npm run build \
  && (cd node_modules/openvino-node/bin && rm -f libopenvino_onnx_frontend.so* libopenvino_paddle_frontend.so* libopenvino_pytorch_frontend.so* libopenvino_tensorflow_frontend.so* libopenvino_tensorflow_lite_frontend.so* libopenvino_gguf_frontend.so* libopenvino_intel_npu_plugin.so) \
  && ls node_modules/openvino-node/bin/libopenvino_ir_frontend.so* >/dev/null
 
+# ---- ffmpeg stage -------------------------------------------------------
+# A minimal ffmpeg/ffprobe, built with only what the cameras need: H.264/HEVC
+# and MJPEG decoding, HLS/MPEG-TS/RTSP input over http(s), and the fps/scale
+# filters with raw video output. Every active camera keeps one ffmpeg running,
+# and Debian's build links dozens of codec libraries whose start-up cost
+# (~18 MB of private memory) each of those processes pays. Measured on 22
+# live cameras: ~36 MB per capture with Debian's ffmpeg, ~17 MB with this one.
+# Linked dynamically against glibc (unlike the bundled npm binaries, it can
+# resolve hostnames), OpenSSL for https and zlib.
+FROM debian:trixie AS ffmpeg
+ARG FFMPEG_VERSION=7.1.5
+ARG FFMPEG_SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl xz-utils build-essential pkg-config nasm libssl-dev zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl -fsSL -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+ && echo "${FFMPEG_SHA256}  ffmpeg.tar.xz" | sha256sum -c - \
+ && tar xf ffmpeg.tar.xz --strip-components=1 \
+ && ./configure --prefix=/opt/ffmpeg \
+      --disable-everything --disable-autodetect --disable-doc --disable-debug --disable-ffplay \
+      --enable-openssl --enable-zlib \
+      --enable-protocol=file,pipe,http,https,httpproxy,tcp,tls,udp,rtp,crypto,hls \
+      --enable-demuxer=hls,mpegts,mov,rtsp,rtp,sdp,mjpeg,mpjpeg,h264,hevc,aac \
+      --enable-decoder=h264,hevc,mjpeg,aac \
+      --enable-parser=h264,hevc,mjpeg,aac \
+      --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb \
+      --enable-filter=fps,scale,format,showinfo,null,anull \
+      --enable-encoder=rawvideo --enable-muxer=rawvideo \
+ && make -j"$(nproc)" \
+ && make install \
+ && /opt/ffmpeg/bin/ffmpeg -hide_banner -protocols | grep -q https
+
 # ---- Runtime stage -------------------------------------------------------
 # Debian-based (not alpine): better-sqlite3's native module is compiled
-# against glibc in the build stage, and Debian's ffmpeg is installed below.
+# against glibc in the build stage, and so is the ffmpeg stage's ffmpeg.
 FROM node:22-trixie-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3001
 
-# Debian's ffmpeg/ffprobe, used instead of the bundled npm binaries. Those are
-# static-glibc builds, which cannot resolve hostnames: they segfault on every
-# https:// camera URL, so no capture or revalidation could ever succeed in
-# this image. FFMPEG_PATH/FFPROBE_PATH (see ffmpegRunner.ts/probeRunner.ts)
-# point the app at these instead.
+# The minimal ffmpeg/ffprobe from the ffmpeg stage, used instead of the
+# bundled npm binaries. Those are static-glibc builds, which cannot resolve
+# hostnames: they segfault on every https:// camera URL, so no capture or
+# revalidation could ever succeed in this image. FFMPEG_PATH/FFPROBE_PATH
+# (see ffmpegRunner.ts/probeRunner.ts) point the app at these instead. Its
+# only runtime library outside the base image is OpenSSL (libssl3t64).
 #
 # intel-opencl-icd (Intel's compute runtime) is what OpenVINO's GPU plugin
 # talks to when OVERLAY_DEVICE=GPU; it only does anything if the host's
@@ -70,10 +104,11 @@ RUN apt-get update \
  && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble unified" \
       > /etc/apt/sources.list.d/intel-gpu.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg intel-opencl-icd \
+ && apt-get install -y --no-install-recommends libssl3t64 intel-opencl-icd \
  && rm -rf /var/lib/apt/lists/*
-ENV FFMPEG_PATH=/usr/bin/ffmpeg
-ENV FFPROBE_PATH=/usr/bin/ffprobe
+COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
+ENV FFMPEG_PATH=/usr/local/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/local/bin/ffprobe
 
 COPY package.json ./
 # Production-only dependencies, pruned and trimmed in the build stage. The

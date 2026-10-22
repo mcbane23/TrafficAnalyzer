@@ -58,11 +58,22 @@ const trafficStatsService = new TrafficStatsService(new TrafficStatsStore(TRAFFI
 // thread as before.
 const analysisThreads = process.env.ANALYSIS_THREADS === undefined ? 2 : Number(process.env.ANALYSIS_THREADS) || 0;
 const analysisWorkers = analysisThreads > 0 ? new AnalysisWorkerPool({ size: analysisThreads }) : null;
+// Each analyzed camera keeps one ffmpeg capture running (~17 MB and a share
+// of a core). On a smaller host: ANALYSIS_ENABLED=false analyzes nothing (no
+// statistics, badges or thumbnails; the live view and its YOLO boxes still
+// work), ANALYSIS_CAMERAS=id1,id2 analyzes only those cameras, and
+// ANALYSIS_MAX_CAMERAS=N at most N of them, in registry order.
+const analysisEnabled = !/^(false|0|off|no)$/i.test(process.env.ANALYSIS_ENABLED?.trim() ?? '');
+const analysisCameraIds = process.env.ANALYSIS_CAMERAS?.split(',').map((id) => id.trim()).filter(Boolean);
+const analysisMaxCameras = process.env.ANALYSIS_MAX_CAMERAS?.trim() ? Number(process.env.ANALYSIS_MAX_CAMERAS) : undefined;
 const trafficAnalysisService = new TrafficAnalysisService(
   store,
   new FrameGrabber({ streamFps: ANALYSIS_FPS }),
   new TrafficHistoryStore(TRAFFIC_HISTORY_DB_PATH),
   {
+    enabled: analysisEnabled,
+    cameraIds: analysisCameraIds,
+    maxCameras: analysisMaxCameras !== undefined && Number.isInteger(analysisMaxCameras) ? analysisMaxCameras : undefined,
     onResult: (result) => trafficStatsService.handleResult(result),
     ...(analysisWorkers ? { createAnalyzer: (cameraId, camera) => analysisWorkers.createAnalyzer(cameraId, camera) } : {}),
   },

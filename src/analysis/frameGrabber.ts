@@ -617,8 +617,10 @@ function buildCommonArgs(camera: CameraEntry, mode: { realtime?: boolean; stream
   // One decoding thread per process. Every active camera has its own
   // ffmpeg, so there is already one process per stream to spread across
   // cores; ffmpeg's default of a thread per core on top of that only adds
-  // ~20 cameras' worth of contention and per-thread overhead.
-  args.push('-threads', '1');
+  // ~20 cameras' worth of contention and per-thread overhead. The same goes
+  // for the filter graph (fps + scale), which otherwise also starts a thread
+  // per core: with both, each capture runs 8 threads instead of 16.
+  args.push('-threads', '1', '-filter_threads', '1');
 
   if (camera.headers && Object.keys(camera.headers).length > 0) {
     const headerLines = Object.entries(camera.headers)

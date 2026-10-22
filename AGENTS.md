@@ -104,8 +104,8 @@ precedent for Vue components.
 - `ffprobe`/`ffmpeg` are bundled via `@ffprobe-installer/ffprobe` / `@ffmpeg-installer/ffmpeg`
   (regular dependencies), but `FFPROBE_PATH` / `FFMPEG_PATH` env vars override them, and **on Linux
   they must**: the bundled Linux binaries are static-glibc builds that cannot resolve hostnames and
-  segfault (exit 139) on any `https://` camera URL. The Docker image installs Debian's ffmpeg and
-  sets both vars. The bundled binaries are still fine for local files (tests) and on Windows/macOS.
+  segfault (exit 139) on any `https://` camera URL. The Docker image builds its own minimal
+  ffmpeg/ffprobe (the `ffmpeg` stage of the Dockerfile) and sets both vars. The bundled binaries are still fine for local files (tests) and on Windows/macOS.
   Sandboxes behind an HTTP proxy hide this (ffmpeg then only connects to the proxy's IP) — test
   without the proxy. `CameraValidator` accepts an optional `ffprobePath` override.
 - Failed camera validation sets `status: "inactive"` and records `lastError`; entries are never
@@ -129,7 +129,19 @@ precedent for Vue components.
   bundled `@ffmpeg-installer`/`@ffprobe-installer` and other platforms' native binaries, so
   `ffmpegRunner.ts`/`probeRunner.ts` must only `require` the bundled packages when
   `FFMPEG_PATH`/`FFPROBE_PATH` are unset. Most of what's left is the apt layer: Intel's GPU compute
-  runtime (~260 MB unpacked) and Debian ffmpeg, whose SDL dependency drags in mesa + LLVM (~200 MB).
+  runtime (~260 MB unpacked).
+- **ffmpeg memory**: every analyzed camera keeps one ffmpeg running, so its per-process cost is
+  multiplied by the fleet. Measured on 22 live cameras (2026-10-21): Debian's ffmpeg costs ~36 MB
+  per capture, ~18 MB of it the start-up cost of the dozens of codec libraries it links; the
+  Dockerfile's minimal build (only H.264/HEVC/MJPEG, HLS/MPEG-TS/RTSP, http(s), fps/scale, raw
+  output) ~17 MB. If a camera needs a codec, demuxer, protocol or filter it doesn't have, add it to
+  that stage's `configure` line rather than going back to Debian's. Flags barely move it:
+  `-filter_threads 1` halves the threads, while probesize, `-fflags nobuffer`, thread queue size,
+  `MALLOC_ARENA_MAX` and a lower `ANALYSIS_FPS`/resolution save ~0-2 MB each (the stream is always
+  decoded at full size). The Admin page reports the children's PSS, not RSS: summed RSS counts the
+  shared libraries once per process and overstated it ~2x. On a smaller host `ANALYSIS_ENABLED=false`,
+  `ANALYSIS_CAMERAS` and `ANALYSIS_MAX_CAMERAS` (see `src/server/index.ts`) cut the number of
+  captures; a camera left out shows its viewers why on the camera page.
 - CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): every branch/PR runs `npm ci`, `npm test`,
   `npm run build` and a Docker build, and keeps **nothing** on GitHub — no uploaded artifacts, no
   build records (`DOCKER_BUILD_RECORD_UPLOAD=false`), no npm cache, no Docker layer cache writes.
