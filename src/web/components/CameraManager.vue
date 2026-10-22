@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import type { CameraEntry } from '../../types/camera';
 import type { RoadAxis } from '../../types/stats';
-import { addCamera, fetchAdminCameras, updateCamera } from '../services/admin';
+import { addCamera, deleteCamera, fetchAdminCameras, updateCamera } from '../services/admin';
 import { cameraSnapshotUrl, fetchCameraStats } from '../services/stats';
 import { t } from '../i18n';
 import AppIcon from './AppIcon.vue';
@@ -11,7 +11,8 @@ import ZoneEditor from './ZoneEditor.vue';
 /**
  * The Admin page's camera list: rename a camera, name its two directions,
  * draw the parts of its view the analysis should ignore, hide it from the
- * dashboard and statistics (it is then never analyzed), or add a new one.
+ * dashboard and statistics (it is then never analyzed), delete it, or add a
+ * new one.
  * Every change is saved to the registry in the data volume and applied
  * without a restart.
  */
@@ -47,6 +48,21 @@ async function setHidden(camera: CameraEntry, hidden: boolean) {
   busyId.value = camera.id;
   try {
     replace(await updateCamera(camera.id, { hidden }));
+    error.value = null;
+    emit('changed');
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : t('cameraEdit.saveFailed');
+  } finally {
+    busyId.value = null;
+  }
+}
+
+async function remove(camera: CameraEntry) {
+  if (!window.confirm(t('cameraEdit.deleteConfirm', { name: camera.name }))) return;
+  busyId.value = camera.id;
+  try {
+    await deleteCamera(camera.id);
+    cameras.value = (cameras.value ?? []).filter((c) => c.id !== camera.id);
     error.value = null;
     emit('changed');
   } catch (err) {
@@ -231,6 +247,14 @@ onMounted(load);
           @click="setHidden(camera, !camera.hidden)"
         >
           {{ camera.hidden ? t('cameraEdit.show') : t('cameraEdit.hide') }}
+        </button>
+        <button
+          type="button"
+          class="rounded-md px-2 py-1 text-xs text-red-400 hover:bg-slate-800 hover:text-red-300 disabled:opacity-50"
+          :disabled="busyId === camera.id"
+          @click="remove(camera)"
+        >
+          {{ t('cameraEdit.delete') }}
         </button>
       </li>
     </ul>

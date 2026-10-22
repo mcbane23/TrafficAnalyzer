@@ -454,19 +454,5 @@
     "status": "active",
     "lastVerifiedAt": "2026-07-31T07:58:34.930Z",
     "lastError": null
-  },
-  {
-    "id": "zrenjaninski-put-borca",
-    "name": "Zrenjaninski Put – Borča",
-    "location": {
-      "address": "Zrenjaninski put, Borča, Belgrade"
-    },
-    "resolution": null,
-    "source": "UživoKamere.com",
-    "url": "https://rtsp.uzivokamere.com/borca/index.m3u8",
-    "protocol": "HLS",
-    "status": "inactive",
-    "lastVerifiedAt": "2026-07-31T07:58:35.860Z",
-    "lastError": "https://rtsp.uzivokamere.com/borca/index.m3u8: Server returned 404 Not Found"
   }
 ]

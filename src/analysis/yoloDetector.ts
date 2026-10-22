@@ -16,9 +16,19 @@ export interface YoloSession {
 }
 
 /**
- * The CPU models `OVERLAY_CPU_MODEL` can pick, ONNX with a 640x480 input (the
- * overlay capture's size, so no letterbox padding) and `[1, 84, anchors]`
- * output, run on onnxruntime. Only YOLO26n for now.
+ * Every bundled model's fixed input: the 704x576 most cameras stream at, so
+ * the overlay capture is fed at native resolution, with no scaling and no
+ * letterbox padding (both sides divide by 32). Measured on 14 camera frames
+ * (confidence 0.20): YOLO26s found 280 vehicles at 704x576, 259 at 640x480,
+ * 230 at 960x736 upscaled from native and 175 at 960x736 upscaled from a
+ * 640x480 capture (the old CPU path); 960x736 also cost 1.6-1.9x the time.
+ * Upscaling adds no detail and the s model finds fewer cars on it.
+ */
+export const MODEL_INPUT = { width: 704, height: 576 } as const;
+
+/**
+ * The CPU models `OVERLAY_CPU_MODEL` can pick, ONNX with the `MODEL_INPUT`
+ * input and `[1, 84, anchors]` output, run on onnxruntime. Only YOLO26n for now.
  */
 export const ONNX_MODELS: Readonly<Record<string, { path: string; label: string }>> = {
   yolo26n: { path: path.resolve(__dirname, '../../models/yolo26n.onnx'), label: 'YOLO26n' },
@@ -27,7 +37,9 @@ const DEFAULT_ONNX_MODEL = 'yolo26n';
 
 /**
  * The GPU models `OVERLAY_MODEL` can pick, OpenVINO IR, all FP16 with the
- * same 960x736 input and `[1, 84, anchors]` output. On six camera frames
+ * `MODEL_INPUT` input and `[1, 84, anchors]` output (exported with
+ * ultralytics: `format=openvino imgsz=576,704 half=True end2end=False`).
+ * Earlier, at 960x736: on six camera frames
  * (960px, confidence 0.25, OpenVINO CPU) YOLO26s found 98 vehicles in 139 ms
  * per frame and YOLO26n 77 in 59 ms; on Brankov most at rush hour YOLO26m
  * found no more than YOLO26s at ~3x the time. YOLO26s is the default: Bane
@@ -99,10 +111,10 @@ export interface YoloModelLoaders {
  * OpenVINO on `device` when one is asked for, else - or when that fails -
  * `cpuModel` (YOLO26n by default) on the CPU. On the CPU, a `model` other
  * than YOLO26n (s or m, picked on the Admin page) runs through OpenVINO's CPU
- * plugin - x86 or ARM - at its own 960x736 input, falling back to `cpuModel`
- * if it can't load. (The IR can't be reshaped to 640x480: its anchor grid is
- * baked in.) On a 2.8 GHz Xeon with 2 threads YOLO26n took 41 ms per frame,
- * YOLO26s 280 ms and found 20-50% more vehicles, YOLO26m 681 ms.
+ * plugin - x86 or ARM - falling back to `cpuModel` if it can't load. (An IR
+ * can't be reshaped: its anchor grid is baked in.) At 704x576 on a 2.1 GHz
+ * Xeon with 4 threads, YOLO26s took 44 ms per frame on OpenVINO and found
+ * 50-75% more vehicles than YOLO26n.
  */
 export async function loadYoloModel(
   options: LoadYoloModelOptions = {},
@@ -115,7 +127,7 @@ export async function loadYoloModel(
     const model = pickModel(OPENVINO_MODELS, options.model, DEFAULT_OPENVINO_MODEL);
     try {
       const session = await loaders.openVino(model.path, device, options.cacheDir);
-      return { session, inputWidth: 960, inputHeight: 736, label: `${model.label} on OpenVINO ${device}` };
+      return { session, inputWidth: MODEL_INPUT.width, inputHeight: MODEL_INPUT.height, label: `${model.label} on OpenVINO ${device}` };
     } catch (err) {
       console.warn(
         `[YoloDetector] OpenVINO device ${device} unavailable, using ${cpuModel.label} on the CPU: ${err instanceof Error ? err.message : String(err)}`,
@@ -127,7 +139,7 @@ export async function loadYoloModel(
     if (model) {
       try {
         const session = await loaders.openVino(model.path, 'CPU', options.cacheDir, { threads });
-        return { session, inputWidth: 960, inputHeight: 736, label: `${model.label} on OpenVINO CPU` };
+        return { session, inputWidth: MODEL_INPUT.width, inputHeight: MODEL_INPUT.height, label: `${model.label} on OpenVINO CPU` };
       } catch (err) {
         console.warn(
           `[YoloDetector] ${model.label} on the OpenVINO CPU failed, using ${cpuModel.label}: ${err instanceof Error ? err.message : String(err)}`,
@@ -136,7 +148,7 @@ export async function loadYoloModel(
     }
   }
   const session = await loaders.onnx(cpuModel.path, threads);
-  return { session, inputWidth: 640, inputHeight: 480, label: `${cpuModel.label} on CPU` };
+  return { session, inputWidth: MODEL_INPUT.width, inputHeight: MODEL_INPUT.height, label: `${cpuModel.label} on CPU` };
 }
 
 /**
@@ -241,8 +253,8 @@ const ZONE_GRID = 200;
  * exactly where motion detection fails on this fleet: a fountain or a
  * billboard is not a vehicle whatever it does, and a queue of cars is several
  * boxes rather than one merged blob. Where it loses is small, distant
- * vehicles on wide views, which a 640px input shrinks below what a nano
- * model can see - hence the larger model when a GPU is available.
+ * vehicles on wide views, a few pixels each at the streams' 704x576, which
+ * a nano model mostly misses - hence the larger s model by default.
  *
  * It needs no warm-up and holds no per-camera state, so `warmingUp` is
  * always false. The model is asked for on every frame rather than passed

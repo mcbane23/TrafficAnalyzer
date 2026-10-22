@@ -1,6 +1,6 @@
 import { CaptureCounters } from '../types/admin';
 import type { FrameCapture, GrabFrameResult, GrabFrameSuccess } from './frameGrabber';
-import { downscaleYuv420p } from './videoFrame';
+import { resampleYuv420p } from './videoFrame';
 
 /** A running capture other captures of the same camera may take their frames from. */
 export interface SharedSource {
@@ -22,10 +22,9 @@ const LIVE_SOURCE_MS = 5_000;
  * captures of the same camera - P6 from the app review.
  *
  * A watched camera used to run two ffmpeg processes on the same stream: the
- * analysis one (320x240) and the overlay one (960x720 on the GPU, 640x480 on
- * the CPU), both at 3 fps. Each decodes the whole H.264 stream, costing
- * ~17 MB and a share of a core. The overlay's frames are an exact multiple
- * of the analysis size, so while the overlay runs the analysis capture
+ * analysis one (320x240) and the overlay one (704x576, the streams' own
+ * size), both at 3 fps. Each decodes the whole H.264 stream, costing ~17 MB
+ * and a share of a core. So while the overlay runs, the analysis capture
  * shrinks its frames (area averaging, the same as its own ffmpeg's
  * `flags=area` scaling) and stops its own ffmpeg; when the overlay closes,
  * it starts its own again.
@@ -64,12 +63,9 @@ export class CaptureSharing {
   }
 }
 
-/** The integer factor a source's frames shrink by to `width x height`, or null if they can't (not a whole multiple, chroma included). */
-export function shrinkFactor(source: { width: number; height: number }, width: number, height: number): number | null {
-  const factor = source.width / width;
-  if (!Number.isInteger(factor) || factor < 1 || source.height !== height * factor) return null;
-  if (!Number.isInteger(source.width / 2 / factor) || !Number.isInteger(source.height / 2 / factor)) return null;
-  return factor;
+/** Whether a source's frames can be shrunk to `width x height`: at least as large both ways (a smaller one would have to be upscaled). */
+export function canShrinkTo(source: { width: number; height: number }, width: number, height: number): boolean {
+  return source.width >= width && source.height >= height;
 }
 
 export interface SharingCaptureOptions {
@@ -134,7 +130,7 @@ export class SharingCapture implements FrameCapture {
       this.started = true;
       // A source already decoding is used straight away; otherwise this capture starts its own ffmpeg.
       const source = this.source;
-      const live = source && this.factorFor(source) !== null && this.now() - source.lastFrameAt() < LIVE_SOURCE_MS;
+      const live = source && this.fits(source) && this.now() - source.lastFrameAt() < LIVE_SOURCE_MS;
       if (!live) this.startOwn();
     }
     const queued = this.queue.shift();
@@ -184,9 +180,8 @@ export class SharingCapture implements FrameCapture {
     this.options.onClose?.();
   }
 
-  private factorFor(source: SharedSource): number | null {
-    if (source.fps() < this.options.fps() * 0.99) return null;
-    return shrinkFactor(source, this.options.width, this.options.height);
+  private fits(source: SharedSource): boolean {
+    return source.fps() >= this.options.fps() * 0.99 && canShrinkTo(source, this.options.width, this.options.height);
   }
 
   private setSource(source: SharedSource | null): void {
@@ -201,8 +196,7 @@ export class SharingCapture implements FrameCapture {
 
   private onSharedFrame(source: SharedSource, frame: GrabFrameSuccess): void {
     if (this.closed || !this.started || source !== this.source) return;
-    const factor = this.factorFor(source);
-    if (factor === null) {
+    if (!this.fits(source)) {
       // The source no longer fits (a frame rate below this capture's): decode the stream ourselves again.
       if (!this.own) this.startOwn();
       return;
@@ -212,7 +206,7 @@ export class SharingCapture implements FrameCapture {
     if (last !== null && time >= last && time - last < 0.75 / this.options.fps()) return;
     this.lastSharedTime = time;
     if (this.own) this.stopOwn();
-    this.deliver({ ...frame, frame: downscaleYuv420p(frame.frame, factor) });
+    this.deliver({ ...frame, frame: resampleYuv420p(frame.frame, this.options.width, this.options.height) });
   }
 
   private startOwn(): void {

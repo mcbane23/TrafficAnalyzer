@@ -43,9 +43,9 @@ headers.
 The initial 23 cameras were curated from public Belgrade traffic webcam networks — primarily the
 **KBCnet / Naxi Radio** camera network (syndicated via kamerebeograd.rs) and **OK Radio**'s camera
 network — which publish real-time HLS streams from major Belgrade bridges, squares, and
-interchanges. One entry (`zrenjaninski-put-borca`) is intentionally kept in the registry with
-`status: "inactive"` because its stream was confirmed offline (HTTP 404) at curation time — this is
-exactly the scenario the revalidation tooling exists to track over time.
+interchanges. A 23rd entry (Zrenjaninski put – Borča) was kept as `status: "inactive"` while its
+stream returned HTTP 404, and was removed in October 2026 once it was clearly gone; an existing data
+volume keeps its own copy, so delete it there from the Admin page's camera list.
 
 Streams were verified reachable (HTTP 200 + valid HLS playlist) at curation time, but **not yet**
 run through the full ffprobe-based deep validation described below. Run `npm run cameras:revalidate`

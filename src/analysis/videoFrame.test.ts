@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { VideoFrame, downscaleYuv420p, encodeJpeg, resampleLuma, yuv420pFrameSize } from './videoFrame';
+import { VideoFrame, downscaleYuv420p, encodeJpeg, resampleLuma, resampleYuv420p, yuv420pFrameSize } from './videoFrame';
 
 /** A yuv420p frame with the given luma plane and neutral (grey) chroma. */
 function greyFrame(width: number, height: number, luma: (x: number, y: number) => number): VideoFrame {
@@ -30,6 +30,25 @@ describe('downscaleYuv420p', () => {
     const frame = { width: 4, height: 4, data: new Uint8Array(yuv420pFrameSize(4, 4)) };
     expect(downscaleYuv420p(frame, 1)).toBe(frame);
     expect(() => downscaleYuv420p(frame, 3)).toThrow('Cannot shrink');
+  });
+});
+
+describe('resampleYuv420p', () => {
+  it('matches downscaleYuv420p for a whole factor', () => {
+    const frame = greyFrame(8, 4, (x, y) => x * 10 + y);
+    expect(Array.from(resampleYuv420p(frame, 4, 2).data)).toEqual(Array.from(downscaleYuv420p(frame, 2).data));
+  });
+
+  it('shrinks every plane by any ratio, 704x576 to 320x240 included', () => {
+    const frame = greyFrame(704, 576, (x) => (x < 352 ? 0 : 200));
+    frame.data.fill(90, 704 * 576, 704 * 576 + 352 * 288); // U
+    const small = resampleYuv420p(frame, 320, 240);
+    expect(small).toMatchObject({ width: 320, height: 240 });
+    expect(small.data.length).toBe(yuv420pFrameSize(320, 240));
+    expect(small.data[0]).toBe(0);
+    expect(small.data[319]).toBe(200);
+    expect(small.data[320 * 240]).toBe(90); // U plane
+    expect(small.data[320 * 240 + 160 * 120]).toBe(128); // V plane
   });
 });
 

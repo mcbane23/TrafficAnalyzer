@@ -126,7 +126,7 @@ export function createApp(
     }
   });
 
-  // The Admin page's camera editor: every camera (hidden ones too), edits to one, and adding one - see CameraEditor.
+  // The Admin page's camera editor: every camera (hidden ones too), edits to one, adding one and deleting one - see CameraEditor.
   const editRoute =
     (handler: (req: express.Request) => Promise<unknown>, status = 200): express.RequestHandler =>
     async (req, res) => {
@@ -152,6 +152,10 @@ export function createApp(
     const camera = await cameraEditor.add(req.body);
     return cameraService.getCameraById(camera.id);
   }, 201));
+  app.delete('/api/admin/cameras/:id', editRoute(async (req) => {
+    const camera = await cameraEditor.remove(String(req.params.id));
+    return { id: camera.id };
+  }));
 
   // Counting-accuracy checks: record a clip, count it with the live analysis, compare with the user's own count.
   const checkError = (res: express.Response, err: unknown) => {

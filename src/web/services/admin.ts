@@ -82,6 +82,12 @@ export async function updateCamera(cameraId: string, patch: CameraPatch): Promis
   return res.json();
 }
 
+/** Deletes a camera from the registry; its statistics so far stay in the database. */
+export async function deleteCamera(cameraId: string): Promise<void> {
+  const res = await fetch(`/api/admin/cameras/${encodeURIComponent(cameraId)}`, { method: 'DELETE' });
+  if (!res.ok) throw await cameraError(res);
+}
+
 /** Adds a camera; the server probes its stream first, which can take a while. */
 export async function addCamera(camera: NewCamera): Promise<CameraEntry> {
   const res = await fetch('/api/admin/cameras', {

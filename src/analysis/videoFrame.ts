@@ -72,6 +72,32 @@ export function downscaleYuv420p(frame: VideoFrame, factor: number): VideoFrame 
  * don't alias. Returns the plane itself, uncopied, when the size already
  * matches. Callers must not mutate the result.
  */
+/**
+ * A whole `yuv420p` frame shrunk to `width x height` (even, and no larger
+ * than the frame) by area averaging, each plane on its own - like ffmpeg's
+ * `scale=...:flags=area`. A whole-number factor takes `downscaleYuv420p`'s
+ * exact block means; any other ratio (704x576 to 320x240) the weighted ones
+ * `resampleLuma` uses.
+ */
+export function resampleYuv420p(frame: VideoFrame, width: number, height: number): VideoFrame {
+  const factor = frame.width / width;
+  if (Number.isInteger(factor) && frame.height === height * factor && Number.isInteger(frame.width / 2 / factor) && Number.isInteger(frame.height / 2 / factor)) {
+    return downscaleYuv420p(frame, factor);
+  }
+  const srcChromaW = Math.ceil(frame.width / 2);
+  const srcChromaH = Math.ceil(frame.height / 2);
+  const chromaW = Math.ceil(width / 2);
+  const chromaH = Math.ceil(height / 2);
+  const out = new Uint8Array(yuv420pFrameSize(width, height));
+  const plane = (offset: number, w: number, h: number) => ({ width: w, height: h, data: frame.data.subarray(offset, offset + w * h) });
+  out.set(resampleLuma(plane(0, frame.width, frame.height), width, height), 0);
+  const uOffset = frame.width * frame.height;
+  const vOffset = uOffset + srcChromaW * srcChromaH;
+  out.set(resampleLuma(plane(uOffset, srcChromaW, srcChromaH), chromaW, chromaH), width * height);
+  out.set(resampleLuma(plane(vOffset, srcChromaW, srcChromaH), chromaW, chromaH), width * height + chromaW * chromaH);
+  return { width, height, data: out };
+}
+
 export function resampleLuma(frame: VideoFrame, width: number, height: number): Uint8Array {
   const { width: srcW, height: srcH, data } = frame;
   if (data.length < srcW * srcH) {

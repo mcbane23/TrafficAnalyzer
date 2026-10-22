@@ -18,7 +18,7 @@ import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { FileThumbnailStore, StillThumbnailService } from '../analysis/stillThumbnailService';
 import { AnalysisWorkerPool } from '../analysis/analysisWorkerPool';
 import { CaptureSharing } from '../analysis/captureSharing';
-import { DEFAULT_MIN_CONFIDENCE, DEFAULT_OPENVINO_MODEL, OPENVINO_MODELS, YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
+import { DEFAULT_MIN_CONFIDENCE, DEFAULT_OPENVINO_MODEL, OPENVINO_MODELS, YoloDetector, YoloModel, MODEL_INPUT, loadYoloModel } from '../analysis/yoloDetector';
 import { VehicleTracker } from '../analysis/vehicleTracker';
 import { ServerMetricsService } from './serverMetrics';
 import { readAppVersion } from './appVersion';
@@ -164,10 +164,11 @@ const overlayGrabber = overlayEnabled
     // second, until the player overtakes it and has no boxes to draw.
     new FrameGrabber({
       streamFps: initialSettings.overlayFps ?? processingDefaults.overlayFps,
-      // The GPU model's 960px input is fed a matching frame (the streams
-      // are 704x576, so this upscales; small cars get more pixels).
-      frameWidth: overlayDevice === 'CPU' ? 640 : 960,
-      frameHeight: overlayDevice === 'CPU' ? 480 : 720,
+      // The model's own input size, which is what most cameras stream at:
+      // no scaling, and no upscaling (it adds no detail, and the s model
+      // found fewer cars on upscaled frames). HD cameras are shrunk to it.
+      frameWidth: MODEL_INPUT.width,
+      frameHeight: MODEL_INPUT.height,
       maxQueuedFrames: 1,
       shareTo: captureSharing,
     })
@@ -228,8 +229,8 @@ const cameraEditor = new CameraEditor({
       await trafficAnalysisService.restartCamera(camera.id);
       liveOverlayService?.updateCamera(camera);
     }
-    if (change.hidden || change.added) await trafficAnalysisService.reload();
-    console.log(`[CameraEditor] ${change.added ? 'added' : 'edited'} camera "${camera.id}"`);
+    if (change.hidden || change.added || change.removed) await trafficAnalysisService.reload();
+    console.log(`[CameraEditor] ${change.added ? 'added' : change.removed ? 'deleted' : 'edited'} camera "${camera.id}"`);
   },
 });
 // The Admin page's counting-accuracy check: records a few minutes of one
