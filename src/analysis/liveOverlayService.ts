@@ -202,6 +202,19 @@ export class LiveOverlayService {
     return started;
   }
 
+  /**
+   * Gives a watched camera a fresh detector and tracker built from its edited
+   * registry entry (new ignore zones), keeping its capture and viewers. A
+   * camera nobody watches picks the entry up when its next viewer arrives.
+   */
+  updateCamera(camera: CameraEntry): boolean {
+    const entry = this.watched.get(camera.id);
+    if (!entry) return false;
+    entry.camera = camera;
+    entry.pipeline = this.createPipeline(camera);
+    return true;
+  }
+
   private start(camera: CameraEntry): WatchedCamera {
     const entry: WatchedCamera = {
       camera,

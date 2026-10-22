@@ -5,6 +5,7 @@ import { fetchRevalidationStatus, startRevalidation } from '../services/api';
 import { fetchServerMetrics } from '../services/admin';
 import Sparkline from '../components/charts/Sparkline.vue';
 import AnalysisSwitches from '../components/AnalysisSwitches.vue';
+import CameraManager from '../components/CameraManager.vue';
 import { formatNumber, intlLocale, t, tDynamic } from '../i18n';
 
 // The server samples CPU every 5 s, so polling faster would only repeat the same reading.
@@ -12,6 +13,8 @@ const REFRESH_MS = 5_000;
 
 const metrics = ref<ServerMetrics | null>(null);
 const error = ref<string | null>(null);
+/** Bumped when the camera list changes, so the analysis switches reload it. */
+const camerasVersion = ref(0);
 let refreshHandle: ReturnType<typeof setInterval> | null = null;
 
 async function load() {
@@ -301,7 +304,17 @@ onBeforeUnmount(() => {
       </section>
 
       <!-- Which cameras are analyzed, frame rates, YOLO model -->
-      <AnalysisSwitches class="mt-6" @changed="load" />
+      <AnalysisSwitches :key="camerasVersion" class="mt-6" @changed="load" />
+
+      <CameraManager class="mt-6" @changed="camerasVersion++" />
+
+      <section class="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <div class="max-w-3xl">
+          <h2 class="font-semibold text-slate-100">{{ t('check.title') }}</h2>
+          <p class="mt-1 text-xs text-slate-400">{{ t('check.adminNote') }}</p>
+        </div>
+        <router-link to="/admin/accuracy" class="rounded-md bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-white">{{ t('check.openTool') }}</router-link>
+      </section>
 
       <!-- Fleet analysis -->
       <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-4">

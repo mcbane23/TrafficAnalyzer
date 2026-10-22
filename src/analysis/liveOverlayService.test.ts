@@ -130,6 +130,21 @@ describe('LiveOverlayService', () => {
     ctx.service.stop();
   });
 
+  it('swaps in a pipeline built from an edited camera, keeping the capture', async () => {
+    const ctx = setup();
+    expect(ctx.service.updateCamera(makeCamera({ name: 'Edited' }))).toBe(false);
+    ctx.service.subscribe('cam-1', () => undefined);
+    await settle();
+    const capture = ctx.captures.get('cam-1')!;
+
+    expect(ctx.service.updateCamera(makeCamera({ name: 'Edited' }))).toBe(true);
+    expect(ctx.createPipeline).toHaveBeenCalledTimes(2);
+    expect(ctx.createPipeline).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Edited' }));
+    expect(capture.closed).toBe(false);
+    expect(ctx.grabber.openCapture).toHaveBeenCalledTimes(1);
+    ctx.service.stop();
+  });
+
   it('shares one pipeline between viewers of the same camera and sends a late viewer the recent results first', async () => {
     const ctx = setup();
     const first: LiveOverlayResult[] = [];

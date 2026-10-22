@@ -21,7 +21,14 @@ export interface CameraSource {
 export class CameraService {
   constructor(private readonly source: CameraSource) {}
 
+  /** The cameras the dashboard and statistics show: every one not hidden on the Admin page. */
   async listCameras(): Promise<CameraEntry[]> {
+    const entries = await this.source.load();
+    return entries.filter((entry) => !entry.hidden).map((entry) => this.toPublicCamera(entry));
+  }
+
+  /** Every camera, hidden ones included, for the Admin page's camera list. */
+  async listAllCameras(): Promise<CameraEntry[]> {
     const entries = await this.source.load();
     return entries.map((entry) => this.toPublicCamera(entry));
   }

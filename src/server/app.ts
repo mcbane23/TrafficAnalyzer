@@ -11,14 +11,16 @@ import { StillThumbnailService } from '../analysis/stillThumbnailService';
 import { LiveOverlayService } from '../analysis/liveOverlayService';
 import { ServerMetricsService } from './serverMetrics';
 import { AdminSettingsService } from './adminSettingsService';
+import { CameraEditError, CameraEditor } from './cameraEditor';
+import { AccuracyCheckError, AccuracyCheckService, CHECK_DURATIONS } from '../analysis/accuracyCheck';
 import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
 
 /**
  * Creates the Express app: read-only camera API routes, a background
  * revalidation trigger/status pair (they don't accept a request body, they
  * just kick off / report on the same check the `cameras:revalidate` CLI
- * performs), the Admin page's analysis settings (the only endpoint that
- * takes a body - normalized and clamped before use), an HLS proxy route for
+ * performs), the Admin page's analysis settings and camera editor (the only
+ * endpoints that take a body - normalized and clamped before use), an HLS proxy route for
  * cameras that need special request headers the browser can't send
  * itself, the vehicle-traffic-analysis routes (bootstrap + SSE streams +
  * history), server health metrics for the Admin page, plus (when a built frontend is present) static file serving
@@ -43,6 +45,8 @@ export function createApp(
   liveOverlayService: LiveOverlayService | null,
   serverMetrics: ServerMetricsService,
   adminSettings: AdminSettingsService,
+  cameraEditor: CameraEditor,
+  accuracyChecks: AccuracyCheckService,
   staticDir?: string,
 ): Express {
   const app = express();
@@ -104,6 +108,66 @@ export function createApp(
       res.json(await adminSettings.update(req.body));
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save analysis settings' });
+    }
+  });
+
+  // The Admin page's camera editor: every camera (hidden ones too), edits to one, and adding one - see CameraEditor.
+  const editRoute =
+    (handler: (req: express.Request) => Promise<unknown>, status = 200): express.RequestHandler =>
+    async (req, res) => {
+      try {
+        res.status(status).json(await handler(req));
+      } catch (err) {
+        if (err instanceof CameraEditError) res.status(err.status).json({ error: err.message, code: err.code });
+        else res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save the camera' });
+      }
+    };
+  app.get('/api/admin/cameras', async (_req, res) => {
+    try {
+      res.set('Cache-Control', 'no-store').json(await cameraService.listAllCameras());
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load cameras' });
+    }
+  });
+  app.patch('/api/admin/cameras/:id', express.json({ limit: '64kb' }), editRoute(async (req) => {
+    const camera = await cameraEditor.update(String(req.params.id), req.body);
+    return cameraService.getCameraById(camera.id);
+  }));
+  app.post('/api/admin/cameras', express.json({ limit: '16kb' }), editRoute(async (req) => {
+    const camera = await cameraEditor.add(req.body);
+    return cameraService.getCameraById(camera.id);
+  }, 201));
+
+  // Counting-accuracy checks: record a clip, count it with the live analysis, compare with the user's own count.
+  const checkError = (res: express.Response, err: unknown) => {
+    if (err instanceof AccuracyCheckError) res.status(err.status).json({ error: err.message, code: err.code });
+    else res.status(500).json({ error: err instanceof Error ? err.message : 'Accuracy check failed' });
+  };
+  app.get('/api/admin/accuracy-checks', (_req, res) => {
+    res.set('Cache-Control', 'no-store').json({ checks: accuracyChecks.list(), durations: CHECK_DURATIONS });
+  });
+  app.post('/api/admin/accuracy-checks', express.json({ limit: '4kb' }), async (req, res) => {
+    try {
+      res.status(202).json(await accuracyChecks.start(req.body?.cameraId, req.body?.durationSec));
+    } catch (err) {
+      checkError(res, err);
+    }
+  });
+  app.get('/api/admin/accuracy-checks/:id', (req, res) => {
+    const check = accuracyChecks.get(String(req.params.id));
+    if (!check) res.status(404).json({ error: `Check not found: ${req.params.id}`, code: 'not-found' });
+    else res.set('Cache-Control', 'no-store').json(check);
+  });
+  app.get('/api/admin/accuracy-checks/:id/clip.mp4', (req, res) => {
+    const file = accuracyChecks.clipFile(String(req.params.id));
+    if (!file) res.status(404).json({ error: 'No clip for this check.' });
+    else res.sendFile(file);
+  });
+  app.put('/api/admin/accuracy-checks/:id/manual', express.json({ limit: '256kb' }), (req, res) => {
+    try {
+      res.json(accuracyChecks.saveManual(String(req.params.id), req.body));
+    } catch (err) {
+      checkError(res, err);
     }
   });
 

@@ -385,14 +385,24 @@ export class TrafficStatsService {
   private modelFor(cameraId: string): CameraPassageModel {
     let model = this.models.get(cameraId);
     if (!model) {
-      model = new CameraPassageModel(cameraId, { direction: { minDisplacement: this.minDisplacement } });
-      try {
-        const since = this.now().getTime() - this.axisSeedMs;
-        model.direction.seed(this.store.axisMoments(cameraId, since, this.minDisplacement));
-      } catch (err) {
-        console.error(`[TrafficStatsService] failed to seed road axis for camera "${cameraId}":`, err);
-      }
+      model = this.createPassageModel(cameraId);
       this.models.set(cameraId, model);
+    }
+    return model;
+  }
+
+  /**
+   * A new passage model for a camera, seeded with the road axis learned from
+   * its stored passages - for labelling passages outside the live feed (an
+   * accuracy check's clip) without moving the live model's axis.
+   */
+  createPassageModel(cameraId: string): CameraPassageModel {
+    const model = new CameraPassageModel(cameraId, { direction: { minDisplacement: this.minDisplacement } });
+    try {
+      const since = this.now().getTime() - this.axisSeedMs;
+      model.direction.seed(this.store.axisMoments(cameraId, since, this.minDisplacement));
+    } catch (err) {
+      console.error(`[TrafficStatsService] failed to seed road axis for camera "${cameraId}":`, err);
     }
     return model;
   }

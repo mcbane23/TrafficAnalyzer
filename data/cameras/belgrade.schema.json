@@ -90,6 +90,10 @@
           "description": "Extra HTTP request headers required to fetch 'alternateUrl', mirroring 'headers' for the primary url.",
           "additionalProperties": { "type": "string" }
         },
+        "hidden": {
+          "type": "boolean",
+          "description": "Hidden on the Admin page: left off the dashboard and statistics, never analyzed, and kept in the registry so it can be shown again."
+        },
         "directions": {
           "type": "object",
           "additionalProperties": false,

@@ -527,6 +527,25 @@ describe('TrafficAnalysisService', () => {
     ctx.service.stop();
   });
 
+  it('never analyzes a hidden camera, and restartCamera() rebuilds one camera from its edited entry', async () => {
+    const cameras = [makeCamera({ id: 'a' }), makeCamera({ id: 'b', hidden: true })];
+    const ctx = setup(cameras);
+    await ctx.service.start();
+    ctx.fireAll();
+    expect(ctx.service.getMetrics().cameras.map((c) => c.cameraId)).toEqual(['a']);
+
+    const oldAnalyzer = ctx.analyzers.get('a')!;
+    cameras[0] = makeCamera({ id: 'a', ignoreZones: [{ points: [[0, 0], [1, 0], [1, 1]] }] });
+    expect(await ctx.service.restartCamera('a')).toBe(true);
+    expect(oldAnalyzer.dispose).toHaveBeenCalled();
+    expect(ctx.analyzers.get('a')).not.toBe(oldAnalyzer);
+    expect(await ctx.service.restartCamera('b')).toBe(false);
+
+    cameras[1] = makeCamera({ id: 'b' });
+    expect(await ctx.service.reload()).toEqual({ started: ['b'], stopped: [] });
+    ctx.service.stop();
+  });
+
   it('drops a frame from a camera that reload() stopped while the frame waited for analysis', async () => {
     const cameras = [makeCamera({ id: 'a' })];
     let release: () => void = () => undefined;

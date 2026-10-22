@@ -48,13 +48,13 @@ onBeforeUnmount(() => {
         <router-link
           to="/admin"
           class="rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-          active-class="bg-slate-800 !text-slate-100"
+          :class="route.path.startsWith('/admin') ? 'bg-slate-800 !text-slate-100' : ''"
         >
           {{ t('nav.admin') }}
         </router-link>
       </nav>
-      <!-- The Admin page shows live server figures, not traffic over a period. -->
-      <div v-if="route.name !== 'admin'" class="ml-auto flex items-center gap-1 rounded-lg bg-slate-900 p-1 text-xs" role="group" :aria-label="t('nav.range')">
+      <!-- The Admin pages show live server figures, not traffic over a period. -->
+      <div v-if="!String(route.name ?? '').startsWith('admin')" class="ml-auto flex items-center gap-1 rounded-lg bg-slate-900 p-1 text-xs" role="group" :aria-label="t('nav.range')">
         <button
           v-for="option in RANGES"
           :key="option.value"
