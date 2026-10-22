@@ -25,6 +25,47 @@ export function yuv420pFrameSize(width: number, height: number): number {
 }
 
 /**
+ * A whole `yuv420p` frame shrunk by an integer `factor` in both directions,
+ * each output sample the mean of the `factor x factor` block it covers -
+ * the same area averaging ffmpeg's `scale=...:flags=area` does, so a frame
+ * shrunk here matches one ffmpeg scaled to the small size itself (see
+ * `CaptureSharing`). Both dimensions, and their halves for the chroma
+ * planes, must divide by `factor`.
+ */
+export function downscaleYuv420p(frame: VideoFrame, factor: number): VideoFrame {
+  const { width, height, data } = frame;
+  if (factor === 1) return frame;
+  const width2 = width / 2;
+  const height2 = height / 2;
+  if (!Number.isInteger(width2 / factor) || !Number.isInteger(height2 / factor)) {
+    throw new Error(`Cannot shrink ${width}x${height} yuv420p by ${factor}`);
+  }
+  const outW = width / factor;
+  const outH = height / factor;
+  const out = new Uint8Array(yuv420pFrameSize(outW, outH));
+  const area = factor * factor;
+  const shrinkPlane = (srcOffset: number, srcW: number, dstOffset: number, dstW: number, dstH: number) => {
+    for (let y = 0; y < dstH; y++) {
+      for (let x = 0; x < dstW; x++) {
+        let sum = 0;
+        for (let dy = 0; dy < factor; dy++) {
+          const row = srcOffset + (y * factor + dy) * srcW + x * factor;
+          for (let dx = 0; dx < factor; dx++) sum += data[row + dx];
+        }
+        out[dstOffset + y * dstW + x] = (sum + (area >> 1)) / area;
+      }
+    }
+  };
+  shrinkPlane(0, width, 0, outW, outH);
+  const chromaIn = width * height;
+  const chromaOut = outW * outH;
+  const chromaPlane = width2 * height2;
+  shrinkPlane(chromaIn, width2, chromaOut, outW / 2, outH / 2);
+  shrinkPlane(chromaIn + chromaPlane, width2, chromaOut + (outW / 2) * (outH / 2), outW / 2, outH / 2);
+  return { width: outW, height: outH, data: out };
+}
+
+/**
  * The frame's luma plane reduced to `width x height` by area averaging -
  * each output pixel is the mean of the source pixels it covers, with
  * fractional weights at the edges, so non-integer ratios (320 -> 240)

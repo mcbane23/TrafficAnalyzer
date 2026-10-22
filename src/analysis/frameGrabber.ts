@@ -2,6 +2,7 @@ import { CameraEntry } from '../types/camera';
 import { CaptureCounters } from '../types/admin';
 import { FfmpegRunner, FfmpegStreamHandle, FfmpegStreamRunner, createFfmpegRunner, createFfmpegStreamRunner } from './ffmpegRunner';
 import { VideoFrame, yuv420pFrameSize } from './videoFrame';
+import { CaptureSharing, SharedSource, SharingCapture } from './captureSharing';
 
 export interface FrameGrabberOptions {
   /**
@@ -75,6 +76,16 @@ export interface FrameGrabberOptions {
    * Defaults to 60000.
    */
   maxRestartDelayMs?: number;
+  /**
+   * ffmpeg's scaling algorithm (`scale=...:flags=`), e.g. `area`. Defaults to
+   * ffmpeg's own (bicubic). The analysis grabber uses `area`, so its frames
+   * match the overlay frames it shrinks by area averaging while sharing.
+   */
+  scaleFlags?: string;
+  /** Offer this grabber's captures to other grabbers' captures of the same camera (the overlay's). */
+  shareTo?: CaptureSharing;
+  /** Take frames from a shared capture of the same camera when one runs, instead of decoding the stream again (the analysis'). */
+  shareFrom?: CaptureSharing;
 }
 
 export interface GrabFrameSuccess {
@@ -193,8 +204,10 @@ export class FrameGrabber {
   private readonly supervision: CaptureSupervision;
   private readonly ffmpegRunner: FfmpegRunner;
   private readonly ffmpegStreamRunner: FfmpegStreamRunner;
+  private readonly shareTo: CaptureSharing | null;
+  private readonly shareFrom: CaptureSharing | null;
   /** Captures opened and not yet closed - restarted by `setStreamFps`. */
-  private readonly openCaptures = new Set<FfmpegFrameCapture>();
+  private readonly openCaptures = new Set<{ restart(): void }>();
 
   constructor(options: FrameGrabberOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -204,7 +217,10 @@ export class FrameGrabber {
     this.frameSize = {
       width: options.frameWidth ?? DEFAULT_FRAME_WIDTH,
       height: options.frameHeight ?? DEFAULT_FRAME_HEIGHT,
+      ...(options.scaleFlags ? { flags: options.scaleFlags } : {}),
     };
+    this.shareTo = options.shareTo ?? null;
+    this.shareFrom = options.shareFrom ?? null;
     this.supervision = {
       stallTimeoutMs: options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
       restartDelayMs: options.restartDelayMs ?? DEFAULT_RESTART_DELAY_MS,
@@ -237,7 +253,7 @@ export class FrameGrabber {
       return { ok: false, error: 'ffmpeg produced no frame data' };
     }
 
-    const frame: VideoFrame = { ...this.frameSize, data: new Uint8Array(outcome.stdout.subarray(0, bytes)) };
+    const frame: VideoFrame = { width: this.frameSize.width, height: this.frameSize.height, data: new Uint8Array(outcome.stdout.subarray(0, bytes)) };
     return { ok: true, frame, capturedAt: Date.now() };
   }
 
@@ -247,15 +263,48 @@ export class FrameGrabber {
    * process is leaked.
    */
   openCapture(camera: CameraEntry): FrameCapture {
+    if (this.shareFrom) {
+      const sharing: SharingCapture = new SharingCapture({
+        cameraId: camera.id,
+        sharing: this.shareFrom,
+        openOwn: () => this.openFfmpegCapture(camera, false),
+        width: this.frameSize.width,
+        height: this.frameSize.height,
+        fps: () => this.streamFps,
+        timeoutMs: this.timeoutMs,
+        maxQueuedFrames: this.maxQueuedFrames,
+        onClose: () => this.openCaptures.delete(sharing),
+      });
+      this.openCaptures.add(sharing);
+      return sharing;
+    }
+    return this.openFfmpegCapture(camera, true);
+  }
+
+  private openFfmpegCapture(camera: CameraEntry, track: boolean): FfmpegFrameCapture {
+    let source: SharedSource | null = null;
     const capture = new FfmpegFrameCapture(
       () => this.ffmpegStreamRunner(buildStreamArgs(camera, this.frameSize, this.streamFps, this.realtime)),
       this.frameSize,
       this.timeoutMs,
       this.maxQueuedFrames,
       this.supervision,
-      () => this.openCaptures.delete(capture),
+      () => {
+        if (track) this.openCaptures.delete(capture);
+        if (source) this.shareTo?.unpublish(camera.id, source);
+      },
     );
-    this.openCaptures.add(capture);
+    if (track) this.openCaptures.add(capture);
+    if (this.shareTo) {
+      source = {
+        width: this.frameSize.width,
+        height: this.frameSize.height,
+        fps: () => this.streamFps,
+        lastFrameAt: () => capture.lastDecodedAt,
+        onFrame: (listener) => capture.onFrame(listener),
+      };
+      this.shareTo.publish(camera.id, source);
+    }
     return capture;
   }
 
@@ -280,6 +329,8 @@ export class FrameGrabber {
 interface FrameSize {
   width: number;
   height: number;
+  /** ffmpeg `scale` flags, e.g. `area`. */
+  flags?: string;
 }
 
 interface CaptureSupervision {
@@ -357,6 +408,7 @@ class FfmpegFrameCapture implements FrameCapture {
   private dropped = 0;
   private lastFailure: string | null = null;
   private everDecoded = false;
+  private readonly frameListeners = new Set<(frame: GrabFrameSuccess) => void>();
 
   constructor(
     private readonly spawn: () => FfmpegStreamHandle,
@@ -368,6 +420,17 @@ class FfmpegFrameCapture implements FrameCapture {
   ) {
     this.frameBytes = yuv420pFrameSize(frameSize.width, frameSize.height);
     this.pending = new Uint8Array(this.frameBytes);
+  }
+
+  /** When the last frame was decoded (epoch ms), or 0 if none yet. */
+  get lastDecodedAt(): number {
+    return this.everDecoded ? this.lastFrameAt : 0;
+  }
+
+  /** Calls `listener` with every frame decoded from now on, before it is queued (see `CaptureSharing`); returns the unsubscribe function. */
+  onFrame(listener: (frame: GrabFrameSuccess) => void): () => void {
+    this.frameListeners.add(listener);
+    return () => this.frameListeners.delete(listener);
   }
 
   next(): Promise<GrabFrameResult> {
@@ -591,10 +654,17 @@ class FfmpegFrameCapture implements FrameCapture {
       this.streamTimes.delete(index);
       const result: GrabFrameSuccess = {
         ok: true,
-        frame: { ...this.frameSize, data },
+        frame: { width: this.frameSize.width, height: this.frameSize.height, data },
         capturedAt,
         ...(streamTime === undefined ? {} : { streamTime }),
       };
+      for (const listener of this.frameListeners) {
+        try {
+          listener(result);
+        } catch (err) {
+          console.error('[FrameGrabber] shared frame listener failed:', err);
+        }
+      }
       const waiter = this.waiters.shift();
       if (waiter) {
         waiter(result);
@@ -642,7 +712,7 @@ function buildStreamArgs(camera: CameraEntry, size: FrameSize, streamFps: number
 }
 
 function scaleFilter(size: FrameSize): string {
-  return `scale=${size.width}:${size.height},format=yuv420p`;
+  return `scale=${size.width}:${size.height}${size.flags ? `:flags=${size.flags}` : ''},format=yuv420p`;
 }
 
 function rawVideoOutput(): string[] {

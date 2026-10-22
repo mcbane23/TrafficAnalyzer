@@ -29,6 +29,8 @@ export interface CaptureCounters {
   /** When the last frame was decoded (ISO), or null if none yet. */
   lastFrameAt: string | null;
   lastError: string | null;
+  /** Taking its frames from the camera's live-box capture instead of running its own ffmpeg (see CaptureSharing). */
+  shared?: boolean;
 }
 
 export interface CameraAnalysisMetrics extends ThroughputSnapshot {

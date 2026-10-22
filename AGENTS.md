@@ -142,7 +142,17 @@ precedent for Vue components.
   `-filter_threads 1` halves the threads, while probesize, `-fflags nobuffer`, thread queue size,
   `MALLOC_ARENA_MAX` and a lower `ANALYSIS_FPS`/resolution save ~0-2 MB each (the stream is always
   decoded at full size). The Admin page reports the children's PSS, not RSS: summed RSS counts the
-  shared libraries once per process and overstated it ~2x. - **Admin "Analysis settings"** (`AdminSettingsService`, saved by `AnalysisSettingsStore` to
+  shared libraries once per process and overstated it ~2x.
+- **Capture sharing** ([captureSharing.ts](src/analysis/captureSharing.ts)): while a camera is
+  watched, its overlay capture (960x720 GPU / 640x480 CPU) publishes its frames to a
+  `CaptureSharing`, and that camera's analysis capture (`SharingCapture`) stops its own ffmpeg and
+  area-averages them down to 320x240 (`downscaleYuv420p`), thinned to the analysis fps. It switches
+  on the overlay's first frame and starts its own ffmpeg again when the overlay closes. Only when
+  the overlay size is a whole multiple of the analysis size and the overlay fps is at least the
+  analysis fps; otherwise both keep their own ffmpeg. The analysis grabber (and the accuracy
+  check's `decodeClip`) scale with `flags=area` so their own frames match the shrunk ones
+  (bicubic differed by ~2.3 grey levels on average, area by ~0.9). Admin shows a "shared" badge.
+- **Admin "Analysis settings"** (`AdminSettingsService`, saved by `AnalysisSettingsStore` to
   `data/analysis-settings.json`): which cameras the fleet analysis runs on — **none by default**, the
   user switches each one on (Bane's call: weaker servers analyze a few, stronger ones switch all on) —
   plus the analysis frame rate, live-box frame rate, GPU YOLO model and box confidence. Everything
