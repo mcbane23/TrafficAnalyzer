@@ -166,4 +166,30 @@ describe('loadYoloModel', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('no /dev/dri'));
     warn.mockRestore();
   });
+
+  it('keeps YOLO26n on onnxruntime when it is the model picked for the CPU', async () => {
+    const openVino = jest.fn(async () => session);
+    const onnx = jest.fn(async () => session);
+    const model = await loadYoloModel({ device: 'CPU', model: 'yolo26n' }, { openVino, onnx });
+    expect(openVino).not.toHaveBeenCalled();
+    expect(model.label).toBe('YOLO26n on CPU');
+  });
+
+  it('runs a larger model picked for the CPU on the OpenVINO CPU', async () => {
+    const openVino = jest.fn(async () => session);
+    const onnx = jest.fn(async () => session);
+    const model = await loadYoloModel({ device: 'CPU', model: 'yolo26s', threads: 4, cacheDir: '/cache' }, { openVino, onnx });
+    expect(openVino).toHaveBeenCalledWith(expect.stringMatching(/yolo26s\.xml$/), 'CPU', '/cache', { threads: 4 });
+    expect(onnx).not.toHaveBeenCalled();
+    expect(model).toMatchObject({ inputWidth: 960, inputHeight: 736, label: 'YOLO26s on OpenVINO CPU' });
+  });
+
+  it('falls back to YOLO26n when the larger CPU model fails to load', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const onnx = jest.fn(async () => session);
+    const model = await loadYoloModel({ model: 'yolo26m' }, { openVino: async () => Promise.reject(new Error('no plugin')), onnx });
+    expect(model.label).toBe('YOLO26n on CPU');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no plugin'));
+    warn.mockRestore();
+  });
 });
