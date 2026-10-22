@@ -6,6 +6,7 @@ import type { CameraEntry } from '../../types/camera';
 import type { CameraStats, StatsSummary } from '../../types/stats';
 import { fetchCameras } from '../services/api';
 import { fetchCameraStats, fetchStatsSummary } from '../services/stats';
+import { rankedCameras } from '../services/statsRanking';
 import { RANGES, formatCount, useStatsRange } from '../composables/trafficUi';
 import { formatBucketLabel } from '../components/charts/chartSetup';
 import { t } from '../i18n';
@@ -26,8 +27,7 @@ const SERIES_COLORS = ['#38bdf8', '#f97316', '#a78bfa', '#22c55e', '#f43f5e'];
 const nameById = computed(() => new Map(cameras.value.map((c) => [c.id, c.name])));
 const rangeLabel = computed(() => RANGES.find((r) => r.value === range.value)?.label ?? range.value);
 
-// Hidden cameras (left out of /api/cameras) are left out of the ranking too.
-const ranked = computed(() => (summary.value?.cameras ?? []).filter((c) => c.total > 0 && nameById.value.has(c.id)));
+const ranked = computed(() => rankedCameras(summary.value?.cameras ?? [], nameById.value));
 
 const rankingHeight = computed(() => `${Math.max(160, ranked.value.length * 28 + 60)}px`);
 
