@@ -88,6 +88,22 @@ sudo docker run -d --name trafficanalyzer -p 3001:3001 \
 ```
 
 Oracle's Ubuntu images reject incoming traffic in iptables except SSH, hence the first two lines.
+
+On an **Oracle Linux** image the user is `opc` (not `ubuntu`), the firewall is firewalld and
+get.docker.com doesn't support it, so instead of the first three commands run:
+
+```sh
+sudo firewall-cmd --permanent --add-port=3001/tcp
+sudo firewall-cmd --reload
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf install -y --allowerasing docker-ce docker-ce-cli containerd.io
+sudo systemctl enable --now docker
+```
+
+If SSH hangs, the subnet's route table is missing a `0.0.0.0/0` rule to an Internet Gateway (or the
+instance is on a private subnet). Without SSH, Cloud Shell in the Oracle console works too: upload the
+private key there and `ssh` from it.
 Then open `http://<public IP>:3001`, go to **Admin** and switch on the cameras to analyze (none is by
 default). Start with a few and watch CPU and memory on the same page before adding more.
 
