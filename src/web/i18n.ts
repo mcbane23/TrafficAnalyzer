@@ -179,6 +179,7 @@ const sr = {
   'player.unavailable': 'Okviri vozila trenutno nisu dostupni za ovu kameru.',
   'player.backup': 'Glavni strim nije dostupan - prikazujem rezervni',
   'player.streamError': 'Greška strima: {details}',
+  'player.reconnecting': 'Veza sa kamerom je prekinuta, ponovo se povezujem…',
   'player.loadFailed': 'Greška strima: video nije mogao da se učita.',
   'player.unsupported': 'Ovaj pregledač ne podržava HLS reprodukciju.',
 
@@ -567,6 +568,7 @@ const en: Record<Key, string> = {
   'player.unavailable': 'Vehicle boxes are unavailable for this camera right now.',
   'player.backup': 'Primary feed unavailable - showing backup feed',
   'player.streamError': 'Stream error: {details}',
+  'player.reconnecting': 'Lost the camera stream, reconnecting…',
   'player.loadFailed': 'Stream error: failed to load video.',
   'player.unsupported': 'HLS playback is not supported in this browser.',
 

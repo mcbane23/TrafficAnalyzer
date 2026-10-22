@@ -49,3 +49,16 @@ export function planResume(state: ResumeState): ResumePlan {
     refreshOverlay: true,
   };
 }
+
+/**
+ * How long the player waits before its `attempt`-th (from 1) try to reload a
+ * stream that failed: 2, 4, 8, 16 s, then every 30 s for as long as it stays
+ * open. A phone that slept with the page open comes back with its network
+ * still waking up, and hls.js then gives up on the playlist
+ * (`manifestLoadError`) within seconds; the stream itself is fine, so the
+ * player keeps trying instead of leaving that error on screen (Bane,
+ * 2026-10-22).
+ */
+export function reconnectDelayMs(attempt: number): number {
+  return Math.min(30_000, 2_000 * 2 ** Math.max(0, attempt - 1));
+}

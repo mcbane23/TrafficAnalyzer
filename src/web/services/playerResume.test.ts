@@ -1,4 +1,4 @@
-import { planResume, RESUME_AFTER_HIDDEN_MS } from './playerResume';
+import { planResume, reconnectDelayMs, RESUME_AFTER_HIDDEN_MS } from './playerResume';
 
 describe('planResume', () => {
   const longAway = { hiddenForMs: 5 * 60_000, paused: false, currentTime: 1000, liveSyncPosition: 1000, targetDuration: 10 };
@@ -32,5 +32,11 @@ describe('planResume', () => {
 
   it('resumes a video the browser paused and refreshes the overlay after a long absence', () => {
     expect(planResume({ ...longAway, paused: true })).toEqual({ seekTo: null, play: true, refreshOverlay: true });
+  });
+});
+
+describe('reconnectDelayMs', () => {
+  it('backs off from 2 s and then keeps trying every 30 s', () => {
+    expect([1, 2, 3, 4, 5, 6, 50].map(reconnectDelayMs)).toEqual([2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
   });
 });
