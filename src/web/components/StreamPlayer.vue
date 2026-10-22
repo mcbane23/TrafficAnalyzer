@@ -4,6 +4,7 @@ import Hls from 'hls.js';
 import type { CameraEntry } from '../../types/camera';
 import type { BoundingBox, VehicleDetection } from '../../types/analysis';
 import { fetchOverlayModel, subscribeCameraOverlay } from '../services/analysis';
+import { planResume } from '../services/playerResume';
 import { t } from '../i18n';
 
 /**
@@ -614,24 +615,77 @@ function attachOverlay() {
   lastDetectionsAt = null;
   synced = [];
   reportInView(null);
+  openOverlay();
+}
 
+/**
+ * Opens the overlay stream, closing the previous one only once the new one is
+ * subscribed, so the server never sees the camera without a viewer. Results
+ * already received are kept: the server first replays its recent ones, which
+ * `ingestOverlay` merges by stream time.
+ */
+function openOverlay() {
   if (props.camera.status !== 'active') {
     stopStartingClock();
     return;
   }
-
-  const cameraId = props.camera.id;
-  const unsubscribe = subscribeCameraOverlay(cameraId, ingestOverlay, () => {
-    if (unsubscribeOverlay !== unsubscribe) return;
-    unsubscribeOverlay = null;
-    synced = [];
-    trackedBoxes.clear();
-    trails.clear();
-    untrackedBoxes = [];
-    overlayState.value = 'unavailable';
-    reportInView(null);
-  });
+  const previous = unsubscribeOverlay;
+  const unsubscribe = subscribeCameraOverlay(
+    props.camera.id,
+    ingestOverlay,
+    () => {
+      if (unsubscribeOverlay !== unsubscribe) return;
+      unsubscribeOverlay = null;
+      synced = [];
+      trackedBoxes.clear();
+      trails.clear();
+      untrackedBoxes = [];
+      overlayState.value = 'unavailable';
+      reportInView(null);
+    },
+    () => {
+      // Back after a drop: the notice shows until a result covers the picture
+      // again, at once if the detector kept running, ~30 s if it restarted.
+      if (unsubscribeOverlay === unsubscribe && overlayState.value === 'ready') restartingOverlay();
+    },
+  );
   unsubscribeOverlay = unsubscribe;
+  previous?.();
+}
+
+/** Shows the "starting" notice again until boxes cover the picture once more. */
+function restartingOverlay() {
+  overlayState.value = 'starting';
+  startStartingClock();
+}
+
+/** When the tab was hidden (performance.now()), or null while it is visible. */
+let hiddenSince: number | null = null;
+
+/** Brings the player back in step after the tab was in the background - see `planResume`. */
+function handleVisibilityChange() {
+  if (document.visibilityState === 'hidden') {
+    hiddenSince = performance.now();
+    return;
+  }
+  if (hiddenSince === null) return;
+  const hiddenForMs = performance.now() - hiddenSince;
+  hiddenSince = null;
+  const video = videoRef.value;
+  if (!video || error.value) return;
+  const plan = planResume({
+    hiddenForMs,
+    paused: video.paused,
+    currentTime: video.currentTime,
+    liveSyncPosition: hls?.liveSyncPosition ?? null,
+    targetDuration: hls?.latestLevelDetails?.targetduration ?? null,
+  });
+  if (plan.seekTo !== null) video.currentTime = plan.seekTo;
+  if (plan.play) video.play().catch(() => undefined);
+  if (plan.refreshOverlay && unsubscribeOverlay) {
+    if (overlayState.value === 'ready') restartingOverlay();
+    openOverlay();
+  }
 }
 
 /** Fullscreens the video together with its overlay (the native video control would leave the canvas behind). */
@@ -651,8 +705,10 @@ onMounted(() => {
   }
   resizeCanvas();
   animationFrameHandle = requestAnimationFrame(animationLoop);
+  document.addEventListener('visibilitychange', handleVisibilityChange);
 });
 onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
   destroy();
   unsubscribeOverlay?.();
   stopStartingClock();

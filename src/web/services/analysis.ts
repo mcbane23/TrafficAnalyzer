@@ -78,13 +78,16 @@ export function subscribeCameraAnalysis(
  * Subscribes to a watched camera's appearance-model (YOLO) boxes. `onUnavailable`
  * fires once if the server can't provide them - the detector is switched off
  * (the stream is refused) or it reports an error for this camera - so the
- * caller can tell the viewer there will be no boxes. Returns an unsubscribe
- * function.
+ * caller can tell the viewer there will be no boxes. `onReconnect` fires when
+ * a dropped stream (e.g. while the browser froze a background tab) is open
+ * again: if nobody else was watching, the server stopped the detector in the
+ * meantime and boxes are half a minute away. Returns an unsubscribe function.
  */
 export function subscribeCameraOverlay(
   cameraId: string,
   onMessage: (result: LiveOverlayResult) => void,
   onUnavailable: (reason: string) => void,
+  onReconnect?: () => void,
 ): () => void {
   const source = new EventSource(`${CAMERAS_BASE_URL}/${encodeURIComponent(cameraId)}/overlay/stream`);
   let gaveUp = false;
@@ -105,8 +108,15 @@ export function subscribeCameraOverlay(
     else onMessage(result);
   };
   // A refused stream (404) closes for good; a dropped one is retried by the browser.
+  let dropped = false;
   source.onerror = () => {
     if (source.readyState === EventSource.CLOSED) giveUp('overlay stream unavailable');
+    else dropped = true;
+  };
+  source.onopen = () => {
+    if (!dropped || gaveUp) return;
+    dropped = false;
+    onReconnect?.();
   };
   return () => {
     gaveUp = true;
