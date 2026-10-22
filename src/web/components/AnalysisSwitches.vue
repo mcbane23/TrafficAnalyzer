@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import type { AnalysisSettings, AnalysisSettingsResponse } from '../../types/admin';
 import { fetchAnalysisSettings, saveAnalysisSettings } from '../services/admin';
+import { withKnob, type Knob } from '../services/analysisKnobs';
 import { t, tDynamic } from '../i18n';
 
 /**
@@ -22,8 +23,6 @@ const RETENTION_OPTIONS = [7, 30, 90, 365, 0];
 const modelNote = (model: string) => tDynamic(`settings.model.${model}`, '');
 const retentionLabel = (days: number) => (days === 0 ? t('settings.retentionForever') : t('settings.retentionDays', { days }));
 
-type Knob = 'analysisFps' | 'overlayFps' | 'overlayConfidence' | 'overlayModel' | 'passageRetentionDays';
-
 const state = ref<AnalysisSettingsResponse | null>(null);
 const saving = ref(false);
 const error = ref<string | null>(null);
@@ -41,11 +40,12 @@ async function load() {
   }
 }
 
-async function save(change: Partial<AnalysisSettings>) {
+/** Saves the whole settings object - a field left out goes back to its default. */
+async function save(next: AnalysisSettings) {
   if (saving.value || !state.value) return;
   saving.value = true;
   try {
-    state.value = await saveAnalysisSettings({ ...state.value.settings, ...change });
+    state.value = await saveAnalysisSettings(next);
     error.value = null;
     emit('changed');
   } catch (err) {
@@ -60,7 +60,7 @@ function setCamera(cameraId: string, enabled: boolean) {
   const ids = new Set(state.value.settings.enabledCameras);
   if (enabled) ids.add(cameraId);
   else ids.delete(cameraId);
-  save({ enabledCameras: Array.from(ids) });
+  save({ ...state.value.settings, enabledCameras: Array.from(ids) });
 }
 
 /** Every active camera on or off; switched-on ids of cameras now offline are kept, so they resume if they come back. */
@@ -68,17 +68,13 @@ function setEveryCamera(enabled: boolean) {
   if (!state.value) return;
   const active = new Set(activeCameras.value.map((camera) => camera.id));
   const offline = state.value.settings.enabledCameras.filter((id) => !active.has(id));
-  save({ enabledCameras: enabled ? [...offline, ...active] : offline });
+  save({ ...state.value.settings, enabledCameras: enabled ? [...offline, ...active] : offline });
 }
 
 /** A knob's select: '' means "the default", which is saved by leaving the field out. */
 function setKnob(key: Knob, raw: string) {
   if (!state.value) return;
-  const settings: AnalysisSettings = { ...state.value.settings };
-  if (raw === '') delete settings[key];
-  else if (key === 'overlayModel') settings.overlayModel = raw;
-  else settings[key] = Number(raw);
-  save(settings);
+  save(withKnob(state.value.settings, key, raw));
 }
 
 const knobValue = (key: Knob) => {
