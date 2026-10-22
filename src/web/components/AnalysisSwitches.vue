@@ -130,7 +130,7 @@ onMounted(load);
             <select
               class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-slate-100 disabled:opacity-60"
               :value="knobValue('overlayModel')"
-              :disabled="saving || state.overlay.device === 'CPU'"
+              :disabled="saving"
               @change="setKnob('overlayModel', ($event.target as HTMLSelectElement).value)"
             >
               <option value="">{{ t('settings.default', { value: state.defaults.overlayModel }) }}</option>

@@ -70,25 +70,39 @@ export interface LoadYoloModelOptions {
    * /dev/dri in the container, no driver) falls back to the CPU model.
    */
   device?: string;
-  /** Which of `OPENVINO_MODELS` to run on that device. Defaults to yolo26s; an unknown name falls back to it with a warning. */
+  /**
+   * Which of `OPENVINO_MODELS` to run on that device. Defaults to yolo26s; an
+   * unknown name falls back to it with a warning. On the CPU, yolo26s/m run
+   * through OpenVINO instead of `cpuModel`.
+   */
   model?: string;
   /** Which of `ONNX_MODELS` to run on the CPU, by choice or as the GPU's fallback. Defaults to yolo26n. */
   cpuModel?: string;
-  /** onnxruntime threads for the CPU model. Defaults to 2. */
+  /** Threads for a CPU model (onnxruntime or OpenVINO). Defaults to 2. */
   threads?: number;
   /** OpenVINO compiled-model cache, so a restart doesn't recompile for the GPU (tens of seconds). */
   cacheDir?: string;
 }
 
+/** For the OpenVINO CPU: how many threads inference may use (it takes every core otherwise). */
+export interface OpenVinoCpuOptions {
+  threads: number;
+}
+
 export interface YoloModelLoaders {
-  openVino: (modelPath: string, device: string, cacheDir?: string) => Promise<YoloSession>;
+  openVino: (modelPath: string, device: string, cacheDir?: string, cpu?: OpenVinoCpuOptions) => Promise<YoloSession>;
   onnx: (modelPath: string, threads: number) => Promise<YoloSession>;
 }
 
 /**
  * Loads the overlay's detector: `model` (YOLO26s by default) through
  * OpenVINO on `device` when one is asked for, else - or when that fails -
- * `cpuModel` (YOLO26n by default) on the CPU.
+ * `cpuModel` (YOLO26n by default) on the CPU. On the CPU, a `model` other
+ * than YOLO26n (s or m, picked on the Admin page) runs through OpenVINO's CPU
+ * plugin - x86 or ARM - at its own 960x736 input, falling back to `cpuModel`
+ * if it can't load. (The IR can't be reshaped to 640x480: its anchor grid is
+ * baked in.) On a 2.8 GHz Xeon with 2 threads YOLO26n took 41 ms per frame,
+ * YOLO26s 280 ms and found 20-50% more vehicles, YOLO26m 681 ms.
  */
 export async function loadYoloModel(
   options: LoadYoloModelOptions = {},
@@ -96,6 +110,7 @@ export async function loadYoloModel(
 ): Promise<YoloModel> {
   const device = options.device?.trim().toUpperCase();
   const cpuModel = pickModel(ONNX_MODELS, options.cpuModel, DEFAULT_ONNX_MODEL);
+  const threads = options.threads ?? 2;
   if (device && device !== 'CPU') {
     const model = pickModel(OPENVINO_MODELS, options.model, DEFAULT_OPENVINO_MODEL);
     try {
@@ -106,8 +121,21 @@ export async function loadYoloModel(
         `[YoloDetector] OpenVINO device ${device} unavailable, using ${cpuModel.label} on the CPU: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  } else {
+    const requested = options.model?.trim().toLowerCase();
+    const model = requested && requested !== DEFAULT_ONNX_MODEL ? OPENVINO_MODELS[requested] : undefined;
+    if (model) {
+      try {
+        const session = await loaders.openVino(model.path, 'CPU', options.cacheDir, { threads });
+        return { session, inputWidth: 960, inputHeight: 736, label: `${model.label} on OpenVINO CPU` };
+      } catch (err) {
+        console.warn(
+          `[YoloDetector] ${model.label} on the OpenVINO CPU failed, using ${cpuModel.label}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
-  const session = await loaders.onnx(cpuModel.path, options.threads ?? 2);
+  const session = await loaders.onnx(cpuModel.path, threads);
   return { session, inputWidth: 640, inputHeight: 480, label: `${cpuModel.label} on CPU` };
 }
 
@@ -139,13 +167,20 @@ export async function createOnnxYoloSession(modelPath: string = ONNX_MODELS[DEFA
  * request: the GPU runs one frame at a time anyway, and an infer request
  * can't be reused while busy.
  */
-export async function createOpenVinoYoloSession(modelPath: string, device: string, cacheDir?: string): Promise<YoloSession> {
+export async function createOpenVinoYoloSession(
+  modelPath: string,
+  device: string,
+  cacheDir?: string,
+  cpu?: OpenVinoCpuOptions,
+): Promise<YoloSession> {
   const { addon: ov } = await import('openvino-node');
   const core = new ov.Core();
-  const compiled = await core.compileModel(modelPath, device, {
+  const config = {
     PERFORMANCE_HINT: 'LATENCY',
+    ...(cpu ? { INFERENCE_NUM_THREADS: cpu.threads } : {}),
     ...(cacheDir ? { CACHE_DIR: cacheDir } : {}),
-  });
+  };
+  const compiled = await core.compileModel(modelPath, device, config);
   const request = compiled.createInferRequest();
   let queue: Promise<unknown> = Promise.resolve();
   return {

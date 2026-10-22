@@ -91,7 +91,11 @@ const overlayEnabled = process.env.OVERLAY_DETECTOR !== 'off';
 const processingDefaults: ProcessingSettings = {
   analysisFps: Number(process.env.ANALYSIS_FPS) || 3,
   overlayFps: Number(process.env.OVERLAY_FPS) || 3,
-  overlayModel: process.env.OVERLAY_MODEL && OPENVINO_MODELS[process.env.OVERLAY_MODEL] ? process.env.OVERLAY_MODEL : DEFAULT_OPENVINO_MODEL,
+  // On the CPU the default stays yolo26n (onnxruntime); s and m are there to pick on the Admin page.
+  overlayModel:
+    process.env.OVERLAY_MODEL && OPENVINO_MODELS[process.env.OVERLAY_MODEL]
+      ? process.env.OVERLAY_MODEL
+      : overlayDevice === 'CPU' ? 'yolo26n' : DEFAULT_OPENVINO_MODEL,
   overlayConfidence: Number(process.env.OVERLAY_CONFIDENCE) || DEFAULT_MIN_CONFIDENCE,
   // Individual passages; their hourly counts, which the statistics views read, are kept forever.
   passageRetentionDays: 30,
@@ -125,7 +129,9 @@ const stillThumbnails = new StillThumbnailService(store, new FrameGrabber(), {
 // falling back to the CPU model if the GPU can't be used. The GPU model is
 // picked on the Admin page (OVERLAY_MODEL is its default): yolo26s, yolo26n
 // (faster, finds fewer distant cars) or yolo26m (larger and ~3x slower).
-// OVERLAY_CPU_MODEL picks the CPU one: yolo26n. The minimum score a box needs
+// OVERLAY_CPU_MODEL picks the CPU one: yolo26n. Without a GPU the Admin page
+// can still pick yolo26s or yolo26m, which then run on OpenVINO's CPU plugin
+// (slower, but finds more distant cars). The minimum score a box needs
 // to be drawn is set there too (OVERLAY_CONFIDENCE, default 0.2).
 let overlayModel: Promise<YoloModel> | null = null;
 let overlayModelLabel: string | null = null;
