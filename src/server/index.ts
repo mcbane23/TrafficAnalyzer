@@ -16,6 +16,7 @@ import { AnalysisWorkerPool } from '../analysis/analysisWorkerPool';
 import { YoloDetector, YoloModel, loadYoloModel } from '../analysis/yoloDetector';
 import { VehicleTracker } from '../analysis/vehicleTracker';
 import { ServerMetricsService } from './serverMetrics';
+import { AnalysisSettingsStore } from './analysisSettingsStore';
 
 const REGISTRY_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.json');
 const SCHEMA_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.schema.json');
@@ -23,6 +24,7 @@ const SCHEMA_PATH = path.resolve(__dirname, '../../data/cameras/belgrade.schema.
 const TRAFFIC_HISTORY_DB_PATH = path.resolve(__dirname, '../../data/traffic-history.db');
 const TRAFFIC_STATS_DB_PATH = path.resolve(__dirname, '../../data/traffic-stats.db');
 const DATA_DIR = path.resolve(__dirname, '../../data');
+const ANALYSIS_SETTINGS_PATH = path.join(DATA_DIR, 'analysis-settings.json');
 // Runtime-generated as well: OpenVINO's compiled GPU kernels for the overlay model.
 const OPENVINO_CACHE_DIR = path.resolve(__dirname, '../../data/openvino-cache');
 // Resolved from the working directory, not `__dirname` like the paths above:
@@ -59,21 +61,15 @@ const trafficStatsService = new TrafficStatsService(new TrafficStatsStore(TRAFFI
 const analysisThreads = process.env.ANALYSIS_THREADS === undefined ? 2 : Number(process.env.ANALYSIS_THREADS) || 0;
 const analysisWorkers = analysisThreads > 0 ? new AnalysisWorkerPool({ size: analysisThreads }) : null;
 // Each analyzed camera keeps one ffmpeg capture running (~17 MB and a share
-// of a core). On a smaller host: ANALYSIS_ENABLED=false analyzes nothing (no
-// statistics, badges or thumbnails; the live view and its YOLO boxes still
-// work), ANALYSIS_CAMERAS=id1,id2 analyzes only those cameras, and
-// ANALYSIS_MAX_CAMERAS=N at most N of them, in registry order.
-const analysisEnabled = !/^(false|0|off|no)$/i.test(process.env.ANALYSIS_ENABLED?.trim() ?? '');
-const analysisCameraIds = process.env.ANALYSIS_CAMERAS?.split(',').map((id) => id.trim()).filter(Boolean);
-const analysisMaxCameras = process.env.ANALYSIS_MAX_CAMERAS?.trim() ? Number(process.env.ANALYSIS_MAX_CAMERAS) : undefined;
+// of a core). Which cameras are analyzed is switched on the Admin page (all
+// of them, or one by one) and kept in the data volume.
+const analysisSettingsStore = new AnalysisSettingsStore(ANALYSIS_SETTINGS_PATH);
 const trafficAnalysisService = new TrafficAnalysisService(
   store,
   new FrameGrabber({ streamFps: ANALYSIS_FPS }),
   new TrafficHistoryStore(TRAFFIC_HISTORY_DB_PATH),
   {
-    enabled: analysisEnabled,
-    cameraIds: analysisCameraIds,
-    maxCameras: analysisMaxCameras !== undefined && Number.isInteger(analysisMaxCameras) ? analysisMaxCameras : undefined,
+    settings: analysisSettingsStore.load(),
     onResult: (result) => trafficStatsService.handleResult(result),
     ...(analysisWorkers ? { createAnalyzer: (cameraId, camera) => analysisWorkers.createAnalyzer(cameraId, camera) } : {}),
   },
@@ -170,6 +166,7 @@ const app = createApp(
   trafficStatsService,
   liveOverlayService,
   serverMetrics,
+  analysisSettingsStore,
   STATIC_DIR,
 );
 

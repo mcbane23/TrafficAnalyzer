@@ -5,7 +5,7 @@ import { FrameCapture, GrabFrameResult } from './frameGrabber';
 import { CameraAnalyzer, errorAnalysisResult } from './cameraAnalyzer';
 import { VideoFrame, encodeJpeg } from './videoFrame';
 import { ThroughputWindow } from './throughputWindow';
-import { CameraAnalysisMetrics } from '../types/admin';
+import { AnalysisSettings, CameraAnalysisMetrics } from '../types/admin';
 
 /** Narrow seam over FrameGrabber so tests can inject a fake without spawning ffmpeg. */
 export interface FrameGrabberLike {
@@ -100,23 +100,14 @@ export interface TrafficAnalysisServiceOptions {
    */
   recentResultsMs?: number;
   /**
-   * False analyzes no camera at all (ANALYSIS_ENABLED=false): no capture is
-   * started, so no ffmpeg runs for the fleet and there are no statistics,
-   * dashboard badges or thumbnails. Defaults to true.
+   * Which cameras to analyze, as switched on the Admin page (see
+   * `applySettings`). Each analyzed camera keeps an ffmpeg capture running
+   * (~17 MB of memory and a share of a CPU core), so these are the knobs for
+   * a smaller host. With `enabled: false` no capture is started at all: no
+   * statistics, dashboard badges or thumbnails. Defaults to every active
+   * camera.
    */
-  enabled?: boolean;
-  /**
-   * Only these camera ids are analyzed (ANALYSIS_CAMERAS), if they are
-   * active. Unset analyzes every active camera.
-   */
-  cameraIds?: string[];
-  /**
-   * At most this many cameras are analyzed (ANALYSIS_MAX_CAMERAS), the first
-   * ones in registry order after `cameraIds` is applied. Each analyzed camera
-   * keeps an ffmpeg capture running (~17 MB of memory and a share of a CPU
-   * core), so this is the knob for a smaller host. Unset means no limit.
-   */
-  maxCameras?: number;
+  settings?: AnalysisSettings;
   /** Encodes a thumbnail. Defaults to `encodeJpeg`. */
   encodeThumbnail?: (frame: VideoFrame) => Promise<Buffer>;
   now?: () => Date;
@@ -208,9 +199,6 @@ const METRICS_WINDOW_MS = 15_000;
 export class TrafficAnalysisService {
   private readonly options: {
     maxConcurrency: number;
-    enabled: boolean;
-    cameraIds: Set<string> | null;
-    maxCameras: number;
     historyIntervalMs: number;
     overviewIntervalMs: number;
     createAnalyzer: (cameraId: string, camera: CameraEntry) => CameraAnalyzerLike;
@@ -227,7 +215,8 @@ export class TrafficAnalysisService {
   private readonly overviewSubscribers = new Set<OverviewSubscriber>();
   private readonly latestOverview = new Map<string, CameraAnalysisOverview>();
   private readonly loops = new Set<Promise<void>>();
-  /** Active cameras left out by `enabled`/`cameraIds`/`maxCameras`, with the reason shown to their viewers. */
+  private settings: { enabled: boolean; disabledCameras: Set<string> };
+  /** Active cameras the settings leave out, with the reason shown to their viewers. */
   private readonly excluded = new Map<string, string>();
 
   private running = false;
@@ -242,9 +231,6 @@ export class TrafficAnalysisService {
   ) {
     this.options = {
       maxConcurrency: options.maxConcurrency ?? DEFAULTS.maxConcurrency,
-      enabled: options.enabled ?? true,
-      cameraIds: options.cameraIds && options.cameraIds.length > 0 ? new Set(options.cameraIds) : null,
-      maxCameras: options.maxCameras !== undefined && options.maxCameras >= 0 ? options.maxCameras : Infinity,
       historyIntervalMs: options.historyIntervalMs ?? DEFAULTS.historyIntervalMs,
       overviewIntervalMs: options.overviewIntervalMs ?? DEFAULTS.overviewIntervalMs,
       createAnalyzer:
@@ -258,6 +244,8 @@ export class TrafficAnalysisService {
       scheduler: options.scheduler ?? defaultScheduler,
     };
 
+    this.settings = toSettingsState(options.settings);
+
     for (const result of this.historyStore.getLatestForAllCameras()) {
       this.latestOverview.set(result.cameraId, {
         cameraId: result.cameraId,
@@ -270,7 +258,7 @@ export class TrafficAnalysisService {
 
   /**
    * Loads the camera registry and starts continuous analysis of every active
-   * camera (or those `enabled`/`cameraIds`/`maxCameras` leave in), staggered.
+   * camera the settings leave in, staggered.
    * Inactive cameras are skipped entirely.
    */
   async start(): Promise<void> {
@@ -282,21 +270,28 @@ export class TrafficAnalysisService {
   }
 
   /**
-   * The active cameras to analyze, in registry order, after the
-   * `enabled`/`cameraIds`/`maxCameras` settings; records why each other
-   * active camera was left out.
+   * Switches analysis on or off, globally or per camera (the Admin page's
+   * switches), and applies it straight away, like `reload()`: cameras
+   * switched off stop, cameras switched on start, the rest keep running.
+   */
+  async applySettings(settings: AnalysisSettings): Promise<{ started: string[]; stopped: string[] }> {
+    this.settings = toSettingsState(settings);
+    return this.reload();
+  }
+
+  /**
+   * The active cameras to analyze, in registry order, after the settings;
+   * records why each other active camera was left out.
    */
   private selectCameras(entries: CameraEntry[]): CameraEntry[] {
     this.excluded.clear();
     const selected: CameraEntry[] = [];
     for (const camera of entries) {
       if (camera.status !== 'active') continue;
-      if (!this.options.enabled) {
-        this.excluded.set(camera.id, 'Traffic analysis is turned off on this server (ANALYSIS_ENABLED=false).');
-      } else if (this.options.cameraIds && !this.options.cameraIds.has(camera.id)) {
-        this.excluded.set(camera.id, 'This camera is not in the analyzed set on this server (ANALYSIS_CAMERAS).');
-      } else if (selected.length >= this.options.maxCameras) {
-        this.excluded.set(camera.id, `This server analyzes at most ${this.options.maxCameras} cameras (ANALYSIS_MAX_CAMERAS).`);
+      if (!this.settings.enabled) {
+        this.excluded.set(camera.id, 'Traffic analysis is switched off on the Admin page.');
+      } else if (this.settings.disabledCameras.has(camera.id)) {
+        this.excluded.set(camera.id, 'Traffic analysis is switched off for this camera on the Admin page.');
       } else {
         selected.push(camera);
       }
@@ -640,4 +635,8 @@ function notify<T>(callback: (payload: T) => void, payload: T): void {
   } catch {
     // A broken subscriber must not affect the others, or the tick.
   }
+}
+
+function toSettingsState(settings: AnalysisSettings | undefined): { enabled: boolean; disabledCameras: Set<string> } {
+  return { enabled: settings?.enabled ?? true, disabledCameras: new Set(settings?.disabledCameras ?? []) };
 }

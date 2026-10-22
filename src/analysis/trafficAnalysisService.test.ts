@@ -197,36 +197,44 @@ describe('TrafficAnalysisService', () => {
     ctx.service.stop();
   });
 
-  it('analyzes only ANALYSIS_CAMERAS, at most maxCameras of them, and tells viewers of the others why', async () => {
-    const cameras = ['a', 'b', 'c', 'd'].map((id) => makeCamera({ id }));
-    const ctx = setup(cameras, { cameraIds: ['b', 'c', 'd'], maxCameras: 2 });
+  it('skips cameras switched off and tells their viewers why', async () => {
+    const cameras = ['a', 'b', 'c'].map((id) => makeCamera({ id }));
+    const ctx = setup(cameras, { settings: { enabled: true, disabledCameras: ['b'] } });
     await ctx.service.start();
     ctx.fireAll();
-    expect(ctx.grabber.openCapture.mock.calls.map(([c]) => c.id)).toEqual(['b', 'c']);
+    expect(ctx.grabber.openCapture.mock.calls.map(([c]) => c.id)).toEqual(['a', 'c']);
 
     const received: Array<{ id: string; error?: string }> = [];
-    for (const id of ['a', 'b', 'd']) ctx.service.subscribeCameraDetail(id, (r) => received.push({ id, error: r.error }));
+    for (const id of ['a', 'b']) ctx.service.subscribeCameraDetail(id, (r) => received.push({ id, error: r.error }));
     await settle();
-    expect(received).toEqual([
-      { id: 'a', error: expect.stringContaining('ANALYSIS_CAMERAS') },
-      { id: 'd', error: expect.stringContaining('at most 2 cameras') },
-    ]);
-
-    // The limit holds on reload too: a slot freed by an inactive camera goes to the next one.
-    cameras[1].status = 'inactive';
-    expect(await ctx.service.reload()).toEqual({ started: ['d'], stopped: ['b'] });
+    expect(received).toEqual([{ id: 'b', error: expect.stringContaining('switched off for this camera') }]);
     ctx.service.stop();
   });
 
-  it('starts no capture when analysis is disabled', async () => {
-    const ctx = setup([makeCamera({ id: 'a' })], { enabled: false });
+  it('applySettings() stops switched-off cameras and starts switched-on ones without touching the rest', async () => {
+    const cameras = ['a', 'b', 'c'].map((id) => makeCamera({ id }));
+    const ctx = setup(cameras, { settings: { enabled: true, disabledCameras: ['c'] } });
     await ctx.service.start();
     ctx.fireAll();
-    expect(ctx.grabber.openCapture).not.toHaveBeenCalled();
+    const analyzerA = ctx.analyzers.get('a')!;
+
+    expect(await ctx.service.applySettings({ enabled: true, disabledCameras: ['b'] })).toEqual({ started: ['c'], stopped: ['b'] });
+    expect(ctx.captures.get('b')!.closed).toBe(true);
+    expect(ctx.analyzers.get('a')).toBe(analyzerA);
+
+    expect(await ctx.service.applySettings({ enabled: false, disabledCameras: [] })).toEqual({ started: [], stopped: ['a', 'c'] });
     const errors: Array<string | undefined> = [];
     ctx.service.subscribeCameraDetail('a', (r) => errors.push(r.error));
     await settle();
-    expect(errors).toEqual([expect.stringContaining('ANALYSIS_ENABLED=false')]);
+    expect(errors).toEqual([expect.stringContaining('switched off on the Admin page')]);
+    ctx.service.stop();
+  });
+
+  it('starts no capture when analysis is switched off', async () => {
+    const ctx = setup([makeCamera({ id: 'a' })], { settings: { enabled: false, disabledCameras: [] } });
+    await ctx.service.start();
+    ctx.fireAll();
+    expect(ctx.grabber.openCapture).not.toHaveBeenCalled();
     ctx.service.stop();
   });
 

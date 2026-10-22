@@ -112,3 +112,25 @@ export interface ServerMetrics {
   };
   storage: Array<{ name: string; bytes: number | null }>;
 }
+
+/** Which cameras the fleet analysis runs on - switched on the Admin page, see AnalysisSettingsStore. */
+export interface AnalysisSettings {
+  /** False analyzes no camera at all (no statistics, badges or thumbnails; the live view still works). */
+  enabled: boolean;
+  /** Ids of cameras left out of the analysis. */
+  disabledCameras: string[];
+}
+
+/** One camera's row in the Admin page's analysis switches. */
+export interface AnalysisCameraSetting {
+  id: string;
+  name: string;
+  /** Registry status: only active cameras can be analyzed. */
+  active: boolean;
+  /** Its own switch (independent of the global one). */
+  enabled: boolean;
+}
+
+export interface AnalysisSettingsResponse extends AnalysisSettings {
+  cameras: AnalysisCameraSetting[];
+}

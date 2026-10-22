@@ -139,9 +139,11 @@ precedent for Vue components.
   `-filter_threads 1` halves the threads, while probesize, `-fflags nobuffer`, thread queue size,
   `MALLOC_ARENA_MAX` and a lower `ANALYSIS_FPS`/resolution save ~0-2 MB each (the stream is always
   decoded at full size). The Admin page reports the children's PSS, not RSS: summed RSS counts the
-  shared libraries once per process and overstated it ~2x. On a smaller host `ANALYSIS_ENABLED=false`,
-  `ANALYSIS_CAMERAS` and `ANALYSIS_MAX_CAMERAS` (see `src/server/index.ts`) cut the number of
-  captures; a camera left out shows its viewers why on the camera page.
+  shared libraries once per process and overstated it ~2x. On a smaller host the Admin page's "Analyzed
+  cameras" switches (whole fleet, or per camera; `AnalysisSettingsStore`, saved to
+  `data/analysis-settings.json`, applied at once via `TrafficAnalysisService.applySettings`) cut the
+  number of captures; a camera switched off shows its viewers why on the camera page. Bane asked
+  for these in the UI rather than env vars, so don't move them back into docker-compose.
 - CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): every branch/PR runs `npm ci`, `npm test`,
   `npm run build` and a Docker build, and keeps **nothing** on GitHub — no uploaded artifacts, no
   build records (`DOCKER_BUILD_RECORD_UPLOAD=false`), no npm cache, no Docker layer cache writes.

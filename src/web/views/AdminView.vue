@@ -4,6 +4,7 @@ import type { CaptureCounters, ServerMetrics } from '../../types/admin';
 import { fetchRevalidationStatus, startRevalidation } from '../services/api';
 import { fetchServerMetrics } from '../services/admin';
 import Sparkline from '../components/charts/Sparkline.vue';
+import AnalysisSwitches from '../components/AnalysisSwitches.vue';
 
 // The server samples CPU every 5 s, so polling faster would only repeat the same reading.
 const REFRESH_MS = 5_000;
@@ -293,6 +294,9 @@ onBeforeUnmount(() => {
           </table>
         </div>
       </section>
+
+      <!-- Which cameras are analyzed -->
+      <AnalysisSwitches class="mt-6" @changed="load" />
 
       <!-- Fleet analysis -->
       <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-4">
