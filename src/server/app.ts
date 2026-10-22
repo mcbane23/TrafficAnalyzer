@@ -72,6 +72,21 @@ export function createApp(
     }
   });
 
+  // When each camera's dashboard thumbnail was captured, so the cards can say how old the picture is.
+  app.get('/api/cameras/snapshots', async (_req, res) => {
+    try {
+      const cameras = await cameraService.listCameras();
+      res.set('Cache-Control', 'no-store').json(stillThumbnails.capturedTimes(cameras.map((camera) => camera.id)));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load cameras' });
+    }
+  });
+
+  // Which model draws the live boxes (e.g. "YOLO26s on OpenVINO GPU"), or null before it has loaded or with the overlay off.
+  app.get('/api/overlay/model', (_req, res) => {
+    res.set('Cache-Control', 'no-store').json({ model: liveOverlayService ? serverMetrics.overlayModel() : null });
+  });
+
   app.get('/api/cameras/:id', async (req, res) => {
     try {
       const camera = await cameraService.getCameraById(req.params.id);

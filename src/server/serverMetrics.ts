@@ -161,6 +161,11 @@ export class ServerMetricsService {
     return entry;
   }
 
+  /** The overlay model actually loaded, once it has been. */
+  overlayModel(): string | null {
+    return this.options.config.overlayModel();
+  }
+
   getMetrics(): ServerMetrics {
     const memory = process.memoryUsage();
     const cpus = os.cpus();

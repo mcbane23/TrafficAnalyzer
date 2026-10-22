@@ -123,3 +123,14 @@ export function subscribeCameraOverlay(
     source.close();
   };
 }
+
+/**
+ * The model drawing the live boxes, shortened for a label over the video
+ * ("YOLO26s on OpenVINO GPU" -> "YOLO26s · GPU"), or null if unknown.
+ */
+export async function fetchOverlayModel(): Promise<string | null> {
+  const res = await fetch('/api/overlay/model');
+  if (!res.ok) return null;
+  const { model } = (await res.json()) as { model: string | null };
+  return model ? model.replace(/ on (OpenVINO )?/, ' · ') : null;
+}

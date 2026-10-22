@@ -141,6 +141,16 @@ describe('StillThumbnailService', () => {
     expect(t.service.getThumbnail('a')).toBe(live);
   });
 
+  it('reports when each thumbnail was captured, live ones included', async () => {
+    const t = setup([makeCamera('a'), makeCamera('live')]);
+    t.live.set('live', { buffer: Buffer.from('live'), capturedAt: new Date(T0 + 5000).toISOString() });
+    t.service.start();
+    await flush();
+    await t.grabber.settle({ atMs: T0 });
+    await t.service.idle();
+    expect(t.service.capturedTimes(['a', 'live', 'none'])).toEqual({ a: new Date(T0).toISOString(), live: new Date(T0 + 5000).toISOString() });
+  });
+
   it('grabs a still again once it is older than the refresh interval, not before', async () => {
     const t = setup([makeCamera('a')], { refreshIntervalMs: 30 * MINUTE });
     t.service.start();

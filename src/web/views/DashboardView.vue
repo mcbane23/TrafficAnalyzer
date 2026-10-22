@@ -5,9 +5,10 @@ import type { CameraAnalysisOverview, TrafficLevel } from '../../types/analysis'
 import type { StatsSummary } from '../../types/stats';
 import { fetchCameras } from '../services/api';
 import { fetchAnalyzedCameras, fetchLatestOverview, subscribeOverview } from '../services/analysis';
-import { fetchStatsSummary } from '../services/stats';
+import { fetchSnapshotTimes, fetchStatsSummary } from '../services/stats';
 import { RANGES, TRAFFIC_LABELS, formatCount, useStatsRange } from '../composables/trafficUi';
 import CameraCard from '../components/CameraCard.vue';
+import AppIcon from '../components/AppIcon.vue';
 import { t } from '../i18n';
 
 const range = useStatsRange();
@@ -35,6 +36,10 @@ const summaryByCameraId = computed(() => new Map((summary.value?.cameras ?? []).
 const SUMMARY_REFRESH_MS = 60_000;
 const SNAPSHOT_REFRESH_MS = 30_000;
 const snapshotTick = ref(Date.now());
+const snapshotTimes = ref<Record<string, string>>({});
+// The clock the cards' "pre 12 s" thumbnail ages are measured against.
+const now = ref(Date.now());
+let clockHandle: ReturnType<typeof setInterval> | null = null;
 let summaryHandle: ReturnType<typeof setInterval> | null = null;
 let snapshotHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -44,7 +49,9 @@ const search = ref('');
 const statusFilter = ref<'all' | 'active' | 'analyzed' | 'offline'>('all');
 const levelFilter = ref<'all' | TrafficLevel>('all');
 const sortKey = ref<SortKey>('busiest');
-const layout = ref<'grid' | 'list'>('grid');
+// A phone fits one big card per screen, so it starts with the list (one row per camera).
+const narrowScreen = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 639px)').matches;
+const layout = ref<'grid' | 'list'>(narrowScreen ? 'list' : 'grid');
 try {
   const saved = JSON.parse(localStorage.getItem('dashboard-view') ?? '{}');
   if (saved.layout === 'list' || saved.layout === 'grid') layout.value = saved.layout;
@@ -118,10 +125,21 @@ async function loadSummary() {
 }
 watch(range, loadSummary);
 
+async function loadSnapshotTimes() {
+  try {
+    snapshotTimes.value = await fetchSnapshotTimes();
+  } catch {
+    // Non-fatal: cards just don't show the thumbnail's age.
+  }
+}
+watch(snapshotTick, loadSnapshotTimes);
+
 onMounted(async () => {
   loadSummary();
   summaryHandle = setInterval(loadSummary, SUMMARY_REFRESH_MS);
   snapshotHandle = setInterval(() => (snapshotTick.value = Date.now()), SNAPSHOT_REFRESH_MS);
+  clockHandle = setInterval(() => (now.value = Date.now()), 5_000);
+  loadSnapshotTimes();
 
   try {
     cameras.value = await fetchCameras();
@@ -158,14 +176,15 @@ onBeforeUnmount(() => {
   unsubscribeOverview?.();
   if (summaryHandle !== null) clearInterval(summaryHandle);
   if (snapshotHandle !== null) clearInterval(snapshotHandle);
+  if (clockHandle !== null) clearInterval(clockHandle);
 });
 </script>
 
 <template>
-  <main class="mx-auto max-w-7xl px-4 py-6">
+  <main class="mx-auto max-w-7xl px-4 py-4 sm:py-6">
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-bold text-slate-100">{{ t('dash.title') }}</h1>
+        <h1 class="text-xl font-bold text-slate-100 sm:text-2xl">{{ t('dash.title') }}</h1>
         <p class="mt-1 text-sm text-slate-400">{{ t('dash.subtitle', { range: rangeLabel }) }}</p>
       </div>
     </div>
@@ -183,24 +202,24 @@ onBeforeUnmount(() => {
 
     <!-- KPI row -->
     <div class="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+      <div class="rounded-xl border border-slate-800 bg-slate-900 p-3 sm:p-4">
         <p class="text-xs text-slate-500">{{ t('dash.kpi.passed', { range: rangeLabel }) }}</p>
-        <p v-if="noneAnalyzed && !kpis.passed" class="mt-1 text-2xl font-bold text-slate-500" :title="t('dash.kpi.passedOff')">–</p>
-        <p v-else class="mt-1 text-2xl font-bold tabular-nums text-slate-100">{{ kpis.passed === null ? '–' : formatCount(kpis.passed) }}</p>
+        <p v-if="noneAnalyzed && !kpis.passed" class="mt-1 text-xl font-bold sm:text-2xl text-slate-500" :title="t('dash.kpi.passedOff')">–</p>
+        <p v-else class="mt-1 text-xl font-bold sm:text-2xl tabular-nums text-slate-100">{{ kpis.passed === null ? '–' : formatCount(kpis.passed) }}</p>
         <p v-if="noneAnalyzed" class="mt-0.5 text-[11px] text-slate-500">{{ t('dash.kpi.passedOff') }}</p>
       </div>
-      <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+      <div class="rounded-xl border border-slate-800 bg-slate-900 p-3 sm:p-4">
         <p class="text-xs text-slate-500">{{ t('dash.kpi.active') }}</p>
-        <p class="mt-1 text-2xl font-bold tabular-nums text-slate-100">{{ kpis.active }}<span class="text-base font-medium text-slate-500"> / {{ kpis.total }}</span></p>
+        <p class="mt-1 text-xl font-bold sm:text-2xl tabular-nums text-slate-100">{{ kpis.active }}<span class="text-base font-medium text-slate-500"> / {{ kpis.total }}</span></p>
         <p v-if="analyzedIds !== null" class="mt-0.5 text-[11px] text-slate-500">{{ t('dash.kpi.analyzed', { count: analyzedCount }) }}</p>
       </div>
-      <button type="button" class="rounded-xl border border-slate-800 bg-slate-900 p-4 text-left hover:border-slate-600" :aria-pressed="levelFilter === 'heavy'" @click="levelFilter = levelFilter === 'heavy' ? 'all' : 'heavy'">
+      <button type="button" class="rounded-xl border border-slate-800 bg-slate-900 p-3 sm:p-4 text-left hover:border-slate-600" :aria-pressed="levelFilter === 'heavy'" @click="levelFilter = levelFilter === 'heavy' ? 'all' : 'heavy'">
         <p class="text-xs text-slate-500">{{ t('dash.kpi.heavy') }}</p>
-        <p class="mt-1 text-2xl font-bold tabular-nums" :class="kpis.heavy > 0 ? 'text-red-400' : 'text-slate-100'">{{ kpis.heavy }}</p>
+        <p class="mt-1 text-xl font-bold sm:text-2xl tabular-nums" :class="kpis.heavy > 0 ? 'text-red-400' : 'text-slate-100'">{{ kpis.heavy }}</p>
       </button>
-      <button type="button" class="rounded-xl border border-slate-800 bg-slate-900 p-4 text-left hover:border-slate-600" :aria-pressed="statusFilter === 'offline'" @click="statusFilter = statusFilter === 'offline' ? 'all' : 'offline'">
+      <button type="button" class="rounded-xl border border-slate-800 bg-slate-900 p-3 sm:p-4 text-left hover:border-slate-600" :aria-pressed="statusFilter === 'offline'" @click="statusFilter = statusFilter === 'offline' ? 'all' : 'offline'">
         <p class="text-xs text-slate-500">{{ t('dash.kpi.offline') }}</p>
-        <p class="mt-1 text-2xl font-bold tabular-nums" :class="kpis.offline > 0 ? 'text-amber-400' : 'text-slate-100'">{{ kpis.offline }}</p>
+        <p class="mt-1 text-xl font-bold sm:text-2xl tabular-nums" :class="kpis.offline > 0 ? 'text-amber-400' : 'text-slate-100'">{{ kpis.offline }}</p>
       </button>
     </div>
 
@@ -212,19 +231,19 @@ onBeforeUnmount(() => {
         type="search"
         :placeholder="t('dash.search')"
         :aria-label="t('dash.search')"
-        class="min-w-[14rem] flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+        class="min-w-[14rem] flex-1 basis-full rounded-lg sm:basis-auto border border-slate-700 bg-slate-900 px-3 py-1.5 text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
       />
-      <select v-model="statusFilter" class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200" :aria-label="t('dash.filter.status')">
+      <select v-model="statusFilter" class="flex-auto rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200 sm:flex-none" :aria-label="t('dash.filter.status')">
         <option value="all">{{ t('dash.filter.all') }}</option>
         <option value="active">{{ t('dash.filter.active') }}</option>
         <option value="analyzed">{{ t('dash.filter.analyzed') }}</option>
         <option value="offline">{{ t('dash.filter.offline') }}</option>
       </select>
-      <select v-model="levelFilter" class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200" :aria-label="t('dash.filter.level')">
+      <select v-model="levelFilter" class="flex-auto rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200 sm:flex-none" :aria-label="t('dash.filter.level')">
         <option value="all">{{ t('dash.filter.anyLevel') }}</option>
         <option v-for="(label, level) in TRAFFIC_LABELS" :key="level" :value="level">{{ label }}</option>
       </select>
-      <select v-model="sortKey" class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200" :aria-label="t('dash.sort')">
+      <select v-model="sortKey" class="flex-auto rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200 sm:flex-none" :aria-label="t('dash.sort')">
         <option value="busiest">{{ t('dash.sort.busiest') }}</option>
         <option value="level">{{ t('dash.sort.level') }}</option>
         <option value="name">{{ t('dash.sort.name') }}</option>
@@ -239,7 +258,7 @@ onBeforeUnmount(() => {
           :aria-pressed="layout === option"
           @click="layout = option"
         >
-          {{ t(option === 'grid' ? 'dash.layout.grid' : 'dash.layout.list') }}
+          <span class="inline-flex items-center gap-1"><AppIcon :name="option" :size="13" />{{ t(option === 'grid' ? 'dash.layout.grid' : 'dash.layout.list') }}</span>
         </button>
       </div>
     </div>
@@ -258,6 +277,8 @@ onBeforeUnmount(() => {
         :range="range"
         :layout="layout"
         :snapshot-tick="snapshotTick"
+        :snapshot-at="snapshotTimes[camera.id]"
+        :now="now"
       />
     </div>
   </main>

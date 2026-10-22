@@ -69,6 +69,17 @@ export function directionLabels(camera: CameraEntry | null | undefined, axis: Ro
   };
 }
 
+/** How long ago, short: "pre 12 s", "pre 7 min", "pre 2 h". */
+export function formatAge(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return t('age.seconds', { n: seconds });
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return t('age.minutes', { n: minutes });
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return t('age.hours', { n: hours });
+  return t('age.days', { n: Math.floor(hours / 24) });
+}
+
 export function formatCount(value: number): string {
   return formatNumber(value);
 }
