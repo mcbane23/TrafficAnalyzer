@@ -160,7 +160,7 @@ their defaults.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `3001` | HTTP port the server listens on inside the container |
-| `ADMIN_PASSWORD` | none | Password for the Admin pages and every change (cameras, settings, accuracy checks). The dashboard, statistics and live video stay open. A sign-in lasts 30 days; changing the password signs everyone out. Without it, Admin is open to anyone and says so |
+| `ADMIN_PASSWORD` | none | Password for the Admin pages and every change (cameras, settings, accuracy checks). The dashboard, statistics and live video stay open. It can also be set, changed or removed on the Admin page (stored hashed as `data/admin-password.json`); when this variable is set it wins and the page can't change it. A sign-in lasts 30 days; changing the password signs everyone out. Without any password, Admin is open to anyone and says so |
 | `OVERLAY_DEVICE` | `CPU` | `GPU` runs the live-box model on an Intel GPU (needs `/dev/dri`, amd64 image only) |
 | `OVERLAY_MODEL` | `yolo26s` on GPU, `yolo26n` on CPU | Default live-box model: `yolo26n`, `yolo26s` or `yolo26m` (Admin can change it) |
 | `OVERLAY_CPU_MODEL` | `yolo26n` | Model used on the CPU, and when the GPU can't be used |

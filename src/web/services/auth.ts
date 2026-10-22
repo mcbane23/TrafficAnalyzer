@@ -4,6 +4,8 @@ export interface AuthStatus {
   /** Whether the server has an Admin password (ADMIN_PASSWORD) at all. */
   required: boolean;
   signedIn: boolean;
+  /** 'env' when ADMIN_PASSWORD sets it (not changeable here), 'admin' when set on the Admin page. */
+  source: 'env' | 'admin' | null;
 }
 
 /** The last status the server reported; null until the first check. */
@@ -26,7 +28,7 @@ export async function signIn(password: string): Promise<SignInResult> {
       body: JSON.stringify({ password }),
     });
     if (res.ok) {
-      authStatus.value = { required: true, signedIn: true };
+      if (authStatus.value) authStatus.value = { ...authStatus.value, signedIn: true };
       return 'ok';
     }
     if (res.status === 401) return 'wrong';
@@ -40,6 +42,27 @@ export async function signIn(password: string): Promise<SignInResult> {
 export async function signOut(): Promise<void> {
   await fetch('/api/auth/logout', { method: 'POST' });
   if (authStatus.value) authStatus.value = { ...authStatus.value, signedIn: false };
+}
+
+export type ChangePasswordResult = 'ok' | 'wrong' | 'short' | 'env' | 'error';
+
+/** Sets, changes or (empty `password`) removes the Admin page's password. */
+export async function changePassword(current: string, password: string): Promise<ChangePasswordResult> {
+  try {
+    const res = await fetch('/api/admin/password', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current, password }),
+    });
+    if (res.ok) {
+      await fetchAuthStatus();
+      return 'ok';
+    }
+    const body = (await res.json().catch(() => ({}))) as { code?: string };
+    return body.code === 'wrong' || body.code === 'short' || body.code === 'env' ? body.code : 'error';
+  } catch {
+    return 'error';
+  }
 }
 
 /**

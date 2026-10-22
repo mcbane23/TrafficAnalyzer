@@ -53,9 +53,12 @@ export function createApp(
 ): Express {
   const app = express();
 
-  // Admin sign-in (ADMIN_PASSWORD). Without a password set, `required` is false and every guard lets requests through.
+  // Admin sign-in (ADMIN_PASSWORD or one set on the Admin page). Without a password, `required` is false and
+  // every guard lets requests through.
   app.get('/api/auth/status', (req, res) => {
-    res.set('Cache-Control', 'no-store').json({ required: adminAuth.required, signedIn: adminAuth.isSignedIn(req) });
+    res
+      .set('Cache-Control', 'no-store')
+      .json({ required: adminAuth.required, signedIn: adminAuth.isSignedIn(req), source: adminAuth.source });
   });
   app.post('/api/auth/login', express.json({ limit: '4kb' }), (req, res) => {
     const outcome = adminAuth.signIn(req.ip ?? 'unknown', (req.body as { password?: unknown } | undefined)?.password);
@@ -73,6 +76,22 @@ export function createApp(
     res.clearCookie(ADMIN_COOKIE, { path: '/' }).status(204).end();
   });
   app.use('/api/admin', adminAuth.guard);
+  // Sets, changes or (empty `password`) removes the Admin page's password; refused while ADMIN_PASSWORD is set.
+  app.put('/api/admin/password', express.json({ limit: '4kb' }), (req, res) => {
+    const body = (req.body ?? {}) as { current?: unknown; password?: unknown };
+    const { result, cookie } = adminAuth.changePassword(body.current, body.password);
+    if (result === 'env') {
+      res.status(409).json({ error: 'The password is set by ADMIN_PASSWORD.', code: 'env' });
+    } else if (result === 'wrong') {
+      setTimeout(() => res.status(403).json({ error: 'Wrong current password.', code: 'wrong' }), 500);
+    } else if (result === 'short') {
+      res.status(400).json({ error: 'The password is too short.', code: 'short' });
+    } else {
+      if (cookie) res.cookie(ADMIN_COOKIE, cookie, adminAuth.cookieOptions(req.secure));
+      else res.clearCookie(ADMIN_COOKIE, { path: '/' });
+      res.status(204).end();
+    }
+  });
 
 
   // Liveness for Docker's HEALTHCHECK: answers only while the event loop is free, and checks the camera

@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Request } from 'express';
 import { ADMIN_COOKIE, AdminAuth } from './adminAuth';
 
@@ -55,5 +58,50 @@ describe('AdminAuth', () => {
     auth.guard(request(), res as never, next);
     expect(res.status).toHaveBeenCalledWith(401);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  describe('password set on the Admin page', () => {
+    let dir: string;
+    let storePath: string;
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-auth-'));
+      storePath = path.join(dir, 'admin-password.json');
+    });
+    afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    it('sets, keeps across a restart, changes and removes the password', () => {
+      const auth = new AdminAuth(undefined, { storePath });
+      expect(auth.source).toBeNull();
+      expect(auth.changePassword('', 'kratk').result).toBe('short');
+      const set = auth.changePassword('', 'tajna123');
+      expect(set.result).toBe('ok');
+      expect(auth.source).toBe('admin');
+      expect(fs.readFileSync(storePath, 'utf8')).not.toContain('tajna123');
+      const cookie = `${ADMIN_COOKIE}=${set.cookie}`;
+      expect(auth.isSignedIn(request(cookie))).toBe(true);
+
+      const restarted = new AdminAuth(undefined, { storePath });
+      expect(restarted.required).toBe(true);
+      expect(restarted.isSignedIn(request(cookie))).toBe(true);
+      expect(restarted.signIn('a', 'tajna123')).toEqual({ cookie: expect.any(String) });
+
+      expect(restarted.changePassword('pogresno', 'nova-lozinka').result).toBe('wrong');
+      expect(restarted.changePassword('tajna123', 'nova-lozinka').result).toBe('ok');
+      expect(restarted.isSignedIn(request(cookie))).toBe(false);
+      expect(restarted.signIn('a', 'tajna123')).toBeNull();
+
+      expect(restarted.changePassword('nova-lozinka', '').result).toBe('ok');
+      expect(restarted.required).toBe(false);
+      expect(fs.existsSync(storePath)).toBe(false);
+    });
+
+    it('lets ADMIN_PASSWORD win and refuses changes on the page', () => {
+      new AdminAuth(undefined, { storePath }).changePassword('', 'sa-stranice');
+      const auth = new AdminAuth('iz-compose', { storePath });
+      expect(auth.source).toBe('env');
+      expect(auth.signIn('a', 'sa-stranice')).toBeNull();
+      expect(auth.signIn('a', 'iz-compose')).toEqual({ cookie: expect.any(String) });
+      expect(auth.changePassword('iz-compose', 'nesto-novo').result).toBe('env');
+    });
   });
 });

@@ -173,7 +173,9 @@ precedent for Vue components.
   leaves; a reload keeps it while watched) - Bane wants the camera page to always show analysis. Bane wants
   these in the UI, not docker-compose — don't move them back to env vars. Idea he raised for later:
   NVIDIA GPU support for YOLO.
-- **Admin password** (`AdminAuth`, `ADMIN_PASSWORD`, Bane's R5): guards `/api/admin/*` and
+- **Admin password** (`AdminAuth`, Bane's R5): from `ADMIN_PASSWORD`, or (Bane chose both) set/changed/removed on
+  the Admin page via `PUT /api/admin/password`, stored as a salted scrypt hash in `data/admin-password.json`;
+  the env var wins and the page then can't change it. Forgotten page password: delete that file. It guards `/api/admin/*` and
   `POST /api/cameras/revalidate`; the dashboard, statistics and live video stay public. The session is an
   HMAC-signed expiry in the `ta_admin` cookie (key derived from the password, 30 days, nothing stored),
   10 wrong tries per IP in 15 min then 429. The web router sends `meta.admin` routes to `/login`, and a

@@ -8,8 +8,9 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      # Password for the Admin page (cameras, settings). Without it Admin is open
-      # to anyone who can reach the port; the dashboard and statistics stay open either way.
+      # Password for the Admin page (cameras, settings). It can also be set on the
+      # Admin page itself; this line, when present, wins. Without any password Admin is
+      # open to anyone who can reach the port; the dashboard and statistics stay open either way.
       # - ADMIN_PASSWORD=change-me
       # Run the live-view vehicle detector on an Intel GPU (OpenVINO). Needs the
       # `devices` / `group_add` lines below; without them it falls back to the CPU.
