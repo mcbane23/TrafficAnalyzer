@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 // Type only: hls.js (~540 KB) is loaded on the first hover preview, not with the dashboard.
 import type Hls from 'hls.js';
 import type { CameraEntry } from '../../types/camera';
@@ -8,6 +8,8 @@ import type { CameraSummary, StatsRange } from '../../types/stats';
 import { cameraSnapshotUrl } from '../services/stats';
 import { RANGES, TRAFFIC_BAR_STYLES, TRAFFIC_LABELS, formatAge, formatCount } from '../composables/trafficUi';
 import Sparkline from './charts/Sparkline.vue';
+import AppIcon from './AppIcon.vue';
+import { isFavorite, toggleFavorite } from '../composables/favorites';
 import { t } from '../i18n';
 
 const props = defineProps<{
@@ -47,6 +49,24 @@ const status = computed(() => {
   if (analysisOff.value) return { label: t('card.analysisOff'), chip: 'bg-slate-900/80 text-slate-300', dot: 'bg-slate-500', title: t('card.analysisOffTitle') };
   return { label: t('card.waiting'), chip: 'bg-slate-900/80 text-slate-300', dot: 'bg-sky-400', title: '' };
 });
+/** "+35% od uobičajenog" for about the last hour, once there is history to compare with. */
+const vsUsual = computed(() => {
+  const ratio = props.summary?.vsUsual;
+  if (ratio == null || analysisOff.value) return null;
+  const pct = Math.round(ratio * 100);
+  if (Math.abs(pct) < 10) return { label: t('card.usual.same'), cls: 'text-slate-400' };
+  return {
+    label: t('card.usual.diff', { pct: `${pct > 0 ? '+' : '−'}${Math.abs(pct)}` }),
+    cls: pct > 0 ? 'text-amber-400' : 'text-emerald-400',
+  };
+});
+const favorite = computed(() => isFavorite(props.camera.id));
+function onStar(event: Event) {
+  // The card is a link; the star only toggles.
+  event.preventDefault();
+  event.stopPropagation();
+  toggleFavorite(props.camera.id);
+}
 const stripe = computed(() => (hasTrafficData.value ? TRAFFIC_BAR_STYLES[props.overview!.trafficLevel] : 'bg-transparent'));
 const snapshotAge = computed(() => (props.snapshotAt && !snapshotFailed.value ? formatAge(props.now - Date.parse(props.snapshotAt)) : null));
 
@@ -59,12 +79,36 @@ const locationLabel = computed(() => {
   return t('card.unknownLocation');
 });
 
+// The thumbnail's URL carries its capture time, so the browser only downloads
+// a picture that changed - and only cards on screen move to a newer one; the
+// rest keep theirs until scrolled into view.
+const root = ref<{ $el: Element } | null>(null);
+const onScreen = ref(true);
 const snapshotFailed = ref(false);
-const snapshotSrc = computed(() => cameraSnapshotUrl(props.camera.id, props.snapshotTick));
+const latestVersion = computed(() => props.snapshotAt ?? props.snapshotTick);
+const shownVersion = ref<string | number>(latestVersion.value);
+const snapshotSrc = computed(() => cameraSnapshotUrl(props.camera.id, shownVersion.value));
+watch([latestVersion, onScreen], () => {
+  if (!onScreen.value || shownVersion.value === latestVersion.value) return;
+  shownVersion.value = latestVersion.value;
+  snapshotFailed.value = false;
+});
+let observer: IntersectionObserver | null = null;
+onMounted(() => {
+  if (typeof IntersectionObserver === 'undefined') return;
+  observer = new IntersectionObserver(([entry]) => (onScreen.value = entry.isIntersecting), { rootMargin: '200px' });
+  if (root.value) observer.observe(root.value.$el);
+});
+// Switching between grid and list renders a new element.
 watch(
-  () => props.snapshotTick,
-  () => (snapshotFailed.value = false),
+  () => root.value?.$el as Element | undefined,
+  (el) => {
+    observer?.disconnect();
+    if (el) observer?.observe(el);
+  },
+  { flush: 'post' },
 );
+onBeforeUnmount(() => observer?.disconnect());
 
 // Live preview only while hovered: a still thumbnail per card replaces the
 // old always-on video per card, which opened ~20 HLS streams at once
@@ -123,6 +167,7 @@ onBeforeUnmount(stopPreview);
   <!-- Grid layout: thumbnail card. -->
   <router-link
     v-if="layout === 'grid'"
+    ref="root"
     :to="{ path: `/cameras/${camera.id}`, query: { range } }"
     class="group relative block overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-slate-600"
     :class="{ 'opacity-60': !isActive }"
@@ -150,6 +195,17 @@ onBeforeUnmount(stopPreview);
       <span v-if="snapshotAge && !previewing" class="absolute bottom-2 left-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-300" :title="t('card.snapshotAgeTitle')">
         {{ snapshotAge }}
       </span>
+      <button
+        type="button"
+        class="absolute right-2 top-2 rounded-full bg-black/50 p-1 backdrop-blur transition hover:bg-black/70"
+        :class="favorite ? 'text-amber-300' : 'text-slate-300 opacity-70 hover:opacity-100'"
+        :aria-pressed="favorite"
+        :aria-label="favorite ? t('card.unfavorite') : t('card.favorite')"
+        :title="favorite ? t('card.unfavorite') : t('card.favorite')"
+        @click="onStar"
+      >
+        <AppIcon name="star" :size="15" :filled="favorite" />
+      </button>
       <span v-if="canPreview && !previewing" class="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-slate-300 opacity-0 transition group-hover:opacity-100">
         {{ t('card.livePreview') }}
       </span>
@@ -164,6 +220,7 @@ onBeforeUnmount(stopPreview);
         <div class="shrink-0 text-right">
           <p class="text-lg font-semibold tabular-nums" :class="passedLabel === '–' ? 'text-slate-500' : 'text-slate-100'">{{ passedLabel }}</p>
           <p class="text-[11px] text-slate-500">{{ t('card.passed', { range: rangeLabel }) }}</p>
+          <p v-if="vsUsual" class="text-[11px] font-medium" :class="vsUsual.cls" :title="t('card.usual.title')">{{ vsUsual.label }}</p>
         </div>
       </div>
       <div class="mt-3">
@@ -181,6 +238,7 @@ onBeforeUnmount(stopPreview);
   <!-- List layout: one compact row with a small thumbnail. -->
   <router-link
     v-else
+    ref="root"
     :to="{ path: `/cameras/${camera.id}`, query: { range } }"
     class="relative grid grid-cols-[5.5rem_minmax(0,1fr)_auto] items-center gap-3 overflow-hidden rounded-lg border border-slate-800 bg-slate-900 py-2 pl-3 pr-4 transition hover:border-slate-600 sm:grid-cols-[6rem_minmax(0,2fr)_10rem_minmax(0,1fr)_5rem] sm:gap-4"
     :class="{ 'opacity-60': !isActive }"
@@ -198,7 +256,19 @@ onBeforeUnmount(stopPreview);
       <span v-if="snapshotAge" class="absolute bottom-0.5 left-0.5 rounded bg-black/60 px-1 text-[9px] tabular-nums text-slate-300">{{ snapshotAge }}</span>
     </div>
     <div class="min-w-0">
-      <p class="line-clamp-2 font-medium leading-snug text-slate-100" :title="camera.name">{{ camera.name }}</p>
+      <p class="line-clamp-2 font-medium leading-snug text-slate-100" :title="camera.name">
+        <button
+          type="button"
+          class="mr-1 inline-flex align-[-2px]"
+          :class="favorite ? 'text-amber-300' : 'text-slate-600 hover:text-slate-300'"
+          :aria-pressed="favorite"
+          :aria-label="favorite ? t('card.unfavorite') : t('card.favorite')"
+          :title="favorite ? t('card.unfavorite') : t('card.favorite')"
+          @click="onStar"
+        >
+          <AppIcon name="star" :size="14" :filled="favorite" />
+        </button>{{ camera.name }}
+      </p>
       <p class="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-slate-400 sm:hidden" :title="status.title">
         <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="status.dot"></span>
         <span class="truncate">{{ status.label }}</span>
@@ -214,6 +284,9 @@ onBeforeUnmount(stopPreview);
     <div class="hidden sm:block">
       <Sparkline v-if="summary && !analysisOff" :values="summary.sparkline" :height="22" />
     </div>
-    <p class="text-right font-semibold tabular-nums" :class="passedLabel === '–' ? 'text-slate-500' : 'text-slate-100'">{{ passedLabel }}</p>
+    <div class="text-right">
+      <p class="font-semibold tabular-nums" :class="passedLabel === '–' ? 'text-slate-500' : 'text-slate-100'">{{ passedLabel }}</p>
+      <p v-if="vsUsual" class="whitespace-nowrap text-[10px] font-medium" :class="vsUsual.cls" :title="t('card.usual.title')">{{ vsUsual.label }}</p>
+    </div>
   </router-link>
 </template>

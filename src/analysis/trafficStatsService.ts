@@ -160,6 +160,18 @@ export interface TrafficStatsServiceOptions {
   now?: () => Date;
 }
 
+/** Days before today that "usual" traffic is averaged over. */
+const USUAL_DAYS = 14;
+/** A slot (kind of day x hour) needs this much analyzed time in those days before it has a "usual". */
+const USUAL_MIN_MINUTES = 30;
+/** The card's comparison with the usual needs this much analyzed time in the last hour or so... */
+const VS_USUAL_MIN_MINUTES = 20;
+/** ...and this many vehicles expected in it, so a quiet hour's 2 against 1 doesn't read as +100%. */
+const VS_USUAL_MIN_EXPECTED = 10;
+
+/** Vehicles and analyzed minutes per slot: kind of day (0 working day, 1 weekend) x 24 + hour. */
+type UsualSlots = Map<number, { count: number; minutes: number }>;
+
 interface MinuteAccumulator {
   minute: number;
   frames: number;
@@ -187,6 +199,8 @@ export class TrafficStatsService {
   private readonly now: () => Date;
   private readonly models = new Map<string, CameraPassageModel>();
   private readonly minutes = new Map<string, MinuteAccumulator>();
+  /** Every camera's usual-traffic slots, worked out once a day (they only cover days before today). */
+  private usualCache: { dayStart: number; byCamera: Map<string, UsualSlots> } | null = null;
 
   constructor(
     private readonly store: TrafficStatsStoreLike,
@@ -251,9 +265,10 @@ export class TrafficStatsService {
     const passages = this.store.passageBuckets(query);
     const coverage = this.store.coverageBuckets(query);
 
+    const usual = this.usualSlots(nowMs).get(cameraId);
     const entries = starts.map((start, i) => {
       const end = i + 1 < starts.length ? starts[i + 1] : bucket === '1d' ? this.calendar.addDays(start, 1) : start + BUCKET_MS[bucket];
-      return this.buildEntry(start, end, nowMs, passages, coverage);
+      return { ...this.buildEntry(start, end, nowMs, passages, coverage), usual: this.usualCount(usual, start, end) };
     });
 
     const totals = emptyCounts();
@@ -330,7 +345,7 @@ export class TrafficStatsService {
     const summaryFor = (cameraId: string) => {
       let summary = byCamera.get(cameraId);
       if (!summary) {
-        summary = { cameraId, ...emptyCounts(), coverage: 0, sparkline: new Array(24).fill(null) };
+        summary = { cameraId, ...emptyCounts(), coverage: 0, sparkline: new Array(24).fill(null), vsUsual: null };
         byCamera.set(cameraId, summary);
       }
       return summary;
@@ -348,6 +363,31 @@ export class TrafficStatsService {
       const line = summaryFor(row.cameraId).sparkline;
       const i = (row.startMs - sparkFrom) / HOUR_MS;
       line[i] = (line[i] ?? 0) + row.total;
+    }
+
+    // Last hour or so (the previous and the current clock hour) against the usual for the same analyzed minutes.
+    const recentFrom = sparkFrom + 22 * HOUR_MS;
+    const usual = this.usualSlots(nowMs);
+    const recent = new Map<string, { count: number; minutes: number; expected: number | null }>();
+    const recentFor = (cameraId: string) => {
+      let entry = recent.get(cameraId);
+      if (!entry) {
+        entry = { count: 0, minutes: 0, expected: 0 };
+        recent.set(cameraId, entry);
+      }
+      return entry;
+    };
+    for (const row of sparkCoverage) {
+      if (row.startMs < recentFrom || row.coveredMinutes <= 0) continue;
+      const entry = recentFor(row.cameraId);
+      entry.minutes += row.coveredMinutes;
+      const rate = this.usualRate(usual.get(row.cameraId), row.startMs);
+      entry.expected = rate === null || entry.expected === null ? null : entry.expected + (rate * row.coveredMinutes) / 60;
+    }
+    for (const row of sparkPassages) if (row.startMs >= recentFrom) recentFor(row.cameraId).count += row.total;
+    for (const [cameraId, entry] of recent) {
+      if (entry.minutes < VS_USUAL_MIN_MINUTES || entry.expected === null || entry.expected < VS_USUAL_MIN_EXPECTED) continue;
+      summaryFor(cameraId).vsUsual = entry.count / entry.expected - 1;
     }
 
     const totals = emptyCounts();
@@ -428,13 +468,63 @@ export class TrafficStatsService {
     return Array.from({ length: count }, (_, i) => current - (count - 1 - i) * size);
   }
 
+  /** Every camera's analyzed history over the `USUAL_DAYS` before today, by kind of day and hour. */
+  private usualSlots(nowMs: number): Map<string, UsualSlots> {
+    const dayStart = this.calendar.startOfDay(nowMs);
+    if (this.usualCache?.dayStart === dayStart) return this.usualCache.byCamera;
+    const query: BucketQuery = { fromMs: this.calendar.addDays(dayStart, -USUAL_DAYS), toMs: dayStart, bucketMs: HOUR_MS };
+    const byCamera = new Map<string, UsualSlots>();
+    const slotFor = (cameraId: string, ms: number) => {
+      let slots = byCamera.get(cameraId);
+      if (!slots) {
+        slots = new Map();
+        byCamera.set(cameraId, slots);
+      }
+      const key = this.usualKey(ms);
+      let slot = slots.get(key);
+      if (!slot) {
+        slot = { count: 0, minutes: 0 };
+        slots.set(key, slot);
+      }
+      return slot;
+    };
+    for (const row of this.store.passageBuckets(query)) slotFor(row.cameraId, row.startMs).count += row.total;
+    for (const row of this.store.coverageBuckets(query)) slotFor(row.cameraId, row.startMs).minutes += row.coveredMinutes;
+    this.usualCache = { dayStart, byCamera };
+    return byCamera;
+  }
+
+  private usualKey(ms: number): number {
+    const { weekday, hour } = this.calendar.parts(ms);
+    return (weekday >= 5 ? 24 : 0) + hour;
+  }
+
+  /** Usual vehicles per hour for the hour containing `ms`, or null without enough history. */
+  private usualRate(slots: UsualSlots | undefined, ms: number): number | null {
+    const slot = slots?.get(this.usualKey(ms));
+    return slot && slot.minutes >= USUAL_MIN_MINUTES ? (slot.count / slot.minutes) * 60 : null;
+  }
+
+  /** Usual vehicles between `start` and `end` (hour by hour), or null if any hour in it has no usual. */
+  private usualCount(slots: UsualSlots | undefined, start: number, end: number): number | null {
+    let total = 0;
+    for (let at = start; at < end; ) {
+      const hourEnd = Math.min(end, (Math.floor(at / HOUR_MS) + 1) * HOUR_MS);
+      const rate = this.usualRate(slots, at);
+      if (rate === null) return null;
+      total += (rate * (hourEnd - at)) / HOUR_MS;
+      at = hourEnd;
+    }
+    return Math.round(total * 10) / 10;
+  }
+
   private buildEntry(
     start: number,
     end: number,
     nowMs: number,
     passages: PassageBucketRow[],
     coverage: CoverageBucketRow[],
-  ): StatsBucketEntry {
+  ): Omit<StatsBucketEntry, 'usual'> {
     const counts = emptyCounts();
     passages.filter((row) => row.startMs >= start && row.startMs < end).forEach((row) => addCounts(counts, pickCounts(row)));
     let coveredMinutes = 0;

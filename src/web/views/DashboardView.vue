@@ -9,6 +9,7 @@ import { fetchSnapshotTimes, fetchStatsSummary } from '../services/stats';
 import { RANGES, TRAFFIC_LABELS, formatCount, useStatsRange } from '../composables/trafficUi';
 import CameraCard from '../components/CameraCard.vue';
 import AppIcon from '../components/AppIcon.vue';
+import { favoriteIds } from '../composables/favorites';
 import { t } from '../i18n';
 
 const range = useStatsRange();
@@ -46,7 +47,7 @@ let snapshotHandle: ReturnType<typeof setInterval> | null = null;
 // Toolbar state, persisted per browser - a convenience, never required.
 type SortKey = 'busiest' | 'name' | 'level';
 const search = ref('');
-const statusFilter = ref<'all' | 'active' | 'analyzed' | 'offline'>('all');
+const statusFilter = ref<'all' | 'favorites' | 'active' | 'analyzed' | 'offline'>('all');
 const levelFilter = ref<'all' | TrafficLevel>('all');
 const sortKey = ref<SortKey>('busiest');
 // A phone fits one big card per screen, so it starts with the list (one row per camera).
@@ -73,6 +74,7 @@ const visibleCameras = computed(() => {
   const query = search.value.trim().toLowerCase();
   const list = cameras.value.filter((camera) => {
     if (query && !`${camera.name} ${camera.location.address ?? ''}`.toLowerCase().includes(query)) return false;
+    if (statusFilter.value === 'favorites' && !favoriteIds.value.has(camera.id)) return false;
     if (statusFilter.value === 'active' && camera.status !== 'active') return false;
     if (statusFilter.value === 'analyzed' && !isAnalyzed(camera)) return false;
     if (statusFilter.value === 'offline' && camera.status === 'active') return false;
@@ -87,7 +89,10 @@ const visibleCameras = computed(() => {
     const overview = overviewByCameraId.value.get(camera.id);
     return camera.status !== 'active' || !overview || overview.error ? 3 : LEVEL_RANK[overview.trafficLevel];
   };
+  const favorite = (camera: CameraEntry) => favoriteIds.value.has(camera.id);
   return [...list].sort((x, y) => {
+    // Starred cameras always come first.
+    if (favorite(x) !== favorite(y)) return favorite(x) ? -1 : 1;
     if (x.status !== y.status) return x.status === 'active' ? -1 : 1;
     if (isAnalyzed(x) !== isAnalyzed(y)) return isAnalyzed(x) ? -1 : 1;
     if (sortKey.value === 'busiest') return total(y) - total(x) || x.name.localeCompare(y.name);
@@ -235,6 +240,7 @@ onBeforeUnmount(() => {
       />
       <select v-model="statusFilter" class="flex-auto rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200 sm:flex-none" :aria-label="t('dash.filter.status')">
         <option value="all">{{ t('dash.filter.all') }}</option>
+        <option value="favorites">{{ t('dash.filter.favorites') }}</option>
         <option value="active">{{ t('dash.filter.active') }}</option>
         <option value="analyzed">{{ t('dash.filter.analyzed') }}</option>
         <option value="offline">{{ t('dash.filter.offline') }}</option>

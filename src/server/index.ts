@@ -22,6 +22,7 @@ import { DEFAULT_MIN_CONFIDENCE, DEFAULT_OPENVINO_MODEL, OPENVINO_MODELS, YoloDe
 import { VehicleTracker } from '../analysis/vehicleTracker';
 import { ServerMetricsService } from './serverMetrics';
 import { readAppVersion } from './appVersion';
+import { AdminAuth } from './adminAuth';
 import { AnalysisSettingsStore } from './analysisSettingsStore';
 import { AdminSettingsService } from './adminSettingsService';
 import { CameraEditor } from './cameraEditor';
@@ -38,6 +39,7 @@ const TRAFFIC_STATS_DB_PATH = path.resolve(__dirname, '../../data/traffic-stats.
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const ANALYSIS_SETTINGS_PATH = path.join(DATA_DIR, 'analysis-settings.json');
 const THUMBNAILS_DIR = path.join(DATA_DIR, 'thumbnails');
+const ADMIN_PASSWORD_PATH = path.join(DATA_DIR, 'admin-password.json');
 // Runtime-generated as well: OpenVINO's compiled GPU kernels for the overlay model.
 const OPENVINO_CACHE_DIR = path.resolve(__dirname, '../../data/openvino-cache');
 // Resolved from the working directory, not `__dirname` like the paths above:
@@ -284,6 +286,7 @@ const app = createApp(
   adminSettings,
   cameraEditor,
   accuracyChecks,
+  new AdminAuth(process.env.ADMIN_PASSWORD, { storePath: ADMIN_PASSWORD_PATH }),
   STATIC_DIR,
 );
 

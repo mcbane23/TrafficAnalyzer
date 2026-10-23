@@ -171,8 +171,16 @@ precedent for Vue components.
   the defaults now. A camera not switched on is still analyzed while its camera page is open
   (`subscribeCameraDetail` starts it, and it stops `VIEWER_LINGER_MS` = 15 s after the last viewer
   leaves; a reload keeps it while watched) - Bane wants the camera page to always show analysis. Bane wants
-  these in the UI, not docker-compose — don't move them back to env vars. Ideas he raised for later:
-  a password on the Admin page, NVIDIA GPU support for YOLO.
+  these in the UI, not docker-compose — don't move them back to env vars. Idea he raised for later:
+  NVIDIA GPU support for YOLO.
+- **Admin password** (`AdminAuth`, Bane's R5): from `ADMIN_PASSWORD`, or (Bane chose both) set/changed/removed on
+  the Admin page via `PUT /api/admin/password`, stored as a salted scrypt hash in `data/admin-password.json`;
+  the env var wins and the page then can't change it. Forgotten page password: delete that file. It guards `/api/admin/*` and
+  `POST /api/cameras/revalidate`; the dashboard, statistics and live video stay public. The session is an
+  HMAC-signed expiry in the `ta_admin` cookie (key derived from the password, 30 days, nothing stored),
+  10 wrong tries per IP in 15 min then 429. The web router sends `meta.admin` routes to `/login`, and a
+  401 from an admin request mid-session does the same. Without a password Admin shows a warning banner.
+  Any new route that changes server state must get `adminAuth.guard` (or live under `/api/admin`).
 - **Admin "Cameras"** (`CameraEditor`, UI in `CameraManager.vue` + `ZoneEditor.vue`): rename a camera,
   name its directions A/B (`directions`), draw `ignoreZones` with the mouse over its snapshot (arrows
   show the learned road axis when the stats have one), hide it (`hidden: true`: left out of

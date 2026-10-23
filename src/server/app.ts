@@ -14,6 +14,7 @@ import { AdminSettingsService } from './adminSettingsService';
 import { CameraEditError, CameraEditor } from './cameraEditor';
 import { AccuracyCheckError, AccuracyCheckService, CHECK_DURATIONS } from '../analysis/accuracyCheck';
 import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
+import { ADMIN_COOKIE, AdminAuth } from './adminAuth';
 
 /**
  * Creates the Express app: read-only camera API routes, a background
@@ -47,9 +48,50 @@ export function createApp(
   adminSettings: AdminSettingsService,
   cameraEditor: CameraEditor,
   accuracyChecks: AccuracyCheckService,
+  adminAuth: AdminAuth,
   staticDir?: string,
 ): Express {
   const app = express();
+
+  // Admin sign-in (ADMIN_PASSWORD or one set on the Admin page). Without a password, `required` is false and
+  // every guard lets requests through.
+  app.get('/api/auth/status', (req, res) => {
+    res
+      .set('Cache-Control', 'no-store')
+      .json({ required: adminAuth.required, signedIn: adminAuth.isSignedIn(req), source: adminAuth.source });
+  });
+  app.post('/api/auth/login', express.json({ limit: '4kb' }), (req, res) => {
+    const outcome = adminAuth.signIn(req.ip ?? 'unknown', (req.body as { password?: unknown } | undefined)?.password);
+    if (outcome === 'blocked') {
+      res.status(429).json({ error: 'Too many wrong passwords. Try again in 15 minutes.' });
+    } else if (outcome === null) {
+      // A short pause makes guessing slower still.
+      setTimeout(() => res.status(401).json({ error: 'Wrong password.' }), 500);
+    } else {
+      if (outcome.cookie) res.cookie(ADMIN_COOKIE, outcome.cookie, adminAuth.cookieOptions(req.secure));
+      res.status(204).end();
+    }
+  });
+  app.post('/api/auth/logout', (_req, res) => {
+    res.clearCookie(ADMIN_COOKIE, { path: '/' }).status(204).end();
+  });
+  app.use('/api/admin', adminAuth.guard);
+  // Sets, changes or (empty `password`) removes the Admin page's password; refused while ADMIN_PASSWORD is set.
+  app.put('/api/admin/password', express.json({ limit: '4kb' }), (req, res) => {
+    const body = (req.body ?? {}) as { current?: unknown; password?: unknown };
+    const { result, cookie } = adminAuth.changePassword(body.current, body.password);
+    if (result === 'env') {
+      res.status(409).json({ error: 'The password is set by ADMIN_PASSWORD.', code: 'env' });
+    } else if (result === 'wrong') {
+      setTimeout(() => res.status(403).json({ error: 'Wrong current password.', code: 'wrong' }), 500);
+    } else if (result === 'short') {
+      res.status(400).json({ error: 'The password is too short.', code: 'short' });
+    } else {
+      if (cookie) res.cookie(ADMIN_COOKIE, cookie, adminAuth.cookieOptions(req.secure));
+      else res.clearCookie(ADMIN_COOKIE, { path: '/' });
+      res.status(204).end();
+    }
+  });
 
 
   // Liveness for Docker's HEALTHCHECK: answers only while the event loop is free, and checks the camera
@@ -100,7 +142,7 @@ export function createApp(
     }
   });
 
-  app.post('/api/cameras/revalidate', (_req, res) => {
+  app.post('/api/cameras/revalidate', adminAuth.guard, (_req, res) => {
     const { started, status } = revalidationService.start();
     res.status(started ? 202 : 409).json(status);
   });
@@ -286,7 +328,14 @@ export function createApp(
       res.status(404).json({ error: 'No frame captured yet for this camera.' });
       return;
     }
-    res.set('Cache-Control', 'no-store').set('X-Captured-At', frame.capturedAt).type('image/jpeg').send(frame.buffer);
+    // Tagged by capture time, so a browser asking again for a picture it already has gets a bodiless 304.
+    const etag = `"${Date.parse(frame.capturedAt)}"`;
+    res.set('Cache-Control', 'no-cache').set('ETag', etag).set('X-Captured-At', frame.capturedAt);
+    if (req.headers['if-none-match'] === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.type('image/jpeg').send(frame.buffer);
   });
 
   // Traffic statistics (vehicle passages per bucket, by direction and size class). Parameter validation is
