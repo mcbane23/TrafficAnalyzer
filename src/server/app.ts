@@ -15,6 +15,8 @@ import { CameraEditError, CameraEditor } from './cameraEditor';
 import { AccuracyCheckError, AccuracyCheckService, CHECK_DURATIONS } from '../analysis/accuracyCheck';
 import { StatsQueryError, TrafficStatsService, parseBucket, parseRange } from '../analysis/trafficStatsService';
 import { ADMIN_COOKIE, AdminAuth } from './adminAuth';
+import { BackupError, BackupService } from './backupService';
+import { pipeline } from 'node:stream/promises';
 
 /**
  * Creates the Express app: read-only camera API routes, a background
@@ -49,6 +51,7 @@ export function createApp(
   cameraEditor: CameraEditor,
   accuracyChecks: AccuracyCheckService,
   adminAuth: AdminAuth,
+  backups: BackupService,
   staticDir?: string,
 ): Express {
   const app = express();
@@ -76,6 +79,32 @@ export function createApp(
     res.clearCookie(ADMIN_COOKIE, { path: '/' }).status(204).end();
   });
   app.use('/api/admin', adminAuth.guard);
+  // Backup: statistics database + analysis settings + camera registry, as one SQLite file.
+  app.get('/api/admin/backup', async (_req, res) => {
+    let file: string | null = null;
+    try {
+      file = await backups.create();
+      const name = `trafficanalyzer-backup-${new Date().toISOString().slice(0, 10)}.sqlite`;
+      const done = file;
+      res.download(done, name, () => fs.rm(done, { force: true }, () => undefined));
+    } catch (err) {
+      if (file) fs.rm(file, { force: true }, () => undefined);
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Backup failed' });
+    }
+  });
+  // Restore: the backup file is the raw request body, streamed to disk first (it can be large).
+  app.post('/api/admin/restore', async (req, res) => {
+    const file = backups.tempPath();
+    try {
+      await pipeline(req, fs.createWriteStream(file));
+      res.json(await backups.restore(file));
+    } catch (err) {
+      if (err instanceof BackupError) res.status(400).json({ error: err.message, code: err.code });
+      else res.status(500).json({ error: err instanceof Error ? err.message : 'Restore failed' });
+    } finally {
+      fs.rm(file, { force: true }, () => undefined);
+    }
+  });
   // Sets, changes or (empty `password`) removes the Admin page's password; refused while ADMIN_PASSWORD is set.
   app.put('/api/admin/password', express.json({ limit: '4kb' }), (req, res) => {
     const body = (req.body ?? {}) as { current?: unknown; password?: unknown };
@@ -367,6 +396,26 @@ export function createApp(
       .attachment(`${req.params.id}-${range}-${stats.bucket}.csv`)
       .send(trafficStatsService.toCsv(stats));
   }));
+
+  // Every visible camera in one CSV, for spreadsheets.
+  app.get('/api/stats/all.csv', async (req, res) => {
+    try {
+      const range = parseRange(req.query.range);
+      const bucket = parseBucket(range, req.query.bucket);
+      const cameras = (await cameraService.listCameras()).map((camera) => ({
+        id: camera.id,
+        name: camera.name,
+        stats: trafficStatsService.getCameraStats(camera.id, range, bucket),
+      }));
+      res
+        .type('text/csv')
+        .attachment(`all-cameras-${range}-${cameras[0]?.stats.bucket ?? bucket}.csv`)
+        .send(trafficStatsService.toCsvAll(cameras));
+    } catch (err) {
+      if (err instanceof StatsQueryError) res.status(400).json({ error: err.message });
+      else res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to export statistics' });
+    }
+  });
 
   app.get('/api/cameras/:id/stats/heatmap', statsRoute((req, res) => {
     const days = req.query.days === undefined ? undefined : Number(req.query.days);

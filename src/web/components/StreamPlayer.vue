@@ -20,10 +20,20 @@ function reportInView(count: number | null) {
   emit('inView', count);
 }
 
-const props = withDefaults(defineProps<{ camera: CameraEntry; showBoxes?: boolean; showTrails?: boolean }>(), {
-  showBoxes: true,
-  showTrails: false,
-});
+const props = withDefaults(
+  defineProps<{
+    camera: CameraEntry;
+    showBoxes?: boolean;
+    showTrails?: boolean;
+    /** False plays the video only: no overlay stream, so the server never starts YOLO for it (the video wall). */
+    overlay?: boolean;
+  }>(),
+  {
+    showBoxes: true,
+    showTrails: false,
+    overlay: true,
+  },
+);
 
 const containerRef = ref<HTMLDivElement | null>(null);
 const videoRef = ref<HTMLVideoElement | null>(null);
@@ -674,6 +684,7 @@ function animationLoop() {
 
 /** Subscribes to the camera's overlay (appearance-model) boxes. No-op for inactive cameras. */
 function attachOverlay() {
+  if (!props.overlay) return;
   unsubscribeOverlay?.();
   unsubscribeOverlay = null;
   overlayState.value = 'starting';

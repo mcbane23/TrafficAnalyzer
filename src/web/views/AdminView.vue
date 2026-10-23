@@ -7,6 +7,7 @@ import Sparkline from '../components/charts/Sparkline.vue';
 import AnalysisSwitches from '../components/AnalysisSwitches.vue';
 import CameraManager from '../components/CameraManager.vue';
 import AdminPasswordCard from '../components/AdminPasswordCard.vue';
+import AdminBackupCard from '../components/AdminBackupCard.vue';
 import { formatNumber, intlLocale, t, tDynamic } from '../i18n';
 import { useRouter } from 'vue-router';
 import AppIcon from '../components/AppIcon.vue';
@@ -333,6 +334,8 @@ onBeforeUnmount(() => {
       <AnalysisSwitches :key="camerasVersion" class="mt-6" @changed="load" />
 
       <CameraManager class="mt-6" @changed="camerasVersion++" />
+
+      <AdminBackupCard class="mt-6" @restored="camerasVersion++" />
 
       <AdminPasswordCard class="mt-6" />
 

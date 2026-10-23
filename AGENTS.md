@@ -173,6 +173,24 @@ precedent for Vue components.
   leaves; a reload keeps it while watched) - Bane wants the camera page to always show analysis. Bane wants
   these in the UI, not docker-compose — don't move them back to env vars. Idea he raised for later:
   NVIDIA GPU support for YOLO.
+- **Map, video wall, backup, theme** (Bane's F1, F6, F7, I8, I7; 2026-10-23):
+  - `/map` (`MapView.vue`, Leaflet + OSM tiles loaded by the viewer's browser): markers from
+    `location.lat/lon`, colored by the live overview. Positions for the 22 default cameras are in
+    `data/cameras/belgrade.json`; `fillMissingPositions` copies them into an existing volume's registry
+    at startup (only where a camera has none). Admin camera editing sets/clears a position (`position` patch).
+  - `/wall` (`WallView.vue`): 4 `StreamPlayer`s with `:overlay="false"`, which opens no overlay SSE,
+    so the wall never starts YOLO. 4 because the camera host is HTTP/1.1 (6 connections per browser).
+  - Backup (`BackupService`): `GET /api/admin/backup` is `better-sqlite3`'s online backup of the stats
+    DB plus a `trafficanalyzer_backup` table (format, settings JSON, registry JSON). `POST
+    /api/admin/restore` (raw body) replaces cameras (schema-checked), then the stats tables in one
+    transaction via ATTACH (`TrafficStatsStore.restoreFrom`), then the settings. Temp files in
+    `data/tmp`, cleared at startup. `GET /api/stats/all.csv` exports every visible camera.
+  - Light theme: `style.css` flips Tailwind v4's `--color-*` variables under `:root[data-theme=light]`
+    (slate mirrored, accent 50-400 and 900-950 swapped), so views keep their dark-theme classes. Don't
+    use `text-slate-950` for text on colored buttons (it turns light); use `text-black`. Charts follow
+    via `chartSetup.ts`. `index.html` sets `data-theme` before the app loads.
+  - Accessibility: global `:focus-visible` ring, skip link, charts carry text descriptions
+    (`chartText.ts`), the map has a camera list for keyboard/screen-reader users.
 - **Admin password** (`AdminAuth`, Bane's R5): from `ADMIN_PASSWORD`, or (Bane chose both) set/changed/removed on
   the Admin page via `PUT /api/admin/password`, stored as a salted scrypt hash in `data/admin-password.json`;
   the env var wins and the page then can't change it. Forgotten page password: delete that file. It guards `/api/admin/*` and

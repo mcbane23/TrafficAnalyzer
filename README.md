@@ -3,6 +3,18 @@
 Detects traffic congestion and vehicle counts from live Belgrade camera feeds, with a web dashboard
 for browsing and watching cameras. See [AGENTS.md](AGENTS.md) for architecture and development notes.
 
+Pages: **Pregled** (all cameras, live traffic level), **Statistika** (busiest cameras, comparisons, a
+CSV of all cameras), **Mapa** (cameras on an OpenStreetMap map, colored by traffic), **Video zid** (up
+to 4 live cameras side by side, without vehicle boxes, for a TV or wall monitor) and **Admin** (server
+health, analysis settings, camera editing, backup and restore, password). The header switches language
+and theme (system, light, dark).
+
+### Backup and restore
+
+Admin → **Rezervna kopija** downloads one `.sqlite` file holding all statistics, the analysis settings
+and the cameras (names, directions, ignore zones, map positions). Restoring it on the same page replaces
+all of that while the server keeps running; the Admin password is not part of a backup.
+
 ## Run with Docker
 
 Every merge to `main` publishes an image to GitHub Container Registry:

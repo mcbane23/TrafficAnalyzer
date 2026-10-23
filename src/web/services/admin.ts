@@ -41,6 +41,7 @@ export interface CameraPatch {
   directions?: { a?: string; b?: string } | null;
   ignoreZones?: Array<{ name?: string; points: Array<[number, number]> }>;
   hidden?: boolean;
+  position?: { lat: number; lon: number } | null;
 }
 
 export interface NewCamera {
@@ -146,4 +147,24 @@ async function checkError(res: Response): Promise<Error> {
   }
   const fallback = body.error ?? t('check.error.generic', { status: res.status });
   return new Error(body.code ? tDynamic(`check.error.${body.code}`, fallback) : fallback);
+}
+
+export interface RestoreSummary {
+  createdAt: string | null;
+  passages: number;
+  cameras: number;
+}
+
+/** Uploads a backup file and restores it; the error is worded in the current language when the server says why. */
+export async function restoreBackup(file: File): Promise<RestoreSummary> {
+  const res = await fetch('/api/admin/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file,
+  });
+  if (res.ok) return res.json();
+  const body = (await res.json().catch(() => ({}))) as { code?: string };
+  if (body.code === 'not-backup') throw new Error(t('backup.notBackup'));
+  if (body.code === 'newer-format') throw new Error(t('backup.newer'));
+  throw new Error(t('backup.failed'));
 }

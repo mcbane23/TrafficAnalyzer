@@ -16,3 +16,5 @@ data/thumbnails
 data/accuracy-checks
 data/openvino-cache
 data/analysis-settings.json
+data/admin-password.json
+data/tmp

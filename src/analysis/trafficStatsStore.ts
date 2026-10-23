@@ -294,7 +294,42 @@ export class TrafficStatsStore {
     return this.prunePassagesStatement.run(cutoffMs, batch).changes;
   }
 
+  /** Writes a consistent copy of the whole database to `filePath` while the server keeps writing. */
+  async backupTo(filePath: string): Promise<void> {
+    await this.db.backup(filePath);
+  }
+
+  /**
+   * Replaces every statistics table with the contents of another database of
+   * this store's kind (a backup), in one transaction: on any error nothing
+   * changes. Columns are matched by name, so a backup from an older version
+   * with fewer columns still restores.
+   */
+  restoreFrom(filePath: string): { passages: number; hours: number; minutes: number } {
+    this.db.prepare('ATTACH DATABASE ? AS restore_src').run(filePath);
+    try {
+      const counts = this.db.transaction(() => {
+        const copied: number[] = [];
+        for (const table of STATS_TABLES) {
+          const source = this.db.prepare(`PRAGMA restore_src.table_info(${table})`).all() as Array<{ name: string }>;
+          if (source.length === 0) throw new Error(`The backup has no ${table} table.`);
+          const target = new Set((this.db.prepare(`PRAGMA main.table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name));
+          const columns = source.map((c) => c.name).filter((name) => target.has(name)).join(', ');
+          this.db.exec(`DELETE FROM main.${table}`);
+          copied.push(this.db.prepare(`INSERT INTO main.${table} (${columns}) SELECT ${columns} FROM restore_src.${table}`).run().changes);
+        }
+        return { passages: copied[0], hours: copied[1], minutes: copied[2] };
+      })();
+      return counts;
+    } finally {
+      this.db.exec('DETACH DATABASE restore_src');
+    }
+  }
+
   close(): void {
     this.db.close();
   }
 }
+
+/** The tables a backup carries, in `restoreFrom`'s order. */
+const STATS_TABLES = ['vehicle_passages', 'passage_hours', 'analysis_minutes'] as const;

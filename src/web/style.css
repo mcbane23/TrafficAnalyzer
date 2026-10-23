@@ -3,3 +3,75 @@
 body {
   @apply min-h-screen bg-slate-950 text-slate-100;
 }
+
+/*
+ * A visible ring on whatever has keyboard focus (links, buttons, selects,
+ * anything with a tabindex). Mouse clicks don't show it (:focus-visible).
+ * Text inputs keep their own focus border instead. Unlayered, so an
+ * `outline-none` utility can't remove it by accident.
+ */
+:where(a, button, select, summary, [tabindex]:not([tabindex='-1'])):focus-visible {
+  outline: 2px solid var(--color-sky-400);
+  outline-offset: 2px;
+}
+
+/*
+ * Light theme (the switch in the header, or the system's choice): the
+ * UI is written in dark-theme classes, so instead of a second set of classes
+ * the palette itself is flipped. Slate (backgrounds, borders, text) is
+ * mirrored - page slate-100, cards white, text dark - and the accent colors'
+ * light shades (used as text on dark) become their dark ones and back.
+ * 500-800 accents (solid buttons with white text, tints) stay as they are.
+ * Unlayered, so it wins over Tailwind's theme layer.
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-slate-950: oklch(96.8% 0.007 247.896);
+  --color-slate-900: #ffffff;
+  --color-slate-800: oklch(92.9% 0.013 255.508);
+  --color-slate-700: oklch(86.9% 0.022 252.894);
+  --color-slate-600: oklch(70.4% 0.04 256.788);
+  --color-slate-400: oklch(44.6% 0.043 257.281);
+  --color-slate-300: oklch(37.2% 0.044 257.287);
+  --color-slate-200: oklch(27.9% 0.041 260.031);
+  --color-slate-100: oklch(20.8% 0.042 265.755);
+  --color-slate-50: oklch(12.9% 0.042 264.695);
+  --color-sky-50: oklch(29.3% 0.066 243.157);
+  --color-sky-100: oklch(39.1% 0.09 240.876);
+  --color-sky-200: oklch(44.3% 0.11 240.79);
+  --color-sky-300: oklch(50% 0.134 242.749);
+  --color-sky-400: oklch(58.8% 0.158 241.966);
+  --color-sky-900: oklch(95.1% 0.026 236.824);
+  --color-sky-950: oklch(97.7% 0.013 236.62);
+  --color-emerald-50: oklch(26.2% 0.051 172.552);
+  --color-emerald-100: oklch(37.8% 0.077 168.94);
+  --color-emerald-200: oklch(43.2% 0.095 166.913);
+  --color-emerald-300: oklch(50.8% 0.118 165.612);
+  --color-emerald-400: oklch(59.6% 0.145 163.225);
+  --color-emerald-900: oklch(95% 0.052 163.051);
+  --color-emerald-950: oklch(97.9% 0.021 166.113);
+  --color-amber-50: oklch(27.9% 0.077 45.635);
+  --color-amber-100: oklch(41.4% 0.112 45.904);
+  --color-amber-200: oklch(47.3% 0.137 46.201);
+  --color-amber-300: oklch(55.5% 0.163 48.998);
+  --color-amber-400: oklch(66.6% 0.179 58.318);
+  --color-amber-900: oklch(96.2% 0.059 95.617);
+  --color-amber-950: oklch(98.7% 0.022 95.277);
+  --color-red-50: oklch(25.8% 0.092 26.042);
+  --color-red-100: oklch(39.6% 0.141 25.723);
+  --color-red-200: oklch(44.4% 0.177 26.899);
+  --color-red-300: oklch(50.5% 0.213 27.518);
+  --color-red-400: oklch(57.7% 0.245 27.325);
+  --color-red-900: oklch(93.6% 0.032 17.717);
+  --color-red-950: oklch(97.1% 0.013 17.38);
+  --color-violet-50: oklch(28.3% 0.141 291.089);
+  --color-violet-100: oklch(38% 0.189 293.745);
+  --color-violet-200: oklch(43.2% 0.232 292.759);
+  --color-violet-300: oklch(49.1% 0.27 292.581);
+  --color-violet-400: oklch(54.1% 0.281 293.009);
+  --color-violet-900: oklch(94.3% 0.029 294.588);
+  --color-violet-950: oklch(96.9% 0.016 293.756);
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}

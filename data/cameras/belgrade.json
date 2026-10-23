@@ -3,7 +3,9 @@
     "id": "brankov-most",
     "name": "Brankov Most (Branko's Bridge)",
     "location": {
-      "address": "Brankov most, Belgrade"
+      "address": "Brankov most, Belgrade",
+      "lat": 44.81482,
+      "lon": 20.44676
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -17,7 +19,9 @@
     "id": "most-na-adi",
     "name": "Most na Adi (Ada Bridge)",
     "location": {
-      "address": "Most na Adi, Belgrade"
+      "address": "Most na Adi, Belgrade",
+      "lat": 44.797,
+      "lon": 20.42589
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -31,7 +35,9 @@
     "id": "gazela-mostarska-petlja",
     "name": "Gazela Most – Mostarska Petlja",
     "location": {
-      "address": "Gazela most / Mostarska petlja, Belgrade"
+      "address": "Gazela most / Mostarska petlja, Belgrade",
+      "lat": 44.7975,
+      "lon": 20.4415
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -112,7 +118,9 @@
     "id": "pancevacki-most",
     "name": "Pančevački Most",
     "location": {
-      "address": "Pančevački most, Belgrade"
+      "address": "Pančevački most, Belgrade",
+      "lat": 44.8255,
+      "lon": 20.4925
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
@@ -129,7 +137,9 @@
     "id": "trg-nikole-pasica",
     "name": "Trg Nikole Pašića – Skupština",
     "location": {
-      "address": "Trg Nikole Pašića, Belgrade"
+      "address": "Trg Nikole Pašića, Belgrade",
+      "lat": 44.81263,
+      "lon": 20.46268
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -143,7 +153,9 @@
     "id": "vukov-spomenik",
     "name": "Vukov Spomenik",
     "location": {
-      "address": "Vukov spomenik, Belgrade"
+      "address": "Vukov spomenik, Belgrade",
+      "lat": 44.80515,
+      "lon": 20.47764
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
@@ -160,7 +172,9 @@
     "id": "autokomanda",
     "name": "Autokomanda",
     "location": {
-      "address": "Autokomanda, Belgrade"
+      "address": "Autokomanda, Belgrade",
+      "lat": 44.7898,
+      "lon": 20.46665
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -199,7 +213,9 @@
     "id": "usce-mihajla-pupina",
     "name": "Ušće – Bulevar Mihajla Pupina",
     "location": {
-      "address": "Bulevar Mihajla Pupina / Ušće, Belgrade"
+      "address": "Bulevar Mihajla Pupina / Ušće, Belgrade",
+      "lat": 44.8165,
+      "lon": 20.4345
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -213,7 +229,9 @@
     "id": "nemanjina",
     "name": "Nemanjina",
     "location": {
-      "address": "Nemanjina ulica, Belgrade"
+      "address": "Nemanjina ulica, Belgrade",
+      "lat": 44.80755,
+      "lon": 20.45742
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -227,7 +245,9 @@
     "id": "takovska",
     "name": "Takovska",
     "location": {
-      "address": "Takovska ulica, Belgrade"
+      "address": "Takovska ulica, Belgrade",
+      "lat": 44.81269,
+      "lon": 20.47109
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
@@ -244,7 +264,9 @@
     "id": "zeleznicka-stanica-savski-trg",
     "name": "Železnička Stanica – Savski Trg",
     "location": {
-      "address": "Savski trg, Belgrade"
+      "address": "Savski trg, Belgrade",
+      "lat": 44.80844,
+      "lon": 20.45602
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -258,7 +280,9 @@
     "id": "slavija",
     "name": "Slavija",
     "location": {
-      "address": "Trg Slavija, Belgrade"
+      "address": "Trg Slavija, Belgrade",
+      "lat": 44.80268,
+      "lon": 20.46605
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -311,7 +335,9 @@
     "id": "plavi-most",
     "name": "Plavi Most (Blue Bridge)",
     "location": {
-      "address": "Plavi most, Voždovac, Belgrade"
+      "address": "Plavi most, Voždovac, Belgrade",
+      "lat": 44.77905,
+      "lon": 20.50161
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -325,7 +351,9 @@
     "id": "trg-republike",
     "name": "Trg Republike",
     "location": {
-      "address": "Trg Republike, Belgrade"
+      "address": "Trg Republike, Belgrade",
+      "lat": 44.81622,
+      "lon": 20.4603
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -339,7 +367,9 @@
     "id": "bogoslovija",
     "name": "Bogoslovija",
     "location": {
-      "address": "Bogoslovija kružni tok, Belgrade"
+      "address": "Bogoslovija kružni tok, Belgrade",
+      "lat": 44.81545,
+      "lon": 20.49078
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
@@ -356,7 +386,9 @@
     "id": "kruzni-tok-novi-beograd",
     "name": "Kružni Tok Novi Beograd",
     "location": {
-      "address": "Novi Beograd, Belgrade"
+      "address": "Novi Beograd, Belgrade",
+      "lat": 44.82,
+      "lon": 20.413
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -370,7 +402,9 @@
     "id": "autoput-novi-beograd-genex",
     "name": "Autoput Novi Beograd (Genex)",
     "location": {
-      "address": "Autoput near Genex Tower, Novi Beograd, Belgrade"
+      "address": "Autoput near Genex Tower, Novi Beograd, Belgrade",
+      "lat": 44.817,
+      "lon": 20.3945
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -384,7 +418,9 @@
     "id": "jurija-gagarina",
     "name": "Jurija Gagarina",
     "location": {
-      "address": "Ulica Jurija Gagarina, Novi Beograd, Belgrade"
+      "address": "Ulica Jurija Gagarina, Novi Beograd, Belgrade",
+      "lat": 44.803,
+      "lon": 20.41
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network)",
@@ -400,7 +436,9 @@
     "id": "bulevar-despota-stefana",
     "name": "Bulevar Despota Stefana – 29. Novembar",
     "location": {
-      "address": "Bulevar despota Stefana, Belgrade"
+      "address": "Bulevar despota Stefana, Belgrade",
+      "lat": 44.816,
+      "lon": 20.472
     },
     "resolution": "704x576",
     "source": "Kamere Beograd (KBCnet / Naxi Radio network, via uzivokamere.com relay)",
@@ -417,7 +455,9 @@
     "id": "pijaca-cveca",
     "name": "Pijaca Cveća (Flower Market)",
     "location": {
-      "address": "Pijaca cveća, Belgrade"
+      "address": "Pijaca cveća, Belgrade",
+      "lat": 44.846,
+      "lon": 20.49
     },
     "resolution": "1920x1080",
     "source": "OK Radio",
@@ -431,7 +471,9 @@
     "id": "omv-krnjaca",
     "name": "OMV Krnjača",
     "location": {
-      "address": "OMV benzinska stanica, Krnjača, Belgrade"
+      "address": "OMV benzinska stanica, Krnjača, Belgrade",
+      "lat": 44.84135,
+      "lon": 20.49143
     },
     "resolution": "1920x1080",
     "source": "OK Radio",
@@ -445,7 +487,9 @@
     "id": "krnjaca",
     "name": "Krnjača",
     "location": {
-      "address": "Krnjača, Belgrade"
+      "address": "Krnjača, Belgrade",
+      "lat": 44.84483,
+      "lon": 20.48853
     },
     "resolution": "2688x1520",
     "source": "OK Radio",

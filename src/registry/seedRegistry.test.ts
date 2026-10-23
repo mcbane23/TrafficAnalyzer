@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { seedMissingFiles } from './seedRegistry';
+import { fillMissingPositions, seedMissingFiles } from './seedRegistry';
 
 describe('seedMissingFiles', () => {
   let root: string;
@@ -34,5 +34,20 @@ describe('seedMissingFiles', () => {
 
   it('copies nothing without a defaults folder', () => {
     expect(seedMissingFiles(path.join(root, 'missing'), target)).toEqual([]);
+  });
+});
+
+describe('fillMissingPositions', () => {
+  const cam = (id: string, location: Record<string, unknown>) => ({ id, location }) as never;
+
+  it('copies default positions only to cameras without one', () => {
+    const entries = [cam('a', { address: 'A' }), cam('b', { address: 'B', lat: 1, lon: 2 }), cam('c', { address: 'C' })];
+    const defaults = [cam('a', { address: 'A', lat: 44.8, lon: 20.4 }), cam('b', { lat: 9, lon: 9 })];
+    expect(fillMissingPositions(entries, defaults)).toEqual(['a']);
+    expect(entries.map((e: { location: unknown }) => e.location)).toEqual([
+      { address: 'A', lat: 44.8, lon: 20.4 },
+      { address: 'B', lat: 1, lon: 2 },
+      { address: 'C' },
+    ]);
   });
 });

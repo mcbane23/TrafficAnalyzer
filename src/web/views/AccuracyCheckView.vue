@@ -436,10 +436,10 @@ onBeforeUnmount(() => {
                 </p>
                 <div class="mt-3 grid grid-cols-2 gap-2">
                   <button type="button" class="rounded-lg bg-sky-600 px-3 py-4 text-left font-medium text-white hover:bg-sky-500 active:scale-[0.98]" @click="count('A')">
-                    <span class="block text-xs font-normal text-sky-100">A · {{ t('check.key', { key: 'A' }) }}</span>{{ labels.a }}
+                    <span class="block text-xs font-normal text-white/80">A · {{ t('check.key', { key: 'A' }) }}</span>{{ labels.a }}
                   </button>
                   <button type="button" class="rounded-lg bg-violet-600 px-3 py-4 text-left font-medium text-white hover:bg-violet-500 active:scale-[0.98]" @click="count('B')">
-                    <span class="block text-xs font-normal text-violet-100">B · {{ t('check.key', { key: 'B' }) }}</span>{{ labels.b }}
+                    <span class="block text-xs font-normal text-white/80">B · {{ t('check.key', { key: 'B' }) }}</span>{{ labels.b }}
                   </button>
                 </div>
                 <div class="mt-2 flex gap-2 text-xs">

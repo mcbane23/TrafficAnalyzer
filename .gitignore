@@ -12,3 +12,5 @@ data/analysis-settings.json
 data/analysis-settings.json.tmp
 data/thumbnails/
 data/accuracy-checks/
+data/admin-password.json
+data/tmp/

@@ -200,7 +200,7 @@ onBeforeUnmount(() => {
         <p class="font-medium text-sky-200">{{ t('dash.noneAnalyzed.title') }}</p>
         <p class="mt-0.5 text-sm text-slate-300">{{ t('dash.noneAnalyzed.body') }}</p>
       </div>
-      <router-link to="/admin" class="shrink-0 rounded-md bg-sky-400 px-3 py-1.5 text-sm font-medium text-slate-950 hover:bg-sky-300">
+      <router-link to="/admin" class="shrink-0 rounded-md bg-sky-400 px-3 py-1.5 text-sm font-medium text-black hover:bg-sky-300">
         {{ t('dash.noneAnalyzed.action') }}
       </router-link>
     </div>

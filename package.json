@@ -33,6 +33,7 @@
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
+    "@types/leaflet": "^1.9.12",
     "@types/node": "^26.1.1",
     "@vitejs/plugin-vue": "^6.0.8",
     "chart.js": "^4.5.1",
@@ -58,6 +59,7 @@
     "commander": "^15.0.0",
     "compression": "^1.8.2",
     "express": "^5.2.1",
+    "leaflet": "^1.9.4",
     "onnxruntime-node": "^1.30.0",
     "openvino-node": "^2026.4.1",
     "sharp": "^0.35.3"

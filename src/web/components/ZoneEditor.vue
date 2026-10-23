@@ -235,7 +235,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
     <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
       <template v-if="drawing">
         <span class="text-amber-300">{{ t('zones.drawingHint', { count: drawing.length }) }}</span>
-        <button type="button" class="rounded-md bg-amber-500 px-2.5 py-1 font-medium text-slate-950 disabled:opacity-50" :disabled="drawing.length < 3" @click="finishZone">
+        <button type="button" class="rounded-md bg-amber-500 px-2.5 py-1 font-medium text-black disabled:opacity-50" :disabled="drawing.length < 3" @click="finishZone">
           {{ t('zones.finish') }}
         </button>
         <button type="button" class="rounded-md px-2.5 py-1 text-slate-300 hover:bg-slate-800" @click="cancelZone">{{ t('zones.cancel') }}</button>
