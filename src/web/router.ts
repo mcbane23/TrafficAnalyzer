@@ -8,6 +8,8 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/statistics', name: 'statistics', component: () => import('./views/StatisticsView.vue') },
+    { path: '/map', name: 'map', component: () => import('./views/MapView.vue') },
+    { path: '/wall', name: 'wall', component: () => import('./views/WallView.vue') },
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
     { path: '/admin', name: 'admin', component: () => import('./views/AdminView.vue'), meta: { admin: true } },
     { path: '/admin/accuracy', name: 'admin-accuracy', component: () => import('./views/AccuracyCheckView.vue'), meta: { admin: true } },

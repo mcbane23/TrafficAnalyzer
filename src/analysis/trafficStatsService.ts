@@ -415,11 +415,21 @@ export class TrafficStatsService {
 
   /** CSV export of a stats response, one row per bucket. */
   toCsv(stats: CameraStats): string {
-    const header = 'bucket_start,total,direction_a,direction_b,direction_unknown,car,large,occupancy,coverage';
-    const lines = stats.buckets.map((b) =>
-      [b.start, b.total, b.a, b.b, b.unknown, b.car, b.large, b.occupancy === null ? '' : b.occupancy.toFixed(4), b.coverage.toFixed(4)].join(','),
+    const lines = stats.buckets.map((b) => csvFields(b).join(','));
+    return [CSV_HEADER, ...lines].join('\n') + '\n';
+  }
+
+  /** One CSV for several cameras: the per-camera columns, prefixed by the camera's id and name. */
+  toCsvAll(cameras: Array<{ id: string; name: string; stats: CameraStats }>): string {
+    const lines = cameras.flatMap(({ id, name, stats }) =>
+      stats.buckets.map((b) => [csvText(id), csvText(name), ...csvFields(b)].join(',')),
     );
-    return [header, ...lines].join('\n') + '\n';
+    return [`camera_id,camera_name,${CSV_HEADER}`, ...lines].join('\n') + '\n';
+  }
+
+  /** Drops what was worked out from stored history, after the database was replaced (a restored backup). */
+  forgetCachedHistory(): void {
+    this.usualCache = null;
   }
 
   private modelFor(cameraId: string): CameraPassageModel {
@@ -545,4 +555,15 @@ export class TrafficStatsService {
       coverage: Math.min(1, coveredMinutes / elapsedMinutes),
     };
   }
+}
+
+const CSV_HEADER = 'bucket_start,total,direction_a,direction_b,direction_unknown,car,large,occupancy,coverage';
+
+function csvFields(b: StatsBucketEntry): Array<string | number> {
+  return [b.start, b.total, b.a, b.b, b.unknown, b.car, b.large, b.occupancy === null ? '' : b.occupancy.toFixed(4), b.coverage.toFixed(4)];
+}
+
+/** Quotes a text field when it holds a comma, quote or line break. */
+function csvText(value: string): string {
+  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }

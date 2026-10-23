@@ -5,12 +5,24 @@ import type { ChartData, ChartOptions } from 'chart.js';
 import type { CameraStats } from '../../../types/stats';
 import { DIRECTION_COLORS, OCCUPANCY_COLOR } from '../../composables/trafficUi';
 import { formatBucketLabel, noDataPlugin } from './chartSetup';
-import { t } from '../../i18n';
+import { formatNumber, t } from '../../i18n';
+import { peakOf } from '../../services/chartText';
 
 const props = defineProps<{ stats: CameraStats; labels: { a: string; b: string } }>();
 
 /** Below this share of a bucket analyzed, its count understates the road too much to draw - it is shaded as a gap instead. */
 const MIN_COVERAGE = 0.5;
+
+/** The chart in words, for screen readers. */
+const description = computed(() => {
+  const { buckets, bucket, range, timeZone } = props.stats;
+  const labels = buckets.map((b) => formatBucketLabel(b.start, bucket, range, timeZone));
+  const peak = peakOf(labels, buckets.map((b) => (b.coverage < MIN_COVERAGE ? null : b.total)));
+  const total = buckets.reduce((sum, b) => sum + b.total, 0);
+  return peak
+    ? t('chart.a11yVolume', { total: formatNumber(total), peak: formatNumber(peak.value), at: peak.label })
+    : t('chart.a11yEmpty');
+});
 
 const gapIndices = computed(() =>
   props.stats.buckets.flatMap((bucket, i) => (bucket.coverage < MIN_COVERAGE ? [i] : [])),
@@ -91,7 +103,7 @@ const chartOptions = computed<ChartOptions<'bar'>>(() => ({
 </script>
 
 <template>
-  <div class="h-72">
+  <div class="h-72" role="img" :aria-label="description">
     <Bar :data="chartData as ChartData<'bar'>" :options="chartOptions" :plugins="[noDataPlugin]" />
   </div>
 </template>

@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CameraRegistryStore } from '../registry/cameraRegistryStore';
-import { seedMissingFiles } from '../registry/seedRegistry';
+import { fillMissingPositions, seedMissingFiles } from '../registry/seedRegistry';
 import { CameraValidator } from '../validator/cameraValidator';
 import { CameraService } from './cameraService';
 import { RevalidationService } from './revalidationService';
@@ -22,6 +22,7 @@ import { DEFAULT_MIN_CONFIDENCE, DEFAULT_OPENVINO_MODEL, OPENVINO_MODELS, YoloDe
 import { VehicleTracker } from '../analysis/vehicleTracker';
 import { ServerMetricsService } from './serverMetrics';
 import { readAppVersion } from './appVersion';
+import { BackupService } from './backupService';
 import { AdminAuth } from './adminAuth';
 import { AnalysisSettingsStore } from './analysisSettingsStore';
 import { AdminSettingsService } from './adminSettingsService';
@@ -65,6 +66,21 @@ if (seeded.length) console.log(`[CameraRegistry] data/cameras was missing ${seed
 // the copy it was first seeded with, which would reject fields added since.
 const DEFAULT_SCHEMA_PATH = path.join(REGISTRY_DEFAULTS_DIR, 'belgrade.schema.json');
 const store = new CameraRegistryStore(REGISTRY_PATH, fs.existsSync(DEFAULT_SCHEMA_PATH) ? DEFAULT_SCHEMA_PATH : SCHEMA_PATH);
+// Map positions added to the image's registry since the volume was first seeded.
+const DEFAULT_REGISTRY_PATH = path.join(REGISTRY_DEFAULTS_DIR, 'belgrade.json');
+if (fs.existsSync(DEFAULT_REGISTRY_PATH)) {
+  void (async () => {
+    try {
+      const entries = await store.load();
+      const filled = fillMissingPositions(entries, JSON.parse(fs.readFileSync(DEFAULT_REGISTRY_PATH, 'utf8')));
+      if (filled.length === 0) return;
+      await store.save(entries);
+      console.log(`[CameraRegistry] added map positions for ${filled.length} camera(s) from the image's defaults`);
+    } catch (err) {
+      console.error('[CameraRegistry] could not add map positions:', err);
+    }
+  })();
+}
 const cameraService = new CameraService(store);
 const hlsProxyService = new HlsProxyService(store);
 // One CameraAnalyzer per camera is built internally - it owns that camera's
@@ -234,6 +250,14 @@ const cameraEditor = new CameraEditor({
     if (change.hidden || change.added || change.removed) await trafficAnalysisService.reload();
     console.log(`[CameraEditor] ${change.added ? 'added' : change.removed ? 'deleted' : 'edited'} camera "${camera.id}"`);
   },
+  onReplaced: async (zonesChanged) => {
+    for (const camera of zonesChanged) {
+      await trafficAnalysisService.restartCamera(camera.id);
+      liveOverlayService?.updateCamera(camera);
+    }
+    await trafficAnalysisService.reload();
+    console.log('[CameraEditor] camera registry replaced from a backup');
+  },
 });
 // The Admin page's counting-accuracy check: records a few minutes of one
 // camera, counts them with the same motion analysis as runs live, and keeps
@@ -247,9 +271,22 @@ const accuracyChecks = new AccuracyCheckService({
   passageModel: (cameraId) => trafficStatsService.createPassageModel(cameraId),
   analysisFps: () => adminSettings.effective().analysisFps,
 });
+const appVersion = readAppVersion(process.env, path.resolve(__dirname, '../../package.json'));
+// Backup and restore on the Admin page; its temporary files live in the data volume, next to the database.
+const BACKUP_TMP_DIR = path.join(DATA_DIR, 'tmp');
+fs.rmSync(BACKUP_TMP_DIR, { recursive: true, force: true });
+fs.mkdirSync(BACKUP_TMP_DIR, { recursive: true });
+const backups = new BackupService({
+  stats: trafficStatsStore,
+  settings: { current: () => adminSettings.current(), apply: (settings) => adminSettings.update(settings) },
+  cameras: { load: () => store.load(), replaceAll: (entries) => cameraEditor.replaceAll(entries) },
+  onStatsRestored: () => trafficStatsService.forgetCachedHistory(),
+  appVersion: appVersion.version,
+  tmpDir: BACKUP_TMP_DIR,
+});
 // CPU, memory and pipeline throughput for the Admin page, sampled every 5 s.
 const serverMetrics = new ServerMetricsService({
-  app: readAppVersion(process.env, path.resolve(__dirname, '../../package.json')),
+  app: appVersion,
   analysis: trafficAnalysisService,
   overlay: liveOverlayService,
   config: {
@@ -287,6 +324,7 @@ const app = createApp(
   cameraEditor,
   accuracyChecks,
   new AdminAuth(process.env.ADMIN_PASSWORD, { storePath: ADMIN_PASSWORD_PATH }),
+  backups,
   STATIC_DIR,
 );
 

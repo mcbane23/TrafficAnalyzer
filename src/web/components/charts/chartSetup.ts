@@ -12,13 +12,23 @@ import {
   Tooltip,
   type Plugin,
 } from 'chart.js';
+import { watch } from 'vue';
 import { intlLocale } from '../../i18n';
+import { theme } from '../../composables/theme';
 
 // Only the pieces the charts here use, so the bundle doesn't carry all of Chart.js.
 Chart.register(BarController, BarElement, CategoryScale, Filler, Legend, LineController, LineElement, LinearScale, PointElement, Tooltip);
 
-Chart.defaults.color = '#94a3b8';
-Chart.defaults.borderColor = 'rgba(51, 65, 85, 0.5)';
+// Axis text and grid lines readable on either theme's background; charts already drawn are redrawn.
+watch(
+  theme,
+  (value) => {
+    Chart.defaults.color = value === 'light' ? '#475569' : '#94a3b8';
+    Chart.defaults.borderColor = value === 'light' ? 'rgba(148, 163, 184, 0.35)' : 'rgba(51, 65, 85, 0.5)';
+    for (const chart of Object.values(Chart.instances)) chart.update('none');
+  },
+  { immediate: true },
+);
 Chart.defaults.font.family = 'ui-sans-serif, system-ui, sans-serif';
 Chart.defaults.font.size = 11;
 

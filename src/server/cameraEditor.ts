@@ -21,6 +21,8 @@ export interface CameraEditorDeps {
   /** True while the availability check runs: it saves the whole registry when it ends, which would undo an edit made meanwhile. */
   isRevalidating: () => boolean;
   onChanged: (camera: CameraEntry, change: CameraChange) => Promise<void> | void;
+  /** After `replaceAll`: the cameras whose ignore zones changed, which need their analysis restarted. */
+  onReplaced?: (zonesChanged: CameraEntry[]) => Promise<void> | void;
 }
 
 /** Why the editor refused a request, for the Admin page to word in its own language. */
@@ -53,6 +55,8 @@ export interface CameraPatch {
   directions?: { a?: string; b?: string } | null;
   ignoreZones?: Array<{ name?: string; points: Array<[number, number]> }>;
   hidden?: boolean;
+  /** Where the camera is on the map; null removes it. */
+  position?: { lat: number; lon: number } | null;
 }
 
 export interface NewCamera {
@@ -112,6 +116,15 @@ export function normalizeCameraPatch(value: unknown): CameraPatch {
   }
 
   if (typeof input.hidden === 'boolean') patch.hidden = input.hidden;
+
+  if (input.position === null) patch.position = null;
+  else if (input.position && typeof input.position === 'object') {
+    const { lat, lon } = input.position as Record<string, unknown>;
+    if (typeof lat === 'number' && typeof lon === 'number' && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+      const fix = (n: number) => Math.round(n * 1e6) / 1e6;
+      patch.position = { lat: fix(lat), lon: fix(lon) };
+    }
+  }
   return patch;
 }
 
@@ -196,6 +209,14 @@ export class CameraEditor {
         camera.location = { ...camera.location, address: patch.address };
         change.details = true;
       }
+      if (patch.position !== undefined) {
+        const { lat, lon, ...rest } = camera.location;
+        const current = lat !== undefined && lon !== undefined ? { lat, lon } : null;
+        if (!sameJson(patch.position, current)) {
+          camera.location = patch.position ? { ...rest, ...patch.position } : rest;
+          change.details = true;
+        }
+      }
       if (patch.directions !== undefined && !sameJson(patch.directions, camera.directions)) {
         if (patch.directions === null) delete camera.directions;
         else camera.directions = patch.directions;
@@ -265,6 +286,20 @@ export class CameraEditor {
       await this.deps.store.save(entries);
       await this.deps.onChanged(camera, { details: false, zones: false, hidden: false, added: false, removed: true });
       return camera;
+    });
+  }
+
+  /** Replaces the whole registry (a restored backup); the store schema-checks it before anything is written. */
+  replaceAll(entries: CameraEntry[]): Promise<void> {
+    return this.serialize(async () => {
+      this.assertNotRevalidating();
+      const before = new Map((await this.deps.store.load()).map((entry) => [entry.id, entry]));
+      await this.deps.store.save(entries);
+      const zonesChanged = entries.filter((entry) => {
+        const old = before.get(entry.id);
+        return old !== undefined && !sameJson(old.ignoreZones ?? null, entry.ignoreZones ?? null);
+      });
+      await this.deps.onReplaced?.(zonesChanged);
     });
   }
 

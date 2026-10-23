@@ -15,7 +15,7 @@ function makeCamera(overrides: Partial<CameraEntry> = {}): CameraEntry {
   };
 }
 
-function setup(entries: CameraEntry[] = [makeCamera()], options: { revalidating?: boolean } = {}) {
+function setup(entries: CameraEntry[] = [makeCamera()], options: { revalidating?: boolean; onReplaced?: (cams: CameraEntry[]) => void } = {}) {
   let saved: CameraEntry[] = structuredClone(entries);
   const store = {
     load: jest.fn(async () => structuredClone(saved)),
@@ -34,6 +34,7 @@ function setup(entries: CameraEntry[] = [makeCamera()], options: { revalidating?
     onChanged: (camera, change) => {
       changes.push({ camera, change });
     },
+    onReplaced: options.onReplaced,
   });
   return { editor, store, validator, changes, saved: () => saved };
 }
@@ -121,6 +122,24 @@ describe('CameraEditor', () => {
 
     await t.editor.update('cam-1', { hidden: false });
     expect(t.saved()[0]).not.toHaveProperty('hidden');
+  });
+
+  it('sets and clears the map position, keeping the address', async () => {
+    const t = setup();
+    await t.editor.update('cam-1', { position: { lat: 44.80267891, lon: 20.466048 } });
+    expect(t.saved()[0].location).toEqual({ address: 'Square 1', lat: 44.802679, lon: 20.466048 });
+    expect(t.changes[0].change.details).toBe(true);
+    await t.editor.update('cam-1', { position: null });
+    expect(t.saved()[0].location).toEqual({ address: 'Square 1' });
+    expect(normalizeCameraPatch({ position: { lat: 95, lon: 20 } })).toEqual({});
+  });
+
+  it('replaces the whole registry and reports cameras whose zones changed', async () => {
+    const replaced: string[][] = [];
+    const t = setup([makeCamera(), makeCamera({ id: 'cam-2' })], { onReplaced: (cams: Array<{ id: string }>) => void replaced.push(cams.map((c) => c.id)) });
+    await t.editor.replaceAll([makeCamera({ ignoreZones: [{ points: [[0, 0], [1, 0], [1, 1]] }] }), makeCamera({ id: 'cam-3' })]);
+    expect(t.saved().map((c) => c.id)).toEqual(['cam-1', 'cam-3']);
+    expect(replaced).toEqual([['cam-1']]);
   });
 
   it('writes nothing when nothing changed', async () => {

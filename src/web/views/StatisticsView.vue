@@ -5,11 +5,12 @@ import type { ChartData, ChartOptions } from 'chart.js';
 import type { CameraEntry } from '../../types/camera';
 import type { CameraStats, StatsSummary } from '../../types/stats';
 import { fetchCameras } from '../services/api';
-import { fetchCameraStats, fetchStatsSummary } from '../services/stats';
+import { allStatsCsvUrl, fetchCameraStats, fetchStatsSummary } from '../services/stats';
 import { rankedCameras } from '../services/statsRanking';
 import { RANGES, formatCount, useStatsRange } from '../composables/trafficUi';
 import { formatBucketLabel } from '../components/charts/chartSetup';
-import { t } from '../i18n';
+import { formatNumber, t } from '../i18n';
+import { listOf } from '../services/chartText';
 
 const range = useStatsRange();
 const cameras = ref<CameraEntry[]>([]);
@@ -50,6 +51,20 @@ const rankingOptions: ChartOptions<'bar'> = {
   },
   plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, boxHeight: 10 } } },
 };
+
+/** The two charts in words, for screen readers. */
+const rankingDescription = computed(() =>
+  t('chart.a11yRanking', { list: listOf(ranked.value.map((c) => ({ name: nameById.value.get(c.cameraId) ?? c.cameraId, value: c.total })), 5, formatNumber) }),
+);
+const comparisonDescription = computed(() =>
+  t('chart.a11yCompare', {
+    list: listOf(
+      compared.value.map((s) => ({ name: nameById.value.get(s.cameraId) ?? s.cameraId, value: s.buckets.reduce((sum, b) => sum + b.total, 0) })),
+      5,
+      formatNumber,
+    ),
+  }),
+);
 
 const comparisonData = computed<ChartData<'line'>>(() => {
   const first = compared.value[0];
@@ -119,18 +134,29 @@ watch(selected, loadCompared);
 
 <template>
   <main class="mx-auto max-w-7xl px-4 py-6">
-    <h1 class="text-2xl font-bold text-slate-100">{{ t('stats.title') }}</h1>
-    <p class="mt-1 text-sm text-slate-400">
-      {{ t('stats.subtitle', { range: rangeLabel }) }}
-      <template v-if="summary"> · {{ t('stats.total', { count: formatCount(summary.totals.total) }) }}</template>
-    </p>
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-100">{{ t('stats.title') }}</h1>
+        <p class="mt-1 text-sm text-slate-400">
+          {{ t('stats.subtitle', { range: rangeLabel }) }}
+          <template v-if="summary"> · {{ t('stats.total', { count: formatCount(summary.totals.total) }) }}</template>
+        </p>
+      </div>
+      <a
+        :href="allStatsCsvUrl(range)"
+        class="rounded-md border border-slate-700 px-2.5 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
+        download
+      >
+        {{ t('stats.exportAll') }}
+      </a>
+    </div>
     <p v-if="error" class="mt-6 text-sm text-red-400">{{ error }}</p>
 
     <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
       <h2 class="text-base font-semibold text-slate-100">{{ t('stats.busiest') }}</h2>
       <p v-if="summary && ranked.length === 0" class="mt-3 text-sm text-slate-500">{{ t('stats.noVehicles') }}</p>
       <div v-else-if="summary" class="mt-4" :style="{ height: rankingHeight }">
-        <Bar :data="rankingData" :options="rankingOptions" />
+        <Bar :data="rankingData" :options="rankingOptions" role="img" :aria-label="rankingDescription" />
       </div>
       <p v-else class="mt-3 text-sm text-slate-500">{{ t('cam.loadingShort') }}</p>
     </section>
@@ -148,7 +174,7 @@ watch(selected, loadCompared);
           class="rounded-full border px-2.5 py-0.5 text-xs transition"
           :class="
             selected.includes(camera.id)
-              ? 'border-transparent text-slate-950'
+              ? 'border-transparent text-black'
               : 'border-slate-700 text-slate-400 hover:text-slate-200 disabled:opacity-40'
           "
           :style="selected.includes(camera.id) ? { backgroundColor: SERIES_COLORS[selected.indexOf(camera.id)] } : {}"
@@ -159,7 +185,7 @@ watch(selected, loadCompared);
         </button>
       </div>
       <div v-if="compared.length" class="mt-4 h-80">
-        <Line :data="comparisonData" :options="comparisonOptions" />
+        <Line :data="comparisonData" :options="comparisonOptions" role="img" :aria-label="comparisonDescription" />
       </div>
       <p v-else class="mt-4 text-sm text-slate-500">{{ t('stats.select') }}</p>
     </section>

@@ -43,6 +43,11 @@ export function cameraStatsCsvUrl(cameraId: string, range: StatsRange, bucket: S
   return `${cameraPath(cameraId)}/stats.csv?range=${range}&bucket=${bucket}`;
 }
 
+/** Every visible camera's statistics in one CSV, at the range's default bucket. */
+export function allStatsCsvUrl(range: StatsRange): string {
+  return `/api/stats/all.csv?range=${range}`;
+}
+
 /** The thumbnail's URL; `version` changes with the picture (its capture time), so an unchanged one is never downloaded again. */
 export function cameraSnapshotUrl(cameraId: string, version: string | number): string {
   return `${cameraPath(cameraId)}/snapshot.jpg?v=${encodeURIComponent(version)}`;

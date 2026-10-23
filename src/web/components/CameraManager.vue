@@ -75,7 +75,7 @@ async function remove(camera: CameraEntry) {
 // --- Edit dialog ---------------------------------------------------------
 
 const editing = ref<CameraEntry | null>(null);
-const form = reactive({ name: '', address: '', a: '', b: '', zones: [] as Zone[] });
+const form = reactive({ name: '', address: '', position: '', a: '', b: '', zones: [] as Zone[] });
 const axis = ref<RoadAxis | null>(null);
 const snapshotUrl = ref('');
 const saving = ref(false);
@@ -85,6 +85,7 @@ function openEditor(camera: CameraEntry) {
   editing.value = camera;
   form.name = camera.name;
   form.address = camera.location.address ?? '';
+  form.position = camera.location.lat !== undefined && camera.location.lon !== undefined ? `${camera.location.lat}, ${camera.location.lon}` : '';
   form.a = camera.directions?.a ?? '';
   form.b = camera.directions?.b ?? '';
   form.zones = JSON.parse(JSON.stringify(camera.ignoreZones ?? [])) as Zone[];
@@ -99,6 +100,16 @@ function openEditor(camera: CameraEntry) {
     .catch(() => undefined);
 }
 
+/** "44.80268, 20.46605" (as copied from a map) into a position; null when empty, undefined when unreadable. */
+function parsePosition(value: string): { lat: number; lon: number } | null | undefined {
+  if (!value.trim()) return null;
+  const match = value.trim().match(/^(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)$/);
+  if (!match) return undefined;
+  const lat = Number(match[1]);
+  const lon = Number(match[2]);
+  return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : undefined;
+}
+
 function closeEditor() {
   if (!saving.value) editing.value = null;
 }
@@ -110,6 +121,11 @@ async function saveEditor() {
     editError.value = t('cameraEdit.error.no-name');
     return;
   }
+  const position = parsePosition(form.position);
+  if (position === undefined) {
+    editError.value = t('cameraEdit.positionInvalid');
+    return;
+  }
   saving.value = true;
   try {
     const updated = await updateCamera(camera.id, {
@@ -117,6 +133,7 @@ async function saveEditor() {
       ...(form.address.trim() ? { address: form.address } : {}),
       directions: form.a.trim() || form.b.trim() ? { a: form.a, b: form.b } : null,
       ignoreZones: form.zones,
+      position,
     });
     replace(updated);
     editing.value = null;
@@ -286,6 +303,10 @@ onMounted(load);
             </label>
             <label class="block text-xs text-slate-500">{{ t('cameraEdit.address') }}
               <input v-model="form.address" :class="inputClass" maxlength="200" />
+            </label>
+            <label class="block text-xs text-slate-500">{{ t('cameraEdit.position') }}
+              <input v-model="form.position" :class="inputClass" inputmode="decimal" placeholder="44.80268, 20.46605" />
+              <span class="mt-1 block text-[11px] text-slate-500">{{ t('cameraEdit.positionHint') }}</span>
             </label>
             <div>
               <span class="text-xs text-slate-500">{{ t('cameraEdit.directions') }}</span>

@@ -6,6 +6,15 @@
     <meta name="theme-color" content="#020617" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Saobraćaj Beograd</title>
+    <!-- The theme before the first paint, so a light-theme page doesn't flash dark (see composables/theme.ts). -->
+    <script>
+      (function () {
+        var choice = 'system';
+        try { choice = localStorage.getItem('theme') || 'system'; } catch (e) {}
+        var light = choice === 'light' || (choice === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches);
+        document.documentElement.dataset.theme = light ? 'light' : 'dark';
+      })();
+    </script>
   </head>
   <body class="bg-slate-950">
     <div id="app"></div>
