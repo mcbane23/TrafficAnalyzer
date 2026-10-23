@@ -1,0 +1,40 @@
+# Intel GPU setup (TrueNAS and other Linux hosts with an N100/N150-class iGPU).
+# Use it with: docker compose -f docker-compose.intel-gpu.yml up -d
+services:
+  trafficanalyzer:
+    image: ghcr.io/mcbane23/trafficanalyzer:latest
+    container_name: trafficanalyzer
+    ports:
+      # host:container. 3001 is taken on the host, so the app is on 3041.
+      - "3041:3001"
+    environment:
+      - PORT=3001
+      # Run YOLO on the Intel GPU through OpenVINO. Needs the devices and
+      # group_add lines below; without them it falls back to the CPU.
+      - OVERLAY_DEVICE=GPU
+      # Which cameras are analyzed, the frame rates, the YOLO model and the
+      # box confidence are set in the app's Admin tab, not here.
+
+      # Optional:
+      # Password for the Admin page. It can also be set on the Admin page itself;
+      # this line, when present, wins.
+      # - ADMIN_PASSWORD=change-me
+      # Time zone for "today" and the hour-of-day heatmap (the container runs in UTC).
+      # - STATS_TIMEZONE=Europe/Belgrade
+      # off: draw no YOLO boxes on the live view.
+      # - OVERLAY_DETECTOR=off
+
+    # Intel GPU for OVERLAY_DEVICE=GPU. group_add is the host's render group id:
+    # stat -c %g /dev/dri/renderD128
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "107"
+    volumes:
+      # Camera registry, statistics, traffic history and Admin settings. Keep
+      # the named volume: an empty ./data folder has no camera list.
+      - trafficanalyzer-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  trafficanalyzer-data:

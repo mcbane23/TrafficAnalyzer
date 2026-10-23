@@ -133,7 +133,8 @@ default). Start with a few and watch CPU and memory on the same page before addi
 
 The live vehicle boxes run YOLO, by default on the CPU. On an Intel CPU with integrated graphics (e.g.
 an N100/N150) the amd64 image can run it on the GPU instead, which allows a bigger, more accurate
-model. Pass the GPU into the container and set `OVERLAY_DEVICE=GPU`:
+model. Pass the GPU into the container and set `OVERLAY_DEVICE=GPU`
+([`docker-compose.intel-gpu.yml`](docker-compose.intel-gpu.yml) is the same file with every option commented):
 
 ```yaml
 services:
